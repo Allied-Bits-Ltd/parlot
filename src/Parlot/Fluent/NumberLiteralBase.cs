@@ -1,11 +1,10 @@
+using Parlot.Compilation;
+using Parlot.Rewriting;
 using System;
 using System.Globalization;
 using System.Linq.Expressions;
 using System.Numerics;
 using System.Reflection;
-
-using Parlot.Compilation;
-using Parlot.Rewriting;
 
 namespace Parlot.Fluent;
 
@@ -77,7 +76,6 @@ public abstract class NumberLiteralBase<T> : Parser<T>, ICompilable, ISeekable
         {
             expectedChars += "_";
         }
-
         ExpectedChars = expectedChars.ToCharArray();
 
         Name = "NumberLiteral";

@@ -17,6 +17,9 @@ public static partial class Character
     public static bool IsDecimalDigit(char ch) => _decimalDigits.Contains(ch);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool IsDecimalDigitOrUnderscore(char ch) => _decimalDigitsAndUnderscore.Contains(ch);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool IsIdentifierStart(char ch) => _identifierStart.Contains(ch);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

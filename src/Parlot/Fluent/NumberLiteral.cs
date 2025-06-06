@@ -1,12 +1,11 @@
 #if NET8_0_OR_GREATER
+using Parlot.Compilation;
+using Parlot.Rewriting;
 using System;
 using System.Globalization;
 using System.Linq.Expressions;
 using System.Numerics;
 using System.Reflection;
-
-using Parlot.Compilation;
-using Parlot.Rewriting;
 
 namespace Parlot.Fluent;
 
@@ -75,7 +74,6 @@ public sealed class NumberLiteral<T> : Parser<T>, ICompilable, ISeekable
         {
             ExpectedChars = [.. ExpectedChars, '_'];
         }
-
         // Exponent can't be a starting char
 
         Name = "NumberLiteral";

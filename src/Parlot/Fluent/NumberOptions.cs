@@ -64,5 +64,5 @@ public enum NumberOptions
     /// Indicates that all options are used.
     /// This is a composite number style.
     /// </summary>
-    Any = AllowLeadingSign | AllowDecimalSeparator | AllowGroupSeparators | AllowExponent,
+    Any = AllowLeadingSign | AllowDecimalSeparator | AllowGroupSeparators | AllowExponent | AllowUnderscore,
 }
