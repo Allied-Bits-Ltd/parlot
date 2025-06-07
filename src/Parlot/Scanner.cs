@@ -205,7 +205,7 @@ public class Scanner
 
             if (!ReadInteger(out number, allowUnderscore))
             {
-                Cursor.ResetPosition(beforeDecimalSeparator);
+                // Cursor.ResetPosition(beforeDecimalSeparator);
 
                 // A decimal separator must be followed by a number if there is no integral part, e.g. `[NaN].[NaN]`
                 if (numberIsEmpty)
@@ -213,7 +213,7 @@ public class Scanner
                     return false;
                 }
 
-                number = Cursor.Buffer.AsSpan(start.Offset, Cursor.Offset - start.Offset);
+                number = Cursor.Buffer.AsSpan(start.Offset, Cursor.Offset - start.Offset -1);
                 if (allowUnderscore)
                     number = StripUnderscores(number);
                 return true;
