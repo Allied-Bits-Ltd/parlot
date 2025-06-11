@@ -6,7 +6,7 @@
     <PackageVersion Include="System.Memory" Version="4.6.3" />
     <PackageVersion Include="FastExpressionCompiler.Internal.src" Version="5.2.0" />
     <!-- Benchmarks -->
-    <PackageVersion Include="BenchmarkDotNet" Version="0.14.0" />
+    <PackageVersion Include="BenchmarkDotNet" Version="0.15.0" />
     <PackageVersion Include="Pidgin" Version="3.4.0" />
     <PackageVersion Include="Sprache" Version="3.0.0-develop-00049" />
     <PackageVersion Include="Superpower" Version="3.0.0" />
@@ -19,6 +19,6 @@
     <PackageVersion Include="xunit" Version="2.9.3" />
     <PackageVersion Include="xunit.runner.visualstudio" Version="3.0.2" />
     <PackageVersion Include="coverlet.collector" Version="6.0.4" />
-    <PackageVersion Include="xunit.analyzers" Version="1.21.0" />
+    <PackageVersion Include="xunit.analyzers" Version="1.22.0" />
   </ItemGroup>
 </Project>
