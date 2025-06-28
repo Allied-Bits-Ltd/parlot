@@ -17,10 +17,12 @@ public abstract class NumberLiteralBase<T> : Parser<T>, ICompilable, ISeekable
     private static readonly MethodInfo _defaultTryParseMethodInfo = typeof(T).GetMethod("TryParse", [typeof(string), typeof(NumberStyles), typeof(IFormatProvider), typeof(T).MakeByRefType()])!;
 
     private readonly char _decimalSeparator;
+    private readonly char _secondDecimalSeparator;
     private readonly char _groupSeparator;
     private readonly MethodInfo _tryParseMethodInfo;
     private readonly NumberStyles _numberStyles;
     private readonly CultureInfo _culture = CultureInfo.InvariantCulture;
+    private readonly CultureInfo? _culture2;
     private readonly bool _allowLeadingSign;
     private readonly bool _allowDecimalSeparator;
     private readonly bool _allowGroupSeparator;
@@ -34,10 +36,13 @@ public abstract class NumberLiteralBase<T> : Parser<T>, ICompilable, ISeekable
 
     public abstract bool TryParseNumber(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider provider, out T value);
 
-    public NumberLiteralBase(NumberOptions numberOptions = NumberOptions.Number, char decimalSeparator = NumberLiterals.DefaultDecimalSeparator, char groupSeparator = NumberLiterals.DefaultGroupSeparator, MethodInfo? tryParseMethodInfo = null)
+    public NumberLiteralBase(NumberOptions numberOptions = NumberOptions.Number, char decimalSeparator = NumberLiterals.DefaultDecimalSeparator, char groupSeparator = NumberLiterals.DefaultGroupSeparator, char secondDecimalSeparator = '0', MethodInfo? tryParseMethodInfo = null)
     {
         _decimalSeparator = decimalSeparator;
-        _groupSeparator = groupSeparator;
+        _secondDecimalSeparator = secondDecimalSeparator;
+        if (secondDecimalSeparator == '\0' || secondDecimalSeparator != groupSeparator)
+            _groupSeparator = groupSeparator;
+
         _tryParseMethodInfo = tryParseMethodInfo ?? _defaultTryParseMethodInfo;
         _numberStyles = numberOptions.ToNumberStyles();
 
@@ -46,7 +51,19 @@ public abstract class NumberLiteralBase<T> : Parser<T>, ICompilable, ISeekable
         {
             _culture = (CultureInfo)CultureInfo.InvariantCulture.Clone();
             _culture.NumberFormat.NumberDecimalSeparator = decimalSeparator.ToString();
-            _culture.NumberFormat.NumberGroupSeparator = groupSeparator.ToString();
+            if (secondDecimalSeparator == '\0' || secondDecimalSeparator != groupSeparator)
+                _culture.NumberFormat.NumberGroupSeparator = groupSeparator.ToString();
+            else
+                _culture.NumberFormat.NumberGroupSeparator = string.Empty;
+        }
+        if (secondDecimalSeparator != '\0')
+        {
+            _culture2 = (CultureInfo)CultureInfo.InvariantCulture.Clone();
+            _culture2.NumberFormat.NumberDecimalSeparator = secondDecimalSeparator.ToString();
+            if (secondDecimalSeparator != groupSeparator)
+                _culture2.NumberFormat.NumberGroupSeparator = groupSeparator.ToString();
+            else
+                _culture2.NumberFormat.NumberGroupSeparator = string.Empty;
         }
 
         _allowLeadingSign = (numberOptions & NumberOptions.AllowLeadingSign) != 0;
@@ -88,13 +105,21 @@ public abstract class NumberLiteralBase<T> : Parser<T>, ICompilable, ISeekable
         var reset = context.Scanner.Cursor.Position;
         var start = reset.Offset;
 
-        if (context.Scanner.ReadDecimal(_allowLeadingSign, _allowDecimalSeparator, _allowGroupSeparator, _allowExponent, _allowUnderscore, out var number, _decimalSeparator, _groupSeparator))
+        if (context.Scanner.ReadDecimal(_allowLeadingSign, _allowDecimalSeparator, _allowGroupSeparator, _allowExponent, _allowUnderscore, out var number, _decimalSeparator, _groupSeparator, _secondDecimalSeparator))
         {
             var end = context.Scanner.Cursor.Offset;
 
             if (TryParseNumber(number, _numberStyles, _culture, out T value))
             {
                 result.Set(start, end, value);
+
+                context.ExitParser(this);
+                return true;
+            }
+            else
+            if (_culture2 != null && (TryParseNumber(number, _numberStyles, _culture2, out T value2)))
+            {
+                result.Set(start, end, value2);
 
                 context.ExitParser(this);
                 return true;
@@ -170,8 +195,8 @@ public abstract class NumberLiteralBase<T> : Parser<T>, ICompilable, ISeekable
 
 internal sealed class ByteNumberLiteral : NumberLiteralBase<byte>
 {
-    public ByteNumberLiteral(NumberOptions numberOptions = NumberOptions.Number, char decimalSeparator = NumberLiterals.DefaultDecimalSeparator, char groupSeparator = NumberLiterals.DefaultGroupSeparator)
-        : base(numberOptions, decimalSeparator, groupSeparator)
+    public ByteNumberLiteral(NumberOptions numberOptions = NumberOptions.Number, char decimalSeparator = NumberLiterals.DefaultDecimalSeparator, char groupSeparator = NumberLiterals.DefaultGroupSeparator, char secondDecimalSeparator = '0')
+        : base(numberOptions, decimalSeparator, groupSeparator, secondDecimalSeparator)
     {
 
     }
@@ -188,8 +213,8 @@ internal sealed class ByteNumberLiteral : NumberLiteralBase<byte>
 
 internal sealed class SByteNumberLiteral : NumberLiteralBase<sbyte>
 {
-    public SByteNumberLiteral(NumberOptions numberOptions = NumberOptions.Number, char decimalSeparator = NumberLiterals.DefaultDecimalSeparator, char groupSeparator = NumberLiterals.DefaultGroupSeparator)
-        : base(numberOptions, decimalSeparator, groupSeparator)
+    public SByteNumberLiteral(NumberOptions numberOptions = NumberOptions.Number, char decimalSeparator = NumberLiterals.DefaultDecimalSeparator, char groupSeparator = NumberLiterals.DefaultGroupSeparator, char secondDecimalSeparator = '0')
+        : base(numberOptions, decimalSeparator, groupSeparator, secondDecimalSeparator)
     {
 
     }
@@ -206,8 +231,8 @@ internal sealed class SByteNumberLiteral : NumberLiteralBase<sbyte>
 
 internal sealed class IntNumberLiteral : NumberLiteralBase<int>
 {
-    public IntNumberLiteral(NumberOptions numberOptions = NumberOptions.Number, char decimalSeparator = NumberLiterals.DefaultDecimalSeparator, char groupSeparator = NumberLiterals.DefaultGroupSeparator)
-        : base(numberOptions, decimalSeparator, groupSeparator)
+    public IntNumberLiteral(NumberOptions numberOptions = NumberOptions.Number, char decimalSeparator = NumberLiterals.DefaultDecimalSeparator, char groupSeparator = NumberLiterals.DefaultGroupSeparator, char secondDecimalSeparator = '0')
+        : base(numberOptions, decimalSeparator, groupSeparator, secondDecimalSeparator)
     {
 
     }
@@ -224,8 +249,8 @@ internal sealed class IntNumberLiteral : NumberLiteralBase<int>
 
 internal sealed class UIntNumberLiteral : NumberLiteralBase<uint>
 {
-    public UIntNumberLiteral(NumberOptions numberOptions = NumberOptions.Number, char decimalSeparator = NumberLiterals.DefaultDecimalSeparator, char groupSeparator = NumberLiterals.DefaultGroupSeparator)
-        : base(numberOptions, decimalSeparator, groupSeparator)
+    public UIntNumberLiteral(NumberOptions numberOptions = NumberOptions.Number, char decimalSeparator = NumberLiterals.DefaultDecimalSeparator, char groupSeparator = NumberLiterals.DefaultGroupSeparator, char secondDecimalSeparator = '0')
+        : base(numberOptions, decimalSeparator, groupSeparator, secondDecimalSeparator)
     {
 
     }
@@ -242,8 +267,8 @@ internal sealed class UIntNumberLiteral : NumberLiteralBase<uint>
 
 internal sealed class LongNumberLiteral : NumberLiteralBase<long>
 {
-    public LongNumberLiteral(NumberOptions numberOptions = NumberOptions.Number, char decimalSeparator = NumberLiterals.DefaultDecimalSeparator, char groupSeparator = NumberLiterals.DefaultGroupSeparator)
-        : base(numberOptions, decimalSeparator, groupSeparator)
+    public LongNumberLiteral(NumberOptions numberOptions = NumberOptions.Number, char decimalSeparator = NumberLiterals.DefaultDecimalSeparator, char groupSeparator = NumberLiterals.DefaultGroupSeparator, char secondDecimalSeparator = '0')
+        : base(numberOptions, decimalSeparator, groupSeparator, secondDecimalSeparator)
     {
 
     }
@@ -260,8 +285,8 @@ internal sealed class LongNumberLiteral : NumberLiteralBase<long>
 
 internal sealed class ULongNumberLiteral : NumberLiteralBase<ulong>
 {
-    public ULongNumberLiteral(NumberOptions numberOptions = NumberOptions.Number, char decimalSeparator = NumberLiterals.DefaultDecimalSeparator, char groupSeparator = NumberLiterals.DefaultGroupSeparator)
-        : base(numberOptions, decimalSeparator, groupSeparator)
+    public ULongNumberLiteral(NumberOptions numberOptions = NumberOptions.Number, char decimalSeparator = NumberLiterals.DefaultDecimalSeparator, char groupSeparator = NumberLiterals.DefaultGroupSeparator, char secondDecimalSeparator = '0')
+        : base(numberOptions, decimalSeparator, groupSeparator, secondDecimalSeparator)
     {
 
     }
@@ -278,8 +303,8 @@ internal sealed class ULongNumberLiteral : NumberLiteralBase<ulong>
 
 internal sealed class ShortNumberLiteral : NumberLiteralBase<short>
 {
-    public ShortNumberLiteral(NumberOptions numberOptions = NumberOptions.Number, char decimalSeparator = NumberLiterals.DefaultDecimalSeparator, char groupSeparator = NumberLiterals.DefaultGroupSeparator)
-        : base(numberOptions, decimalSeparator, groupSeparator)
+    public ShortNumberLiteral(NumberOptions numberOptions = NumberOptions.Number, char decimalSeparator = NumberLiterals.DefaultDecimalSeparator, char groupSeparator = NumberLiterals.DefaultGroupSeparator, char secondDecimalSeparator = '0')
+        : base(numberOptions, decimalSeparator, groupSeparator, secondDecimalSeparator)
     {
 
     }
@@ -296,8 +321,8 @@ internal sealed class ShortNumberLiteral : NumberLiteralBase<short>
 
 internal sealed class UShortNumberLiteral : NumberLiteralBase<ushort>
 {
-    public UShortNumberLiteral(NumberOptions numberOptions = NumberOptions.Number, char decimalSeparator = NumberLiterals.DefaultDecimalSeparator, char groupSeparator = NumberLiterals.DefaultGroupSeparator)
-        : base(numberOptions, decimalSeparator, groupSeparator)
+    public UShortNumberLiteral(NumberOptions numberOptions = NumberOptions.Number, char decimalSeparator = NumberLiterals.DefaultDecimalSeparator, char groupSeparator = NumberLiterals.DefaultGroupSeparator, char secondDecimalSeparator = '0')
+        : base(numberOptions, decimalSeparator, groupSeparator, secondDecimalSeparator)
     {
 
     }
@@ -314,8 +339,8 @@ internal sealed class UShortNumberLiteral : NumberLiteralBase<ushort>
 
 internal sealed class DecimalNumberLiteral : NumberLiteralBase<decimal>
 {
-    public DecimalNumberLiteral(NumberOptions numberOptions = NumberOptions.Number, char decimalSeparator = NumberLiterals.DefaultDecimalSeparator, char groupSeparator = NumberLiterals.DefaultGroupSeparator)
-        : base(numberOptions, decimalSeparator, groupSeparator)
+    public DecimalNumberLiteral(NumberOptions numberOptions = NumberOptions.Number, char decimalSeparator = NumberLiterals.DefaultDecimalSeparator, char groupSeparator = NumberLiterals.DefaultGroupSeparator, char secondDecimalSeparator = '0')
+        : base(numberOptions, decimalSeparator, groupSeparator, secondDecimalSeparator)
     {
 
     }
@@ -332,8 +357,8 @@ internal sealed class DecimalNumberLiteral : NumberLiteralBase<decimal>
 
 internal sealed class DoubleNumberLiteral : NumberLiteralBase<double>
 {
-    public DoubleNumberLiteral(NumberOptions numberOptions = NumberOptions.Number, char decimalSeparator = NumberLiterals.DefaultDecimalSeparator, char groupSeparator = NumberLiterals.DefaultGroupSeparator)
-        : base(numberOptions, decimalSeparator, groupSeparator)
+    public DoubleNumberLiteral(NumberOptions numberOptions = NumberOptions.Number, char decimalSeparator = NumberLiterals.DefaultDecimalSeparator, char groupSeparator = NumberLiterals.DefaultGroupSeparator, char secondDecimalSeparator = '0')
+        : base(numberOptions, decimalSeparator, groupSeparator, secondDecimalSeparator)
     {
 
     }
@@ -350,8 +375,8 @@ internal sealed class DoubleNumberLiteral : NumberLiteralBase<double>
 
 internal sealed class FloatNumberLiteral : NumberLiteralBase<float>
 {
-    public FloatNumberLiteral(NumberOptions numberOptions = NumberOptions.Number, char decimalSeparator = NumberLiterals.DefaultDecimalSeparator, char groupSeparator = NumberLiterals.DefaultGroupSeparator)
-        : base(numberOptions, decimalSeparator, groupSeparator)
+    public FloatNumberLiteral(NumberOptions numberOptions = NumberOptions.Number, char decimalSeparator = NumberLiterals.DefaultDecimalSeparator, char groupSeparator = NumberLiterals.DefaultGroupSeparator, char secondDecimalSeparator = '0')
+        : base(numberOptions, decimalSeparator, groupSeparator, secondDecimalSeparator)
     {
 
     }
@@ -369,8 +394,8 @@ internal sealed class FloatNumberLiteral : NumberLiteralBase<float>
 #if NET6_0_OR_GREATER
 internal sealed class HalfNumberLiteral : NumberLiteralBase<Half>
 {
-    public HalfNumberLiteral(NumberOptions numberOptions = NumberOptions.Number, char decimalSeparator = NumberLiterals.DefaultDecimalSeparator, char groupSeparator = NumberLiterals.DefaultGroupSeparator)
-        : base(numberOptions, decimalSeparator, groupSeparator)
+    public HalfNumberLiteral(NumberOptions numberOptions = NumberOptions.Number, char decimalSeparator = NumberLiterals.DefaultDecimalSeparator, char groupSeparator = NumberLiterals.DefaultGroupSeparator, char secondDecimalSeparator = '0')
+        : base(numberOptions, decimalSeparator, groupSeparator, secondDecimalSeparator)
     {
 
     }
@@ -384,8 +409,8 @@ internal sealed class HalfNumberLiteral : NumberLiteralBase<Half>
 
 internal sealed class BigIntegerNumberLiteral : NumberLiteralBase<BigInteger>
 {
-    public BigIntegerNumberLiteral(NumberOptions numberOptions = NumberOptions.Number, char decimalSeparator = NumberLiterals.DefaultDecimalSeparator, char groupSeparator = NumberLiterals.DefaultGroupSeparator)
-        : base(numberOptions, decimalSeparator, groupSeparator)
+    public BigIntegerNumberLiteral(NumberOptions numberOptions = NumberOptions.Number, char decimalSeparator = NumberLiterals.DefaultDecimalSeparator, char groupSeparator = NumberLiterals.DefaultGroupSeparator, char secondDecimalSeparator = '0')
+        : base(numberOptions, decimalSeparator, groupSeparator, secondDecimalSeparator)
     {
 
     }

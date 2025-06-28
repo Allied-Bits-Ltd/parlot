@@ -132,7 +132,7 @@ public class Scanner
     public bool ReadDecimal(out ReadOnlySpan<char> number) => ReadDecimal(true, true, false, true, false, out number);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public bool ReadDecimal(NumberOptions numberOptions, out ReadOnlySpan<char> number, char decimalSeparator = '.', char groupSeparator = ',')
+    public bool ReadDecimal(NumberOptions numberOptions, out ReadOnlySpan<char> number, char decimalSeparator = '.', char groupSeparator = ',', char secondDecimalSeparator = '\0')
     {
         return ReadDecimal(
             (numberOptions & NumberOptions.AllowLeadingSign) != 0,
@@ -142,10 +142,11 @@ public class Scanner
             (numberOptions & NumberOptions.AllowUnderscore) != 0,
             out number,
             decimalSeparator,
-            groupSeparator);
+            groupSeparator,
+            secondDecimalSeparator);
     }
 
-    public bool ReadDecimal(bool allowLeadingSign, bool allowDecimalSeparator, bool allowGroupSeparator, bool allowExponent, bool allowUnderscore, out ReadOnlySpan<char> number, char decimalSeparator = '.', char groupSeparator = ',')
+    public bool ReadDecimal(bool allowLeadingSign, bool allowDecimalSeparator, bool allowGroupSeparator, bool allowExponent, bool allowUnderscore, out ReadOnlySpan<char> number, char decimalSeparator = '.', char groupSeparator = ',', char secondDecimalSeparator = '\0' )
     {
         // The buffer is read while the value is a valid decimal number. For instance `123,a` will return `123`.
 
@@ -163,7 +164,7 @@ public class Scanner
         {
             // If there is no number, check if the decimal separator is allowed and present, otherwise fail
 
-            if (!allowDecimalSeparator || Cursor.Current != decimalSeparator)
+            if (!allowDecimalSeparator || (Cursor.Current != decimalSeparator && (secondDecimalSeparator == '\0' || Cursor.Current != secondDecimalSeparator)))
             {
                 Cursor.ResetPosition(start);
                 return false;
@@ -197,7 +198,7 @@ public class Scanner
 
         var beforeDecimalSeparator = Cursor.Position;
 
-        if (allowDecimalSeparator && Cursor.Current == decimalSeparator)
+        if (allowDecimalSeparator && (Cursor.Current == decimalSeparator || (secondDecimalSeparator != '\0' && Cursor.Current == secondDecimalSeparator)))
         {
             Cursor.AdvanceNoNewLines(1);
 

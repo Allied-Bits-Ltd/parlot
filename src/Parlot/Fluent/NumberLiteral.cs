@@ -18,9 +18,11 @@ public sealed class NumberLiteral<T> : Parser<T>, ICompilable, ISeekable
     private static readonly MethodInfo _tryParseMethodInfo = typeof(T).GetMethod(nameof(INumber<T>.TryParse), [typeof(ReadOnlySpan<char>), typeof(NumberStyles), typeof(IFormatProvider), typeof(T).MakeByRefType()])!;
 
     private readonly char _decimalSeparator;
+    private readonly char _secondDecimalSeparator;
     private readonly char _groupSeparator;
     private readonly NumberStyles _numberStyles;
     private readonly CultureInfo _culture = CultureInfo.InvariantCulture;
+    private readonly CultureInfo? _culture2;
     private readonly bool _allowLeadingSign;
     private readonly bool _allowDecimalSeparator;
     private readonly bool _allowGroupSeparator;
@@ -33,10 +35,12 @@ public sealed class NumberLiteral<T> : Parser<T>, ICompilable, ISeekable
 
     public bool SkipWhitespace { get; }
 
-    public NumberLiteral(NumberOptions numberOptions = NumberOptions.Number, char decimalSeparator = DefaultDecimalSeparator, char groupSeparator = DefaultGroupSeparator)
+    public NumberLiteral(NumberOptions numberOptions = NumberOptions.Number, char decimalSeparator = DefaultDecimalSeparator, char groupSeparator = DefaultGroupSeparator, char secondDecimalSeparator = '\0')
     {
         _decimalSeparator = decimalSeparator;
-        _groupSeparator = groupSeparator;
+        _secondDecimalSeparator = secondDecimalSeparator;
+        if (secondDecimalSeparator == '\0' || secondDecimalSeparator != groupSeparator)
+            _groupSeparator = groupSeparator;
         _numberStyles = numberOptions.ToNumberStyles();
 
         if (decimalSeparator != NumberLiterals.DefaultDecimalSeparator ||
@@ -44,7 +48,19 @@ public sealed class NumberLiteral<T> : Parser<T>, ICompilable, ISeekable
         {
             _culture = (CultureInfo)CultureInfo.InvariantCulture.Clone();
             _culture.NumberFormat.NumberDecimalSeparator = decimalSeparator.ToString();
-            _culture.NumberFormat.NumberGroupSeparator = groupSeparator.ToString();
+            if (secondDecimalSeparator == '\0' || secondDecimalSeparator != groupSeparator)
+                _culture.NumberFormat.NumberGroupSeparator = groupSeparator.ToString();
+            else
+                _culture.NumberFormat.NumberGroupSeparator = string.Empty;
+        }
+        if (secondDecimalSeparator != '\0')
+        {
+            _culture2 = (CultureInfo)CultureInfo.InvariantCulture.Clone();
+            _culture2.NumberFormat.NumberDecimalSeparator = secondDecimalSeparator.ToString();
+            if (secondDecimalSeparator != groupSeparator)
+                _culture2.NumberFormat.NumberGroupSeparator = groupSeparator.ToString();
+            else
+                _culture2.NumberFormat.NumberGroupSeparator = string.Empty;
         }
 
         _allowLeadingSign = (numberOptions & NumberOptions.AllowLeadingSign) != 0;
@@ -86,13 +102,21 @@ public sealed class NumberLiteral<T> : Parser<T>, ICompilable, ISeekable
         var reset = context.Scanner.Cursor.Position;
         var start = reset.Offset;
 
-        if (context.Scanner.ReadDecimal(_allowLeadingSign, _allowDecimalSeparator, _allowGroupSeparator, _allowExponent, _allowUnderscore, out var number, _decimalSeparator, _groupSeparator))
+        if (context.Scanner.ReadDecimal(_allowLeadingSign, _allowDecimalSeparator, _allowGroupSeparator, _allowExponent, _allowUnderscore, out var number, _decimalSeparator, _groupSeparator, _secondDecimalSeparator))
         {
             var end = context.Scanner.Cursor.Offset;
 
             if (T.TryParse(number, _numberStyles, _culture, out var value))
             {
                 result.Set(start, end, value);
+
+                context.ExitParser(this);
+                return true;
+            }
+            else
+            if (_culture2 != null && (T.TryParse(number, _numberStyles, _culture2, out var value2)))
+            {
+                result.Set(start, end, value2);
 
                 context.ExitParser(this);
                 return true;

@@ -266,11 +266,11 @@ public class TermBuilder
     /// <summary>
     /// Builds a parser that matches a number and returns any numeric type.
     /// </summary>
-    public Parser<T> Number<T>(NumberOptions numberOptions = NumberOptions.Number, char decimalSeparator = '.', char groupSeparator = ',')
+    public Parser<T> Number<T>(NumberOptions numberOptions = NumberOptions.Number, char decimalSeparator = '.', char groupSeparator = ',', char secondDecimalSeparator = '\0')
 #if NET8_0_OR_GREATER
         where T : INumber<T>
 #endif
-        => Parsers.SkipWhiteSpace(NumberLiterals.CreateNumberLiteralParser<T>(numberOptions, decimalSeparator, groupSeparator));
+        => Parsers.SkipWhiteSpace(NumberLiterals.CreateNumberLiteralParser<T>(numberOptions, decimalSeparator, groupSeparator, secondDecimalSeparator));
 
     /// <summary>
     /// Builds a parser that matches an integer with an option leading sign.
