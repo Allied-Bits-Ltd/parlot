@@ -283,6 +283,16 @@ public class ScannerTests
     }
 
     [Theory]
+    [InlineData("12_3.01", "123.01")]
+    [InlineData("12_3.0_1", "123.01")]
+    [InlineData("12_3", "123")]
+    public void ShouldReadValidDecimalWithUnderscores(string text, string expected)
+    {
+        Assert.True(new Scanner(text).ReadDecimal(Fluent.NumberOptions.AllowUnderscore | Fluent.NumberOptions.Number , out var result));
+        Assert.Equal(expected, result);
+    }
+
+    [Theory]
     [InlineData(" 1")]
     public void ShouldNotReadInvalidInteger(string text)
     {
@@ -431,4 +441,40 @@ public class ScannerTests
         Assert.True(decimal.TryParse(expected, NumberStyles.AllowExponent, CultureInfo.InvariantCulture, out _));
         Assert.Equal(expected, result);
     }
+
+[Theory]
+    [InlineData("123,", "123", ",")]
+    [InlineData("123,a", "123", ",a")]
+    public void ShouldReadNumberWithTrailingGroupSeparators(string input, string expected, string expected2)
+    {
+        Scanner s = new(input);
+
+        Assert.True(s.ReadDecimal(Fluent.NumberOptions.AllowGroupSeparators, out var result));
+        Assert.Equal(expected, result);
+        Assert.True(s.ReadNonWhiteSpace(out var result2));
+        Assert.Equal(expected2, result2);
+    }
+
+    [Theory]
+    [InlineData("1, 2, 3", "1", "2", "3")]
+    public void ShouldReadNumberListWithGroupSeparators(string input, string expected1, string expected2, string expected3)
+    {
+        Scanner s = new(input);
+
+        Assert.True(s.ReadDecimal(Fluent.NumberOptions.AllowGroupSeparators, out var result));
+        Assert.Equal(expected1, result);
+        Assert.True(s.ReadNonWhiteSpace(out var resultSep));
+        Assert.Equal(",", resultSep);
+        Assert.True(s.SkipWhiteSpace());
+
+        Assert.True(s.ReadDecimal(Fluent.NumberOptions.AllowGroupSeparators, out result));
+        Assert.Equal(expected2, result);
+        Assert.True(s.ReadNonWhiteSpace(out resultSep));
+        Assert.Equal(",", resultSep);
+        Assert.True(s.SkipWhiteSpace());
+
+        Assert.True(s.ReadDecimal(Fluent.NumberOptions.AllowGroupSeparators, out result));
+        Assert.Equal(expected3, result);
+    }
+
 }
