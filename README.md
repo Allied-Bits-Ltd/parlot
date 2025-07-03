@@ -1,11 +1,9 @@
 # Parlot
 
-[![NuGet](https://img.shields.io/nuget/v/Parlot.svg)](https://nuget.org/packages/Parlot)
+[![NuGet](https://img.shields.io/nuget/v/Parlot.svg)](https://nuget.org/packages/AlliedBits.Parlot)
 [![BSD 3-Clause](https://img.shields.io/github/license/sebastienros/parlot)](https://github.com/sebastienros/parlot/blob/main/LICENSE) [![Join the chat at https://gitter.im/sebastienros/parlot](https://badges.gitter.im/sebastienros/parlot.svg)](https://gitter.im/sebastienros/parlot?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge)
 
-_This repository includes support for underscores in numbers 
-(until the pull request https://github.com/sebastienros/parlot/pull/221 is accepted 
-and the functionality migrates there)._
+_This version of Parlot includes optional support for underscores in numbers and for a secondary decimal separator in number parsers, which are not included in the official Parlot project and cannot be introduced by any non-intrusive means like subclassing. This version is and will be synchronized with the official Parlot project. The official Parlot project resides [here on github](https://github.com/sebastienros/parlot) and its packages are available [here in nuget](https://nuget.org/packages/Parlot)_
 
 Parlot is a __fast__, __lightweight__ and simple to use .NET parser combinator.
 
