@@ -28,6 +28,8 @@ public abstract class NumberLiteralBase<T> : Parser<T>, ICompilable, ISeekable
     private readonly bool _allowGroupSeparator;
     private readonly bool _allowExponent;
     private readonly bool _allowUnderscore;
+    private readonly bool _requireFractionalPartForDecimals;
+
     public bool CanSeek => true;
 
     public char[] ExpectedChars { get; set; } = [];
@@ -71,6 +73,7 @@ public abstract class NumberLiteralBase<T> : Parser<T>, ICompilable, ISeekable
         _allowGroupSeparator = (numberOptions & NumberOptions.AllowGroupSeparators) != 0;
         _allowExponent = (numberOptions & NumberOptions.AllowExponent) != 0;
         _allowUnderscore = (numberOptions & NumberOptions.AllowUnderscore) != 0;
+        _requireFractionalPartForDecimals = (numberOptions & NumberOptions.RequireFractionalPartForDecimals) != 0;
 
         var expectedChars = "0123456789";
 
@@ -105,7 +108,7 @@ public abstract class NumberLiteralBase<T> : Parser<T>, ICompilable, ISeekable
         var reset = context.Scanner.Cursor.Position;
         var start = reset.Offset;
 
-        if (context.Scanner.ReadDecimal(_allowLeadingSign, _allowDecimalSeparator, _allowGroupSeparator, _allowExponent, _allowUnderscore, out var number, _decimalSeparator, _groupSeparator, _secondDecimalSeparator))
+        if (context.Scanner.ReadDecimal(_allowLeadingSign, _allowDecimalSeparator, _allowGroupSeparator, _allowExponent, _allowUnderscore, _requireFractionalPartForDecimals, out var number, _decimalSeparator, _groupSeparator, _secondDecimalSeparator))
         {
             var end = context.Scanner.Cursor.Offset;
 
@@ -165,6 +168,7 @@ public abstract class NumberLiteralBase<T> : Parser<T>, ICompilable, ISeekable
                     Expression.Constant(_allowGroupSeparator),
                     Expression.Constant(_allowExponent),
                     Expression.Constant(_allowUnderscore),
+                    Expression.Constant(_requireFractionalPartForDecimals),
                     numberSpan, Expression.Constant(_decimalSeparator), Expression.Constant(_groupSeparator)),
                 Expression.Block(
                     Expression.Assign(end, context.Offset()),

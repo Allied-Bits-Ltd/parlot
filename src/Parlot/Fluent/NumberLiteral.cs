@@ -28,6 +28,7 @@ public sealed class NumberLiteral<T> : Parser<T>, ICompilable, ISeekable
     private readonly bool _allowGroupSeparator;
     private readonly bool _allowExponent;
     private readonly bool _allowUnderscore;
+    private readonly bool _requireFractionalPartForDecimals;
 
     public bool CanSeek { get; } = true;
 
@@ -68,6 +69,7 @@ public sealed class NumberLiteral<T> : Parser<T>, ICompilable, ISeekable
         _allowGroupSeparator = (numberOptions & NumberOptions.AllowGroupSeparators) != 0;
         _allowExponent = (numberOptions & NumberOptions.AllowExponent) != 0;
         _allowUnderscore = (numberOptions & NumberOptions.AllowUnderscore) != 0;
+        _requireFractionalPartForDecimals = (numberOptions & NumberOptions.RequireFractionalPartForDecimals) != 0;
 
         ExpectedChars = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9'];
 
@@ -166,6 +168,9 @@ public sealed class NumberLiteral<T> : Parser<T>, ICompilable, ISeekable
                     Expression.Constant(_allowExponent),
                     Expression.Constant(_allowUnderscore),
                     numberSpan, Expression.Constant(_decimalSeparator), Expression.Constant(_groupSeparator)),
+                    numberSpan,
+                    Expression.Constant(_decimalSeparator),
+                    Expression.Constant(_groupSeparator)),
                 Expression.Block(
                     Expression.Assign(end, context.Offset()),
                     Expression.Assign(result.Success,

@@ -129,7 +129,7 @@ public class Scanner
     public bool ReadDecimal() => ReadDecimal(out _);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public bool ReadDecimal(out ReadOnlySpan<char> number) => ReadDecimal(true, true, false, true, false, out number);
+    public bool ReadDecimal(out ReadOnlySpan<char> number) => ReadDecimal(true, true, false, true, false, false, out number);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool ReadDecimal(NumberOptions numberOptions, out ReadOnlySpan<char> number, char decimalSeparator = '.', char groupSeparator = ',', char secondDecimalSeparator = '\0')
@@ -140,13 +140,14 @@ public class Scanner
             (numberOptions & NumberOptions.AllowGroupSeparators) != 0,
             (numberOptions & NumberOptions.AllowExponent) != 0,
             (numberOptions & NumberOptions.AllowUnderscore) != 0,
+            (numberOptions & NumberOptions.RequireFractionalPartForDecimals) != 0,
             out number,
             decimalSeparator,
             groupSeparator,
             secondDecimalSeparator);
     }
 
-    public bool ReadDecimal(bool allowLeadingSign, bool allowDecimalSeparator, bool allowGroupSeparator, bool allowExponent, bool allowUnderscore, out ReadOnlySpan<char> number, char decimalSeparator = '.', char groupSeparator = ',', char secondDecimalSeparator = '\0' )
+    public bool ReadDecimal(bool allowLeadingSign, bool allowDecimalSeparator, bool allowGroupSeparator, bool allowExponent, bool allowUnderscore, bool requireFractionalPartForDecimals, out ReadOnlySpan<char> number, char decimalSeparator = '.', char groupSeparator = ',', char secondDecimalSeparator = '\0' )
     {
         // The buffer is read while the value is a valid decimal number. For instance `123,a` will return `123`.
 
@@ -207,15 +208,17 @@ public class Scanner
             if (!ReadInteger(out number, allowUnderscore))
             {
                 // A decimal separator must be followed by a number if there is no integral part, e.g. `[NaN].[NaN]`
-                if (numberIsEmpty)
+                if (numberIsEmpty )
                 {
                     Cursor.ResetPosition(beforeDecimalSeparator);
                     return false;
                 }
 
-                number = Cursor.Buffer.AsSpan(start.Offset, Cursor.Offset - start.Offset /*-1*/);
+                number = Cursor.Buffer.AsSpan(start.Offset, Cursor.Offset - start.Offset - (requireFractionalPartForDecimals ? 1 : 0));
                 if (allowUnderscore)
                     number = StripUnderscores(number);
+                if (requireFractionalPartForDecimals)
+                    Cursor.ResetPosition(beforeDecimalSeparator);
                 return true;
             }
         }
