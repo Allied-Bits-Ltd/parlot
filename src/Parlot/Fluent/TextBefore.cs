@@ -159,7 +159,7 @@ public sealed class TextBefore<T> : Parser<TextSpan>, ICompilable
         //  while (true)
         //  {
         //      var previous = context.Scanner.Cursor.Position;
-        //  
+        //
         //      if (context.Scanner.Cursor.Eof)
         //      {
         //          [if _failOnEof]
@@ -170,41 +170,41 @@ public sealed class TextBefore<T> : Parser<TextSpan>, ICompilable
         //          [else]
         //          {
         //              var length = previous - start;
-        //  
+        //
         //              [if !_canBeEmpty]
         //              if (length == 0)
         //              {
         //                  break;
         //              }
-        //  
+        //
         //              success = true;
         //              value = new TextSpan(context.Scanner.Buffer, start.Offset, length);
         //              break;
         //          }
         //      }
-        //  
+        //
         //      delimiter instructions
-        //  
+        //
         //      if (delimiter.success)
         //      {
         //          var length = previous - start;
-        //  
+        //
         //          [if !_consumeDelimiter]
         //          {
         //              context.Scanner.Cursor.ResetPosition(previous);
         //          }
-        //  
+        //
         //          [if !_canBeEmpty]
         //          if (length == 0)
         //          {
         //              break;
         //          }
-        //  
+        //
         //          success = true;
         //          value = new TextSpan(context.Scanner.Buffer, start.Offset, length);
         //          break;
         //      }
-        //  
+        //
         //      context.Scanner.Cursor.Advance();
         //  }
 
