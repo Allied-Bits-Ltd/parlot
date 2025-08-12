@@ -163,13 +163,18 @@ public abstract class NumberLiteralBase<T> : Parser<T>, ICompilable, ISeekable
 
         var block =
             Expression.IfThen(
-                context.ReadDecimal(Expression.Constant(_allowLeadingSign),
+                context.ReadDecimal(
+                    Expression.Constant(_allowLeadingSign),
                     Expression.Constant(_allowDecimalSeparator),
                     Expression.Constant(_allowGroupSeparator),
                     Expression.Constant(_allowExponent),
                     Expression.Constant(_allowUnderscore),
                     Expression.Constant(_requireFractionalPartForDecimals),
-                    numberSpan, Expression.Constant(_decimalSeparator), Expression.Constant(_groupSeparator)),
+                    numberSpan,
+                    Expression.Constant(_decimalSeparator),
+                    Expression.Constant(_groupSeparator),
+                    Expression.Constant(_secondDecimalSeparator)
+                    ),
                 Expression.Block(
                     Expression.Assign(end, context.Offset()),
                     Expression.Assign(result.Success,

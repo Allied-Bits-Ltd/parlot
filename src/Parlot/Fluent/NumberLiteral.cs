@@ -104,7 +104,7 @@ public sealed class NumberLiteral<T> : Parser<T>, ICompilable, ISeekable
         var reset = context.Scanner.Cursor.Position;
         var start = reset.Offset;
 
-        if (context.Scanner.ReadDecimal(_allowLeadingSign, _allowDecimalSeparator, _allowGroupSeparator, _allowExponent, _allowUnderscore, out var number, _decimalSeparator, _groupSeparator, _secondDecimalSeparator))
+        if (context.Scanner.ReadDecimal(_allowLeadingSign, _allowDecimalSeparator, _allowGroupSeparator, _allowExponent, _allowUnderscore, _requireFractionalPartForDecimals, out var number, _decimalSeparator, _groupSeparator, _secondDecimalSeparator))
         {
             var end = context.Scanner.Cursor.Offset;
 
@@ -167,10 +167,11 @@ public sealed class NumberLiteral<T> : Parser<T>, ICompilable, ISeekable
                     Expression.Constant(_allowGroupSeparator),
                     Expression.Constant(_allowExponent),
                     Expression.Constant(_allowUnderscore),
-                    numberSpan, Expression.Constant(_decimalSeparator), Expression.Constant(_groupSeparator)),
+                    Expression.Constant(_requireFractionalPartForDecimals),
                     numberSpan,
                     Expression.Constant(_decimalSeparator),
-                    Expression.Constant(_groupSeparator)),
+                    Expression.Constant(_groupSeparator),
+                    Expression.Constant(_secondDecimalSeparator)),
                 Expression.Block(
                     Expression.Assign(end, context.Offset()),
                     Expression.Assign(result.Success,
