@@ -170,7 +170,8 @@ public sealed class NumberLiteral<T> : Parser<T>, ICompilable, ISeekable
                     Expression.Constant(_requireFractionalPartForDecimals),
                     numberSpan,
                     Expression.Constant(_decimalSeparator),
-                    Expression.Constant(_groupSeparator)),
+                    Expression.Constant(_groupSeparator),
+                    Expression.Constant(_secondDecimalSeparator)),
                 Expression.Block(
                     Expression.Assign(end, context.Offset()),
                     Expression.Assign(result.Success,
