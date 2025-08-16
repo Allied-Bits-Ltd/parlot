@@ -25,8 +25,8 @@ public sealed class StringLiteral : Parser<TextSpan>, ICompilable, ISeekable
     static readonly char[] SingleOrDoubleQuotes = ['\'', '\"'];
 
     private readonly StringLiteralQuotes _quotes;
-
-    public StringLiteral(StringLiteralQuotes quotes)
+    private readonly bool _returnDecoded;
+    public StringLiteral(StringLiteralQuotes quotes, bool returnDecoded = true)
     {
         _quotes = quotes;
 
@@ -38,6 +38,8 @@ public sealed class StringLiteral : Parser<TextSpan>, ICompilable, ISeekable
             StringLiteralQuotes.SingleOrDouble => SingleOrDoubleQuotes,
             _ => throw new InvalidOperationException()
         };
+
+        _returnDecoded = returnDecoded;
 
         Name = "StringLiteral";
     }
@@ -83,8 +85,12 @@ public sealed class StringLiteral : Parser<TextSpan>, ICompilable, ISeekable
 
         if (success)
         {
-            // Remove quotes
-            var decoded = Character.DecodeString(new TextSpan(context.Scanner.Buffer, start + 1, end - start - 2));
+            TextSpan decoded;
+
+            if (_returnDecoded) // Remove quotes
+                decoded = Character.DecodeString(new TextSpan(context.Scanner.Buffer, start + 1, end - start - 2));
+            else
+                decoded = new TextSpan(context.Scanner.Buffer, start + 1, end - start - 2);
 
             result.Set(start, end, decoded);
 
