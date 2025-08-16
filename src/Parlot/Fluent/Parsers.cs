@@ -321,7 +321,7 @@ public class TermBuilder
     /// <summary>
     /// Builds a parser that matches an quoted string that can be escaped.
     /// </summary>
-    public Parser<TextSpan> String(StringLiteralQuotes quotes = StringLiteralQuotes.SingleOrDouble) => Parsers.SkipWhiteSpace(new StringLiteral(quotes));
+    public Parser<TextSpan> String(StringLiteralQuotes quotes = StringLiteralQuotes.SingleOrDouble, bool returnDecoded = true) => Parsers.SkipWhiteSpace(new StringLiteral(quotes, returnDecoded));
 
     /// <summary>
     /// Builds a parser that matches an identifier which can have a different starting value that the rest of its chars.
