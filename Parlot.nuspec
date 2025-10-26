@@ -2,7 +2,7 @@
 <package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd">
   <metadata>
     <id>AlliedBits.Parlot</id>
-    <version>1.4.3</version>
+    <version>1.5.0</version>
     <title>Parser combinator for .NET</title>
     <authors>Sebastien Ros</authors>
     <license type="expression">BSD-3-Clause</license>
@@ -11,7 +11,7 @@
     <description>Parlot is a fast, lightweight and simple to use .NET parser combinator.</description>
     <copyright>Sebastien Ros</copyright>
     <tags>parser interpreter</tags>
-    <repository type="git" url="https://github.com/Allied-Bits-Ltd/parlot" commit="13f189420e2cbec0f6d2ae03c22a67630d4d804f" />
+    <repository type="git" url="https://github.com/Allied-Bits-Ltd/parlot" commit="cd57a38548fff4c1d56d57393af608a583803fec" />
     <readme>README.md</readme>
     <dependencies>
       <group targetFramework=".NETFramework4.7.2">
