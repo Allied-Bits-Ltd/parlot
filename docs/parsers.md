@@ -1,5 +1,14 @@
 # List of parser combinators
 
+> **Important:** To use the parsers documented below, you must add the following import statements to your file:
+> ```c#
+> using Parlot.Fluent;
+> using static Parlot.Fluent.Parsers;
+> ```
+> The `using static` statement makes `Terms`, `Literals`, and other parser combinators (like `ZeroOrOne`, `Between`, `Deferred`, etc.) directly accessible.
+>
+> If your project has `ImplicitUsings` (Global Usings) enabled, the static import is included automatically.
+
 > Note: when samples use a local `input` variable representing the input text to parse, and a `parser` variable, the result is usually the outcome of calling `var result = parser.Parse(input)` or `var success = parser.TryParse(input, out var result)`.
 
 ## Terms and Literals
@@ -8,7 +17,7 @@ These are lowest level elements of a grammar, like a `'.'` (dot), predefined str
 In Parlot they usually are accessed from the `Literals` or `Terms` classes, with the difference that `Terms` will return a parser that
 accepts blank spaces before the element.
 
-Terms and Literals are accessed using the `Parsers.Terms` and `Parsers.Literals` static classes.
+Terms and Literals are accessed using the `Terms` and `Literals` properties from the `Parsers` static class (imported via `using static Parlot.Fluent.Parsers;`).
 
 ### WhiteSpace
 
@@ -34,6 +43,30 @@ Result:
 ### NonWhiteSpace
 
 Matches any non-blank spaces, optionally including new lines. Returns a `TextSpan` with the matched characters.  
+
+### Select
+
+Selects the parser to execute at runtime. Use it when the next parser depends on mutable state or a custom `ParseContext` implementation.
+
+```c#
+Parser<T> Select<T>(Func<ParseContext, Parser<T>> selector)
+Parser<T> Select<C, T>(Func<C, Parser<T>> selector) where C : ParseContext
+```
+
+Usage:
+
+```c#
+var parser = Select<CustomContext, string>(context =>
+{
+    return context.PreferYes ? Literals.Text("yes") : Literals.Text("no");
+});
+
+var result = parser.Parse(new CustomContext(new Scanner("yes")) { PreferYes = true });
+```
+`CustomContext` is an application-defined type that derives from `ParseContext` and exposes additional configuration.
+
+
+If the selector returns `null`, the `Select` parser fails without consuming any input. Capture additional state through closures or custom `ParseContext` properties when needed.
 
 ```c#
 Parser<TextSpan> NonWhiteSpace(bool includeNewLines = false)
@@ -857,7 +890,9 @@ Parser<T> When(Func<ParseContext, T, bool> predicate)
 
 To evaluate a condition before a parser is executed use the `If` parser instead.
 
-### If
+### If (Deprecated)
+
+NB: This parser can be rewritten using `Select` (and `Fail`) which is more flexible and simpler to understand.
 
 Executes a parser only if a condition is true.
 
@@ -869,8 +904,7 @@ To evaluate a condition before a parser is executed use the `If` parser instead.
 
 ### Switch
 
-Returns the next parser based on some custom logic that can't be defined statically. It is typically used in conjunction with a `ParseContext` instance
-which has custom options.
+Returns a parser using custom logic based on previous results.
 
 ```c#
 Parser<U> Switch<U>(Func<ParseContext, T, Parser<U>> action)
@@ -879,11 +913,15 @@ Parser<U> Switch<U>(Func<ParseContext, T, Parser<U>> action)
 Usage:
 
 ```c#
-var parser = Terms.Integer().And(Switch((context, x) =>
-{
-    var customContext = context as CustomParseContext;
-    return Literals.Char(customContext.IntegerSeparator);
-});
+var parser = Terms.Integer().Switch((context, i) =>
+        {
+            // Valid entries: "1 is odd", "2 is even"
+            // Invalid: "7 is even"
+
+            return i % 2 == 0
+            ? Terms.Text("is odd")
+            : Terms.Text("is even");
+        });
 ```
 
 For performance reasons it is recommended to return a singleton (or static) Parser instance. Otherwise each `Parse` execution will allocate a new Parser instance.
@@ -935,6 +973,15 @@ Always returns successfully, with an optional return type or value.
 Parser<T> Always<T>()
 Parser<object> Always()
 Parser<T> Always<T>(T value)
+```
+
+### Fail
+
+A parser that returns a failed attempt. Used when a Parser needs to be returned but one that should depict a failure.
+
+```c#
+Parser<T> Fail<T>()
+Parser<object> Fail()
 ```
 
 ### OneOf
