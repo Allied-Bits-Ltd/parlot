@@ -17,7 +17,7 @@ public enum StringLiteralQuotes
 
 public sealed class StringLiteral : Parser<TextSpan>, ICompilable, ISeekable
 {
-    private static readonly MethodInfo _decodeStringMethodInfo = typeof(Character).GetMethod("DecodeString", [typeof(TextSpan)])!;
+    private static readonly MethodInfo _decodeStringMethodInfo = typeof(Character).GetMethod("DecodeString", [typeof(string), typeof(int), typeof(int)])!;
 
     static readonly char[] SingleQuotes = ['\''];
     static readonly char[] DoubleQuotes = ['\"'];
@@ -88,7 +88,7 @@ public sealed class StringLiteral : Parser<TextSpan>, ICompilable, ISeekable
             TextSpan decoded;
 
             if (_returnDecoded) // Remove quotes
-                decoded = Character.DecodeString(new TextSpan(context.Scanner.Buffer, start + 1, end - start - 2));
+                decoded = Character.DecodeString(context.Scanner.Buffer, start + 1, end - start - 2);
             else
                 decoded = new TextSpan(context.Scanner.Buffer, start + 1, end - start - 2);
 
@@ -145,11 +145,10 @@ public sealed class StringLiteral : Parser<TextSpan>, ICompilable, ISeekable
                     ? Expression.Empty()
                     : Expression.Assign(result.Value,
                         Expression.Call(_decodeStringMethodInfo,
-                            context.NewTextSpan(
                                 context.Buffer(),
                                 Expression.Add(start, Expression.Constant(1)),
                                 Expression.Subtract(Expression.Subtract(end, start), Expression.Constant(2))
-                                )))
+                            ))
                 )
             ));
 
