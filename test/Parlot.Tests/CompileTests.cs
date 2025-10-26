@@ -81,6 +81,23 @@ public class CompileTests
         Assert.Equal("hello world", result);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void ShouldParseStringLiterals(bool compile)
+    {
+        var parser = Literals.String();
+
+        if (compile)
+        {
+            parser = parser.Compile();
+        }
+
+        var result = parser.Parse("\"ab\\nc\"");
+
+        Assert.Equal("ab\nc", result);
+    }
+
     [Fact]
     public void ShouldCompileCustomBacktickStringLiterals()
     {
@@ -347,6 +364,15 @@ public class CompileTests
         }
     }
 
+    private sealed class CustomCompileParseContext : ParseContext
+    {
+        public CustomCompileParseContext(Scanner scanner) : base(scanner)
+        {
+        }
+
+        public bool PreferYes { get; set; }
+    }
+
     [Fact]
     public void ShouldCompileNonCompilableCharLiterals()
     {
@@ -499,8 +525,10 @@ public class CompileTests
     {
         bool invoked = false;
 
+#pragma warning disable CS0618 // Type or member is obsolete
         var evenState = If(predicate: (context, x) => x % 2 == 0, state: 0, parser: Literals.Integer().Then(x => invoked = true)).Compile();
         var oddState = If(predicate: (context, x) => x % 2 == 0, state: 1, parser: Literals.Integer().Then(x => invoked = true)).Compile();
+#pragma warning restore CS0618 // Type or member is obsolete
 
         Assert.False(oddState.TryParse("1234", out var result1));
         Assert.False(invoked);
@@ -576,6 +604,45 @@ public class CompileTests
 
         Assert.True(parser.TryParse("s:'123'", out var resultS));
         Assert.Equal("123", ((TextSpan)resultS).ToString());
+    }
+
+    [Fact]
+    public void SelectShouldCompilePickParserUsingRuntimeLogic()
+    {
+        var allowWhiteSpace = true;
+        var parser = Select<long>(_ => allowWhiteSpace ? Terms.Integer() : Literals.Integer()).Compile();
+
+        Assert.True(parser.TryParse(" 42", out var result1));
+        Assert.Equal(42, result1);
+
+        allowWhiteSpace = false;
+
+        Assert.True(parser.TryParse("42", out var result2));
+        Assert.Equal(42, result2);
+
+        Assert.False(parser.TryParse(" 42", out _));
+    }
+
+    [Fact]
+    public void SelectShouldCompileFailWhenSelectorReturnsNull()
+    {
+        var parser = Select<long>(_ => null!).Compile();
+
+        Assert.False(parser.TryParse("123", out _));
+    }
+
+    [Fact]
+    public void SelectShouldCompileHonorConcreteParseContext()
+    {
+        var parser = Select<CustomCompileParseContext, string>(context => context.PreferYes ? Literals.Text("yes") : Literals.Text("no")).Compile();
+
+        var yesContext = new CustomCompileParseContext(new Scanner("yes")) { PreferYes = true };
+        Assert.True(parser.TryParse(yesContext, out var yes, out _));
+        Assert.Equal("yes", yes);
+
+        var noContext = new CustomCompileParseContext(new Scanner("no")) { PreferYes = false };
+        Assert.True(parser.TryParse(noContext, out var no, out _));
+        Assert.Equal("no", no);
     }
 
     [Fact]
@@ -852,7 +919,44 @@ public class CompileTests
     [Fact]
     public void ShouldReturnElse()
     {
-        var parser = Literals.Integer().Then<long?>(x => x).Else(null).Compile();
+        var parser = Literals.Integer().Then<long?>(x => x).Else((long?)null).Compile();
+
+        Assert.True(parser.TryParse("123", out var result1));
+        Assert.Equal(123, result1);
+
+        Assert.True(parser.TryParse(" 123", out var result2));
+        Assert.Null(result2);
+    }
+
+    [Fact]
+    public void ShouldReturnElseFromFunction()
+    {
+        var parser = Literals.Integer().Then<decimal>().Else(context => -1m).Compile();
+
+        Assert.True(parser.TryParse("123", out var result1));
+        Assert.Equal(123, result1);
+
+        Assert.True(parser.TryParse(" 123", out var result2));
+        Assert.Equal(-1m, result2);
+    }
+
+    [Fact]
+    public void ElseFunctionShouldReceiveContext()
+    {
+        var parser = Literals.Integer().Then<int>().Else(context => context.Scanner.Cursor.Position.Offset).Compile();
+
+        Assert.True(parser.TryParse("123", out var result1));
+        Assert.Equal(123, result1);
+
+        // When parser fails, it should return the current position (which is 0 before whitespace is skipped)
+        Assert.True(parser.TryParse(" 123", out var result2));
+        Assert.Equal(0, result2);
+    }
+
+    [Fact]
+    public void ElseFunctionWithNullableValue()
+    {
+        var parser = Literals.Integer().Then<long?>(x => x).Else(context => (long?)null).Compile();
 
         Assert.True(parser.TryParse("123", out var result1));
         Assert.Equal(123, result1);
