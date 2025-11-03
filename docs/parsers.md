@@ -21,7 +21,9 @@ Terms and Literals are accessed using the `Terms` and `Literals` properties from
 
 ### WhiteSpace
 
-Matches blank spaces, optionally including new lines. Returns a `TextSpan` with the matched spaces. This parser is not available in the `Terms` static class.
+#### Literals.WhiteSpace()
+
+Matches blank spaces, optionally including new lines. Returns a `TextSpan` with the matched spaces. 
 
 ```c#
 Parser<TextSpan> WhiteSpace(bool includeNewLines = false)
@@ -38,6 +40,26 @@ Result:
 
 ```
 "   \t"
+```
+
+#### Terms.WhiteSpace()
+
+Matches the `WhiteSpaceParser` configured in the current context.
+
+```c#
+Parser<TextSpan> WhiteSpace()
+```
+
+When used from `Terms` it parses whitespace (or comments) as defined in the `ParseContext` or from `WithWhiteSpaceParser(parser)`.
+
+When used from `Literals` it parses standard white spaces.
+
+Usage:
+
+```c#
+var parser = Literals.Text("hello").And(Terms.WhiteSpace()).And(Literals.Text("world"));
+parser.Parse("hello   world"); // success
+parser.Parse("helloworld"); // failure
 ```
 
 ### NonWhiteSpace
@@ -126,6 +148,40 @@ Result:
 ```
 'h'
 ```
+
+### Keyword
+
+Matches a keyword string, ensuring the following character is not a letter. This prevents partial matches of identifiers that start with the keyword text.
+
+```c#
+Parser<string> Keyword(string text, bool caseInsensitive = false)
+```
+
+This is useful when parsing programming language constructs like `if`, `while`, `return`, etc., where you want to match the exact keyword but not as part of a longer identifier.
+
+Usage:
+
+```c#
+var input = "if(x > 5)";
+var parser = Terms.Keyword("if");
+var result = parser.Parse(input);
+```
+
+Result:
+
+```
+"if"
+```
+
+However, parsing `"ifoo"` would fail:
+
+```c#
+var input = "ifoo";
+var parser = Terms.Keyword("if");
+var result = parser.Parse(input); // Returns null - failure
+```
+
+Any non-letter is considered valid after a keyword (non-letters): `(`, `)`, `;`, `,`, whitespace, digits, `_`, `$`, etc.
 
 ### Integer
 
@@ -480,32 +536,21 @@ null
 
 ### Optional
 
-Makes an existing parser optional. Contrary to `ZeroOrOne` the result is always a list, with
-either zero or one element. It is then easy to know if the parser was successful or not by 
-using the Linq operators `Any()` and `FirstOrDefault()`.
+Makes an existing parser optional by always returning an `Option<T>` result. It is then easy to know if the parser was successful or not by using the `HasValue` property.
 
 ```c#
-static Parser<IReadOnlyList<T>> Optional<T>(this Parser<T> parser)
+static Parser<Option<T>> Optional<T>(this Parser<T> parser)
 ```
 
 Usage:
 
 ```c#
 var parser = Terms.Text("hello").Optional();
-parser.Parse("hello");
-parser.Parse(""); // returns an empty list
-parser.Parse("hello").FirstOrDefault();
-parser.Parse("").FirstOrDefault(); // returns null
+parser.Parse("hello"); // HasValue -> true
+parser.Parse(""); // HasValue -> false
 ```
 
-Result:
-
-```
-["hello"]
-[]
-"hello"
-null
-```
+Use the `OrSome<T>()` method to provide a default value if the `Option<T>` instance has no value.
 
 ### ZeroOrMany
 
@@ -628,7 +673,7 @@ Result:
 
 ### SkipWhiteSpace
 
-Matches a parser after any blank spaces. This parser respects the `Scanner` options related to multi-line grammars.
+Matches a parser after any blank spaces. This parser respects the `Scanner.WhiteSpaceParser` option.
 
 
 ```c#
@@ -651,6 +696,72 @@ Result:
 ```
 
 > Note: This parser is used by all Terms (e.g., Terms.Text) to skip blank spaces before a Literal.
+
+### WithWhiteSpaceParser
+
+Temporarily sets a custom whitespace parser for the inner parser. The custom whitespace parser is used to skip whitespace within the scope of the wrapped parser, then the previous whitespace parser is restored.
+
+This allows grammars to define custom whitespace handling for specific parts of the grammar.
+
+```c#
+Parser<T> WithWhiteSpaceParser<T>(this Parser<T> parser, Parser<TextSpan> whiteSpaceParser)
+```
+
+Usage:
+
+```c#
+var hello = Terms.Text("hello");
+var world = Terms.Text("world");
+var parser = hello.And(world).WithWhiteSpaceParser(Capture(ZeroOrMany(Literals.Char('.'))));
+
+parser.Parse("..hello.world");  // Succeeds - dots are treated as whitespace
+parser.Parse("hello world");     // Fails - regular spaces are not whitespace
+```
+
+Result:
+
+```
+("hello", "world")
+null
+```
+
+This parser can be nested, with each level managing its own whitespace context:
+
+```c#
+var a = Terms.Text("a");
+var b = Terms.Text("b");
+var c = Terms.Text("c");
+
+var inner = a.And(b).WithWhiteSpaceParser(Capture(ZeroOrMany(Literals.Char('.'))));
+var outer = inner.And(c).WithWhiteSpaceParser(Capture(ZeroOrMany(Literals.Char('-'))));
+
+outer.Parse("a.b-c");  // Inner uses '.', outer uses '-' as whitespace
+```
+
+> Note: The custom whitespace parser must return a `TextSpan`. Use `Capture()` to wrap parsers that don't return `TextSpan`.
+
+### WithComments
+
+Based on `WithWhiteSpaceParser`, this helper makes it easier to define custom comments syntax.
+
+Usage:
+
+```c#
+var hello = Terms.Text("hello");
+var world = Terms.Text("world");
+var parser = hello.And(world)
+    .WithComments(builder =>
+    {
+        builder.WithSingleLine("--");
+        builder.WithSingleLine("#");
+        builder.WithMultiLine("/*", "*/");
+    });
+
+parser.Parse("hello -- comment\n world");
+parser.Parse("hello -- comment\r\n world");
+parser.Parse("hello # comment\n world");
+parser.Parse("hello /* multiline\n comment\n */ world");
+```
 
 ### Deferred
 
@@ -741,6 +852,7 @@ Convert the result of a parser. This is usually used to create custom data struc
 ```c#
 Parser<U> Then<U>(Func<T, U> conversion)
 Parser<U> Then<U>(Func<ParseContext, T, U> conversion)
+Parser<U> Then<U>(Func<ParseContext, int, int, T, U> conversion)
 Parser<U> Then<U>(U value)
 Parser<U?> Then<U>() // Converts the result to `U`
 ```
@@ -772,6 +884,28 @@ var parser = OneOf(
 );
 ```
 
+#### Accessing Start and End Positions
+
+The `Func<ParseContext, int, int, T, U>` overload provides access to the start and end offsets of the parsed result:
+
+```c#
+var parser = Literals.Identifier().Then((context, start, end, value) =>
+{
+    var length = end - start;
+    return $"Parsed '{value}' at offset {start}, length {length}";
+});
+
+parser.Parse("hello");
+```
+
+Result:
+
+```
+"Parsed 'hello' at offset 0, length 5"
+```
+
+> **Note:** The start and end parameters are integer offsets (positions in the input buffer), not `TextPosition` objects. For `Literals` parsers, these offsets correspond exactly to where the parser matched. For `Terms` parsers (which skip whitespace), the behavior differs slightly between compiled and non-compiled modes due to how whitespace skipping is handled in the compilation process.
+
 ### Else
 
 Returns a value if the previous parser failed.
@@ -791,6 +925,8 @@ Result:
 (0, "years")
 (123, "years")
 ```
+
+NB: This is similar to using `Optional()` since the result is always successful, but `Else()` returns a value. Use `Optional()` if you need to know if the parser was successful or not, and `Else()` if you only care about having a value as a result.
 
 ### ThenElse
 
@@ -890,6 +1026,44 @@ Parser<T> When(Func<ParseContext, T, bool> predicate)
 
 To evaluate a condition before a parser is executed use the `If` parser instead.
 
+### WhenFollowedBy
+
+Ensures that the result of the current parser is followed by another parser without consuming its input. This implements positive lookahead.
+
+```c#
+Parser<T> WhenFollowedBy<U>(Parser<U> lookahead)
+```
+
+Usage:
+
+```c#
+// Parse a number only if it's followed by a colon
+var parser = Literals.Integer().WhenFollowedBy(Literals.Char(':'));
+parser.Parse("42:"); // success, returns 42
+parser.Parse("42");  // failure, lookahead doesn't match
+```
+
+The lookahead parser is checked at the current position but doesn't consume input. If the lookahead fails, the entire parser fails and the cursor is reset to the beginning.
+
+### WhenNotFollowedBy
+
+Ensures that the result of the current parser is NOT followed by another parser without consuming its input. This implements negative lookahead.
+
+```c#
+Parser<T> WhenNotFollowedBy<U>(Parser<U> lookahead)
+```
+
+Usage:
+
+```c#
+// Parse a number only if it's NOT followed by a colon
+var parser = Literals.Integer().WhenNotFollowedBy(Literals.Char(':'));
+parser.Parse("42");  // success, returns 42
+parser.Parse("42:"); // failure, lookahead matches
+```
+
+The lookahead parser is checked at the current position but doesn't consume input. If the lookahead succeeds, the entire parser fails and the cursor is reset to the beginning.
+
 ### If (Deprecated)
 
 NB: This parser can be rewritten using `Select` (and `Fail`) which is more flexible and simpler to understand.
@@ -965,6 +1139,8 @@ Returns any characters until the specified parser is matched.
 Parser<TextSpan> AnyCharBefore<T>(Parser<T> parser, bool canBeEmpty = false, bool failOnEof = false, bool consumeDelimiter = false)
 ```
 
+It is important to use `AnyCharBefore(a.Or(b))` instead of `AnyCharBefore(a).Or(AnyCharBefore(b))` for performance reasons. Otherwise the first parser will have to look ahead for the whole source if only the second parser can be matched. By using a single `AnyCharBefore`, it will check whatever is first in the source, and then jump to the next option.
+
 ### Always
 
 Always returns successfully, with an optional return type or value.
@@ -991,3 +1167,7 @@ Like [Or](#Or), with an unlimited list of parsers.
 ```c#
 Parser<T> OneOf<T>(params Parser<T>[] parsers)
 ```
+
+## Comments
+
+Whitespaces are parsed automatically when using `Terms` helper methods. To use custom comments 

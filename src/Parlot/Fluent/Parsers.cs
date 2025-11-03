@@ -92,7 +92,7 @@ public static partial class Parsers
     public static Parser<T> Select<T>(Func<ParseContext, Parser<T>> selector) => new Select<ParseContext, T>(selector);
 
     /// <summary>
-    /// Builds a parser that can be defined later one. Use it when a parser need to be declared before its rule can be set.
+    /// Builds a parser that can be defined later on. Use it when a parser need to be declared before its rule can be set.
     /// </summary>
     public static Deferred<T> Deferred<T>() => new();
 
@@ -146,12 +146,12 @@ public static partial class Parsers
 public class LiteralBuilder
 {
     /// <summary>
-    /// Builds a parser that matches whitespaces.
+    /// Builds a parser that matches whitespaces. This doesn't use the <see cref="ParseContext.WhiteSpaceParser"/>.
     /// </summary>
     public Parser<TextSpan> WhiteSpace(bool includeNewLines = false) => new WhiteSpaceLiteral(includeNewLines);
 
     /// <summary>
-    /// Builds a parser that matches anything until whitespaces.
+    /// Builds a parser that matches anything until whitespaces. This doesn't use the <see cref="ParseContext.WhiteSpaceParser"/>.
     /// </summary>
     public Parser<TextSpan> NonWhiteSpace(bool includeNewLines = true) => new NonWhiteSpaceLiteral(includeNewLines: includeNewLines);
 
@@ -159,6 +159,11 @@ public class LiteralBuilder
     /// Builds a parser that matches the specified text.
     /// </summary>
     public Parser<string> Text(string text, bool caseInsensitive = false) => new TextLiteral(text, caseInsensitive ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+
+    /// <summary>
+    /// Builds a parser that matches a keyword by ensuring the following character is not a letter.
+    /// </summary>
+    public Parser<string> Keyword(string text, bool caseInsensitive = false) => Text(text, caseInsensitive).When((context, value) => context.Scanner.Cursor.Eof || !Character.IsInRange(context.Scanner.Cursor.Current, 'a', 'z') && !Character.IsInRange(context.Scanner.Cursor.Current, 'A', 'Z'));
 
     /// <summary>
     /// Builds a parser that matches the specified char.
@@ -281,7 +286,7 @@ public class LiteralBuilder
     /// <param name="values">The set of chars to match.</param>
     /// <param name="minSize">The minimum number of matches required. Defaults to 1.</param>
     /// <param name="maxSize">When the parser reaches the maximum number of matches it returns <see langword="True"/>. Defaults to 0, i.e. no maximum size.</param>
-    public Parser<TextSpan> AnyOf(string values, int minSize = 1, int maxSize = 0) => new ListOfChars(values, minSize, maxSize);
+    public Parser<TextSpan> AnyOf(ReadOnlySpan<char> values, int minSize = 1, int maxSize = 0) => new ListOfChars(values, minSize, maxSize);
 
     /// <summary>
     /// Builds a parser that matches anything but a list of chars.
@@ -289,14 +294,34 @@ public class LiteralBuilder
     /// <param name="values">The set of chars not to match.</param>
     /// <param name="minSize">The minimum number of required chars. Defaults to 1.</param>
     /// <param name="maxSize">When the parser reaches the maximum number of chars it returns <see langword="True"/>. Defaults to 0, i.e. no maximum size.</param>
-    public Parser<TextSpan> NoneOf(string values, int minSize = 1, int maxSize = 0) => new ListOfChars(values, minSize, maxSize, negate: true);
+    public Parser<TextSpan> NoneOf(ReadOnlySpan<char> values, int minSize = 1, int maxSize = 0) => new ListOfChars(values, minSize, maxSize, negate: true);
 #endif
+
+    /// <summary>
+    /// Builds a parser that matches single line comments.
+    /// </summary>
+    /// <param name="singleLineStart">The text that starts the single line comment, e.g., <code>"//"</code>, <code>"--"</code>, <code>"#"</code></param>
+    /// <returns></returns>
+    public Parser<TextSpan> Comments(string singleLineStart) => Capture(Text(singleLineStart).And(AnyCharBefore(Text("\r\n").Or(Text("\n")), canBeEmpty: true, failOnEof: false, consumeDelimiter: false)));
+
+    /// <summary>
+    /// Builds a parser that matches multi line comments.
+    /// </summary>
+    /// <param name="multiLineStart">The text that starts the multi line comment, e.g., <code>"/*"</code></param>
+    /// <param name="multiLineEnd">The text that ends the multi line comment, e.g., <code>"*/"</code></param>
+    /// <returns></returns>
+    public Parser<TextSpan> Comments(string multiLineStart, string multiLineEnd) => Capture(Text(multiLineStart).And(AnyCharBefore(Text(multiLineEnd), canBeEmpty: true, failOnEof: true, consumeDelimiter: true).ElseError($"End-of-file found, '{multiLineEnd}' expected")));
 }
 
 public class TermBuilder
 {
     /// <summary>
-    /// Builds a parser that matches anything until whitespaces.
+    /// Builds a parser that matches whitespaces as defined in <see cref="ParseContext.WhiteSpaceParser"/>.
+    /// </summary>
+    public Parser<TextSpan> WhiteSpace() => new WhiteSpaceParser();
+
+    /// <summary>
+    /// Builds a parser that matches anything until whitespaces. This doesn't use the <see cref="ParseContext.WhiteSpaceParser"/>.
     /// </summary>
     public Parser<TextSpan> NonWhiteSpace(bool includeNewLines = true) => Parsers.SkipWhiteSpace(new NonWhiteSpaceLiteral(includeNewLines: includeNewLines));
 
@@ -304,6 +329,11 @@ public class TermBuilder
     /// Builds a parser that matches the specified text.
     /// </summary>
     public Parser<string> Text(string text, bool caseInsensitive = false) => Parsers.SkipWhiteSpace(new TextLiteral(text, caseInsensitive ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal));
+
+    /// <summary>
+    /// Builds a parser that matches a keyword by ensuring the following character is not a letter.
+    /// </summary>
+    public Parser<string> Keyword(string text, bool caseInsensitive = false) => Text(text, caseInsensitive).When((context, value) => context.Scanner.Cursor.Eof || !Character.IsInRange(context.Scanner.Cursor.Current, 'a', 'z') && !Character.IsInRange(context.Scanner.Cursor.Current, 'A', 'Z'));
 
     /// <summary>
     /// Builds a parser that matches the specified char.
@@ -402,7 +432,23 @@ public class TermBuilder
     /// <param name="values">The set of char to match.</param>
     /// <param name="minSize">The minimum number of matches required. Defaults to 1.</param>
     /// <param name="maxSize">When the parser reaches the maximum number of matches it returns <see langword="True"/>. Defaults to 0, i.e. no maximum size.</param>
-    public Parser<TextSpan> AnyOf(ReadOnlySpan<char> values, int minSize = 1, int maxSize = 0) => AnyOf(SearchValues.Create(values), minSize, maxSize);
+    public Parser<TextSpan> AnyOf(ReadOnlySpan<char> values, int minSize = 1, int maxSize = 0) => Parsers.SkipWhiteSpace(AnyOf(SearchValues.Create(values), minSize, maxSize));
+
+    /// <summary>
+    /// Builds a parser that matches anything but a list of chars.
+    /// </summary>
+    /// <param name="searchValues">The <see cref="SearchValues{T}"/> instance to ignore against each char.</param>
+    /// <param name="minSize">The minimum number of chars required. Defaults to 1.</param>
+    /// <param name="maxSize">When the parser reaches the maximum number of chars it returns <see langword="True"/>. Defaults to 0, i.e. no maximum size.</param>
+    public Parser<TextSpan> NoneOf(SearchValues<char> searchValues, int minSize = 1, int maxSize = 0) => Parsers.SkipWhiteSpace(new SearchValuesCharLiteral(searchValues, minSize, maxSize, negate: true));
+
+    /// <summary>
+    /// Builds a parser that matches anything but a list of chars.
+    /// </summary>
+    /// <param name="values">The set of chars not to match.</param>
+    /// <param name="minSize">The minimum number of chars required. Defaults to 1.</param>
+    /// <param name="maxSize">When the parser reaches the maximum number of chars it returns <see langword="True"/>. Defaults to 0, i.e. no maximum size.</param>
+    public Parser<TextSpan> NoneOf(ReadOnlySpan<char> values, int minSize = 1, int maxSize = 0) => Parsers.SkipWhiteSpace(new SearchValuesCharLiteral(values, minSize, maxSize, negate: true));
 #else
     /// <summary>
     /// Builds a parser that matches a list of chars.
@@ -410,6 +456,29 @@ public class TermBuilder
     /// <param name="values">The set of char to match.</param>
     /// <param name="minSize">The minimum number of matches required. Defaults to 1.</param>
     /// <param name="maxSize">When the parser reaches the maximum number of matches it returns <see langword="True"/>. Defaults to 0, i.e. no maximum size.</param>
-    public Parser<TextSpan> AnyOf(string values, int minSize = 1, int maxSize = 0) => Parsers.SkipWhiteSpace(new ListOfChars(values, minSize, maxSize));
+    public Parser<TextSpan> AnyOf(ReadOnlySpan<char> values, int minSize = 1, int maxSize = 0) => Parsers.SkipWhiteSpace(new ListOfChars(values, minSize, maxSize));
+
+    /// <summary>
+    /// Builds a parser that matches anything but a list of chars.
+    /// </summary>
+    /// <param name="values">The set of chars not to match.</param>
+    /// <param name="minSize">The minimum number of required chars. Defaults to 1.</param>
+    /// <param name="maxSize">When the parser reaches the maximum number of chars it returns <see langword="True"/>. Defaults to 0, i.e. no maximum size.</param>
+    public Parser<TextSpan> NoneOf(ReadOnlySpan<char> values, int minSize = 1, int maxSize = 0) => Parsers.SkipWhiteSpace(new ListOfChars(values, minSize, maxSize, negate: true));
 #endif
+
+    /// <summary>
+    /// Builds a parser that matches single line comments.
+    /// </summary>
+    /// <param name="singleLineStart">The text that starts the single line comment, e.g., <code>"//"</code>, <code>"--"</code>, <code>"#"</code></param>
+    /// <returns></returns>
+    public Parser<TextSpan> Comments(string singleLineStart) => Literals.WhiteSpace(includeNewLines: true).Optional().SkipAnd(Literals.Comments(singleLineStart));
+
+    /// <summary>
+    /// Builds a parser that matches multi line comments.
+    /// </summary>
+    /// <param name="multiLineStart">The text that starts the multi line comment, e.g., <code>"/*"</code></param>
+    /// <param name="multiLineEnd">The text that ends the multi line comment, e.g., <code>"*/"</code></param>
+    /// <returns></returns>
+    public Parser<TextSpan> Comments(string multiLineStart, string multiLineEnd) => Literals.WhiteSpace(includeNewLines: true).Optional().SkipAnd(Literals.Comments(multiLineStart, multiLineEnd));
 }

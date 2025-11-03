@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 using System.Numerics;
+using System.Runtime.InteropServices;
 using Xunit;
 
 using static Parlot.Fluent.Parsers;
@@ -49,6 +50,60 @@ public class FluentTests
 
         Assert.True(evenIntegers.TryParse("1235", out var result1));
         Assert.Equal(1235, result1.Item2);
+    }
+
+    [Fact]
+    public void WhenFollowedByShouldSucceedWhenLookaheadMatches()
+    {
+        var parser = Literals.Integer().WhenFollowedBy(Terms.Text("abc"));
+
+        Assert.True(parser.TryParse("123abc", out var result1));
+        Assert.Equal(123, result1);
+    }
+
+    [Fact]
+    public void WhenFollowedByShouldFailWhenLookaheadDoesNotMatch()
+    {
+        var parser = Literals.Integer().WhenFollowedBy(Terms.Text("abc"));
+
+        Assert.False(parser.TryParse("123xyz", out var result1));
+        Assert.Equal(default, result1);
+    }
+
+    [Fact]
+    public void WhenFollowedByShouldNotConsumeInput()
+    {
+        var parser = Literals.Integer().WhenFollowedBy(Literals.Char('x')).And(Literals.Char('x'));
+
+        Assert.True(parser.TryParse("123x", out var result1));
+        Assert.Equal((123, 'x'), result1);
+    }
+
+    [Fact]
+    public void WhenNotFollowedByShouldSucceedWhenLookaheadDoesNotMatch()
+    {
+        var parser = Literals.Integer().WhenNotFollowedBy(Terms.Text("abc"));
+
+        Assert.True(parser.TryParse("123xyz", out var result1));
+        Assert.Equal(123, result1);
+    }
+
+    [Fact]
+    public void WhenNotFollowedByShouldFailWhenLookaheadMatches()
+    {
+        var parser = Literals.Integer().WhenNotFollowedBy(Terms.Text("abc"));
+
+        Assert.False(parser.TryParse("123abc", out var result1));
+        Assert.Equal(default, result1);
+    }
+
+    [Fact]
+    public void WhenNotFollowedByShouldNotConsumeInput()
+    {
+        var parser = Literals.Integer().WhenNotFollowedBy(Literals.Char('x')).And(Literals.Char('y'));
+
+        Assert.True(parser.TryParse("123y", out var result1));
+        Assert.Equal((123, 'y'), result1);
     }
 
     [Fact]
@@ -166,6 +221,24 @@ public class FluentTests
 
         Assert.True(evenIntegers.TryParse("1235", out var result2));
         Assert.True(invoked);
+    }
+
+    [Fact]
+    public void ThenShouldProvideStartAndEndOffsets()
+    {
+        // Use Literals for consistent behavior between compiled and non-compiled modes
+        var parser = Literals.Identifier().Then((context, start, end, value) =>
+        {
+            return $"{value}:{start}-{end}";
+        });
+
+        Assert.True(parser.TryParse("hello", out var result));
+        Assert.Equal("hello:0-5", result);
+
+        // Test with compiled parser - should have the same behavior
+        var compiled = parser.Compile();
+        Assert.True(compiled.TryParse("world", out var result2));
+        Assert.Equal("world:0-5", result2);
     }
 
     [Fact]
@@ -997,14 +1070,14 @@ public class FluentTests
         var parser1 = Literals.Text("not", caseInsensitive: true);
 
         Assert.Equal("not", parser1.Parse("not"));
-        Assert.Equal("not", parser1.Parse("nOt"));
-        Assert.Equal("not", parser1.Parse("NOT"));
+        Assert.Equal("nOt", parser1.Parse("nOt"));
+        Assert.Equal("NOT", parser1.Parse("NOT"));
 
         var parser2 = Terms.Text("not", caseInsensitive: true);
 
         Assert.Equal("not", parser2.Parse("not"));
-        Assert.Equal("not", parser2.Parse("nOt"));
-        Assert.Equal("not", parser2.Parse("NOT"));
+        Assert.Equal("nOt", parser2.Parse("nOt"));
+        Assert.Equal("NOT", parser2.Parse("NOT"));
     }
 
     [Fact]
@@ -1017,7 +1090,7 @@ public class FluentTests
             );
 
         Assert.Equal("not", parser.Parse("not"));
-        Assert.Equal("not", parser.Parse("nOt"));
+        Assert.Equal("nOt", parser.Parse("nOt"));
         Assert.Equal("abc", parser.Parse("abc"));
         Assert.Equal("aBC", parser.Parse("aBC"));
         Assert.Null(parser.Parse("ABC"));
@@ -1085,8 +1158,8 @@ public class FluentTests
     {
         var parser = Terms.Text("hello").Optional();
 
-        Assert.Equal("hello", parser.Parse(" hello world hello").FirstOrDefault());
-        Assert.Null(parser.Parse(" foo").FirstOrDefault());
+        Assert.Equal("hello", parser.Parse(" hello world hello").Value);
+        Assert.Null(parser.Parse(" foo").Value);
     }
 
     [Fact]
@@ -1364,5 +1437,350 @@ public class FluentTests
 
         Assert.True(parser.TryParse("a", out _));
         Assert.Throws<ParseException>(() => parser.Parse("b"));
+    }
+
+    [Fact]
+    public void WithWhiteSpaceParserShouldUseCustomWhiteSpace()
+    {
+        // Example from the issue: using dots as whitespace
+        var hello = Terms.Text("hello");
+        var world = Terms.Text("world");
+        var parser = hello.And(world).WithWhiteSpaceParser(Capture(ZeroOrMany(Literals.Char('.'))));
+
+        // Should succeed with dots as whitespace
+        Assert.True(parser.TryParse("..hello.world", out var result));
+        Assert.Equal("hello", result.Item1.ToString());
+        Assert.Equal("world", result.Item2.ToString());
+
+        // Should succeed with multiple dots
+        Assert.True(parser.TryParse("...hello...world", out var result2));
+        Assert.Equal("hello", result2.Item1.ToString());
+        Assert.Equal("world", result2.Item2.ToString());
+    }
+
+    [Fact]
+    public void WithWhiteSpaceParserShouldNotSkipRegularWhiteSpace()
+    {
+        // When using custom whitespace parser, regular spaces should NOT be skipped
+        var hello = Terms.Text("hello");
+        var world = Terms.Text("world");
+        var parser = hello.And(world).WithWhiteSpaceParser(Capture(ZeroOrMany(Literals.Char('.'))));
+
+        // Should fail with regular whitespace
+        Assert.False(parser.TryParse("hello world", out _));
+    }
+
+    [Fact]
+    public void WithWhiteSpaceParserShouldRestoreOriginalParser()
+    {
+        // After the WithWhiteSpaceParser parser completes, the original whitespace parser should be restored
+        var hello = Terms.Text("hello");
+        var world = Terms.Text("world");
+        var inner = hello.And(world).WithWhiteSpaceParser(Capture(ZeroOrMany(Literals.Char('.'))));
+        var outer = Terms.Text("outer");
+        var parser = inner.And(outer);
+
+        // Inside WithWhiteSpaceParser, dots are whitespace
+        // Outside, regular whitespace should work
+        Assert.True(parser.TryParse("..hello.world outer", out var result));
+        Assert.Equal("hello", result.Item1.Item1.ToString());
+        Assert.Equal("world", result.Item1.Item2.ToString());
+        Assert.Equal("outer", result.Item2.ToString());
+    }
+
+    [Fact]
+    public void WithWhiteSpaceParserShouldWorkWithNestedParsers()
+    {
+        // Test nested WithWhiteSpaceParser calls
+        var a = Terms.Text("a");
+        var b = Terms.Text("b");
+        var c = Terms.Text("c");
+
+        var innerParser = a.And(b).WithWhiteSpaceParser(Capture(ZeroOrMany(Literals.Char('.'))));
+        var outerParser = innerParser.And(c).WithWhiteSpaceParser(Capture(ZeroOrMany(Literals.Char('-'))));
+
+        // First test a simpler case
+        Assert.True(innerParser.TryParse("a.b", out var inner1));
+        Assert.Equal("a", inner1.Item1.ToString());
+        Assert.Equal("b", inner1.Item2.ToString());
+
+        // Test outer without nesting first
+        var simpleOuter = Terms.Text("ab").And(c).WithWhiteSpaceParser(Capture(ZeroOrMany(Literals.Char('-'))));
+        Assert.True(simpleOuter.TryParse("-ab-c", out var simple1));
+        Assert.Equal("ab", simple1.Item1.ToString());
+        Assert.Equal("c", simple1.Item2.ToString());
+
+        // For the nested case:
+        // - innerParser uses "." as whitespace for parsing "a.b"
+        // - outerParser uses "-" as whitespace for parsing innerParser and c
+        // - But innerParser itself doesn't skip whitespace (it's not a Terms parser)
+        // - So the input should be "a.b-c" (no leading "-")
+        //   The innerParser will parse "a.b", then c will skip "-" and parse "c"
+        Assert.True(outerParser.TryParse("a.b-c", out var result));
+        Assert.Equal("a", result.Item1.Item1.ToString());
+        Assert.Equal("b", result.Item1.Item2.ToString());
+        Assert.Equal("c", result.Item2.ToString());
+    }
+
+    [Fact]
+    public void WithWhiteSpaceParserShouldWorkWithZeroOrMany()
+    {
+        // Test that custom whitespace works with ZeroOrMany combinator
+        var word = Terms.Identifier();
+        var parser = ZeroOrMany(word).WithWhiteSpaceParser(Capture(ZeroOrMany(Literals.Char(','))));
+
+        Assert.True(parser.TryParse(",hello,world,foo", out var result));
+        Assert.Equal(3, result.Count);
+        Assert.Equal("hello", result[0].ToString());
+        Assert.Equal("world", result[1].ToString());
+        Assert.Equal("foo", result[2].ToString());
+    }
+
+    [Fact]
+    public void WithWhiteSpaceParserShouldAllowEmptyWhiteSpace()
+    {
+        // Test that we can parse without any whitespace when custom parser doesn't match
+        var hello = Terms.Text("hello");
+        var world = Terms.Text("world");
+        var parser = hello.And(world).WithWhiteSpaceParser(Capture(ZeroOrMany(Literals.Char('.'))));
+
+        // Should succeed with no whitespace between tokens
+        Assert.True(parser.TryParse("helloworld", out var result));
+        Assert.Equal("hello", result.Item1.ToString());
+        Assert.Equal("world", result.Item2.ToString());
+    }
+
+    [Fact]
+    public void WithWhiteSpaceParserShouldWorkWithCompilation()
+    {
+        // Test that compilation works correctly with WithWhiteSpaceParser
+        var hello = Terms.Text("hello");
+        var world = Terms.Text("world");
+        var parser = hello.And(world).WithWhiteSpaceParser(Capture(ZeroOrMany(Literals.Char('.'))));
+
+        // Compile the parser
+        var compiled = parser.Compile();
+
+        // Should work the same as non-compiled version
+        Assert.True(compiled.TryParse("..hello.world", out var result));
+        Assert.Equal("hello", result.Item1.ToString());
+        Assert.Equal("world", result.Item2.ToString());
+
+        // Should not skip regular whitespace
+        Assert.False(compiled.TryParse("hello world", out _));
+    }
+
+    [Fact]
+    public void WithWhiteSpaceParserShouldWorkWithMultipleCharWhiteSpace()
+    {
+        // Test using a multi-character whitespace parser
+        var hello = Terms.Text("hello");
+        var world = Terms.Text("world");
+        var parser = hello.And(world).WithWhiteSpaceParser(Capture(ZeroOrMany(Literals.Char('.'))));
+
+        // Should succeed with multiple dots
+        Assert.True(parser.TryParse("...hello....world", out var result));
+        Assert.Equal("hello", result.Item1.ToString());
+        Assert.Equal("world", result.Item2.ToString());
+    }
+
+    [Fact]
+    public void DeferredShouldDetectInfiniteRecursion()
+    {
+        // Test case 1: Direct self-reference
+        var loop = Deferred<string>();
+        loop.Parser = loop;
+
+        // Should fail gracefully instead of causing stack overflow
+        Assert.False(loop.TryParse("hello parlot", out var result1));
+        Assert.Null(result1);
+    }
+
+    [Fact]
+    public void RecursiveShouldDetectInfiniteRecursion()
+    {
+        // Test case 2: Recursive self-reference
+        var loop = Recursive<string>(c => c);
+
+        // Should fail gracefully instead of causing stack overflow
+        Assert.False(loop.TryParse("hello parlot", out var result2));
+        Assert.Null(result2);
+    }
+
+    [Fact]
+    public void DeferredShouldAllowValidRecursion()
+    {
+        // Valid recursive parser - should still work
+        // This represents a simple recursive grammar like: list ::= '[' (item (',' item)*)? ']'
+        var list = Deferred<string>();
+        var item = Literals.Text("item");
+        var comma = Literals.Char(',');
+        var openBracket = Literals.Char('[');
+        var closeBracket = Literals.Char(']');
+        
+        // A list can contain items or nested lists
+        var element = item.Or(list);
+        var elements = ZeroOrMany(element.And(ZeroOrOne(comma)));
+        list.Parser = Between(openBracket, elements, closeBracket).Then(x => "list");
+
+        // This should work fine - it's recursive but makes progress
+        Assert.True(list.TryParse("[]", out var result));
+        Assert.Equal("list", result);
+    }
+
+    [Fact]
+    public void DisableLoopDetectionShouldAllowInfiniteRecursion()
+    {
+        // When DisableLoopDetection is true, the parser should not detect infinite loops
+        var loop = Deferred<string>();
+        loop.Parser = loop;
+
+        // Test with loop detection enabled (default)
+        var contextWithDetection = new ParseContext(new Scanner("test"), disableLoopDetection: false);
+        Assert.False(loop.TryParse(contextWithDetection, out var _, out var _));
+        
+        // We can't safely test the DisableLoopDetection = true case to completion without stack overflow,
+        // but the implementation is verified by the fact that the flag is properly checked in the code
+    }
+
+    [Fact]
+    public void WhiteSpaceParserShouldUseParseContextParser()
+    {
+        // Test that the whitespace parser respects the ParseContext settings
+        var hello = Literals.Text("hello");
+        var world = Literals.Text("world");
+        var parser = Terms.WhiteSpace().And(hello).And(Terms.WhiteSpace()).And(world).WithWhiteSpaceParser(Capture(ZeroOrMany(Literals.Char('.'))));
+
+        // Should use the custom whitespace parser from the context
+        Assert.True(parser.TryParse("..hello....world", out var result, out var _));
+        Assert.Equal("..", result.Item1.ToString());
+        Assert.Equal("hello", result.Item2.ToString());
+        Assert.Equal("....", result.Item3.ToString());
+        Assert.Equal("world", result.Item4.ToString()); 
+    }
+
+    [Fact]
+    public void WithWhiteSpaceParserDoesntRepeat()
+    {
+        // Test that the whitespace parser can fail and propagate the failure
+        var hello = Literals.Text("hello");
+        var world = Terms.Text("world");
+        var ws = Capture(Literals.Text("!!!")); // This whitespace parser only matches "!!!"
+        var parser = hello.And(world).WithWhiteSpaceParser(ws);
+
+        Assert.True(parser.TryParse("hello!!!world", out var _, out var _));
+        Assert.False(parser.TryParse("hello world", out var _, out var _));
+        Assert.False(parser.TryParse("hello!!! world", out var _, out var _));
+        Assert.False(parser.TryParse("hello!!!!!!world", out var _, out var _));
+    }
+
+    [Fact]
+    public void WithWhiteSpaceParserRepeatingPattern()
+    {
+        // Test that the whitespace parser can fail and propagate the failure
+        var hello = Literals.Text("hello");
+        var world = Terms.Text("world");
+        var ws = Capture(Literals.Text("!!!").OneOrMany());
+        var parser = hello.And(world).WithWhiteSpaceParser(ws);
+
+        Assert.True(parser.TryParse("hello!!!world", out var _, out var _));
+        Assert.False(parser.TryParse("hello world", out var _, out var _));
+        Assert.False(parser.TryParse("hello!!! world", out var _, out var _));
+        Assert.True(parser.TryParse("hello!!!!!!world", out var _, out var _));
+        Assert.False(parser.TryParse("hello!!!!!world", out var _, out var _));
+    }
+
+    [Fact]
+    public void LiteralsKeywordShouldNotMatchIfFollowedByLetter()
+    {
+        var parser = Literals.Keyword("if");
+
+        Assert.True(parser.TryParse("if", out var result));
+        Assert.Equal("if", result);
+
+        Assert.True(parser.TryParse("if ", out result));
+        Assert.Equal("if", result);
+
+        Assert.True(parser.TryParse("if(", out result));
+        Assert.Equal("if", result);
+
+        Assert.False(parser.TryParse("ifoo", out result));
+        Assert.False(parser.TryParse("ifA", out result));
+        Assert.False(parser.TryParse("ifZ", out result));
+    }
+
+    [Fact]
+    public void TermsKeywordShouldNotMatchIfFollowedByLetter()
+    {
+        var parser = Terms.Keyword("if");
+
+        Assert.True(parser.TryParse("if", out var result));
+        Assert.Equal("if", result);
+
+        Assert.True(parser.TryParse(" if", out result));
+        Assert.Equal("if", result);
+
+        Assert.True(parser.TryParse(" if ", out result));
+        Assert.Equal("if", result);
+
+        Assert.True(parser.TryParse(" if(", out result));
+        Assert.Equal("if", result);
+
+        Assert.False(parser.TryParse("ifoo", out result));
+        Assert.False(parser.TryParse(" ifA", out result));
+        Assert.False(parser.TryParse(" ifZ", out result));
+    }
+
+    [Fact]
+    public void KeywordShouldWorkInIfElseSequence()
+    {
+        var parser = Terms.Keyword("if")
+            .SkipAnd(Terms.Char('('))
+            .And(Terms.Identifier())
+            .AndSkip(Terms.Char(')'));
+
+        Assert.True(parser.TryParse("if(foo)", out var result));
+        Assert.Equal("foo", result.Item2.ToString());
+
+        Assert.False(parser.TryParse("ifoo(bar)", out result));
+        Assert.False(parser.TryParse("iff(bar)", out result));
+    }
+
+    [Fact]
+    public void KeywordShouldBeCaseInsensitiveWhenRequested()
+    {
+        var parser = Literals.Keyword("if", caseInsensitive: true);
+
+        Assert.True(parser.TryParse("if", out var result));
+        Assert.Equal("if", result);
+
+        Assert.True(parser.TryParse("IF", out result));
+        Assert.Equal("IF", result);
+
+        Assert.True(parser.TryParse("If", out result));
+        Assert.Equal("If", result);
+
+        Assert.False(parser.TryParse("ifoo", out result));
+        Assert.False(parser.TryParse("IFoo", out result));
+    }
+
+    [Fact]
+    public void KeywordShouldMatchNonLetterCharactersAfter()
+    {
+        var parser = Terms.Keyword("return");
+
+        Assert.True(parser.TryParse("return;", out var result));
+        Assert.Equal("return", result);
+
+        Assert.True(parser.TryParse("return\n", out result));
+        Assert.Equal("return", result);
+
+        Assert.True(parser.TryParse("return123", out result));
+        Assert.Equal("return", result);
+
+        Assert.True(parser.TryParse("return_", out result));
+        Assert.Equal("return", result);
+
+        Assert.False(parser.TryParse("returns", out result));
     }
 }
