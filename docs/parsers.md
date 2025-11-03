@@ -480,32 +480,21 @@ null
 
 ### Optional
 
-Makes an existing parser optional. Contrary to `ZeroOrOne` the result is always a list, with
-either zero or one element. It is then easy to know if the parser was successful or not by 
-using the Linq operators `Any()` and `FirstOrDefault()`.
+Makes an existing parser optional by always returning an `Option<T>` result. It is then easy to know if the parser was successful or not by using the `HasValue` property.
 
 ```c#
-static Parser<IReadOnlyList<T>> Optional<T>(this Parser<T> parser)
+static Parser<Option<T>> Optional<T>(this Parser<T> parser)
 ```
 
 Usage:
 
 ```c#
 var parser = Terms.Text("hello").Optional();
-parser.Parse("hello");
-parser.Parse(""); // returns an empty list
-parser.Parse("hello").FirstOrDefault();
-parser.Parse("").FirstOrDefault(); // returns null
+parser.Parse("hello"); // HasValue -> true
+parser.Parse(""); // HasValue -> false
 ```
 
-Result:
-
-```
-["hello"]
-[]
-"hello"
-null
-```
+Use the `OrSome<T>()` method to provide a default value if the `Option<T>` instance has no value.
 
 ### ZeroOrMany
 
@@ -652,6 +641,72 @@ Result:
 
 > Note: This parser is used by all Terms (e.g., Terms.Text) to skip blank spaces before a Literal.
 
+### WithWhiteSpaceParser
+
+Temporarily sets a custom whitespace parser for the inner parser. The custom whitespace parser is used to skip whitespace within the scope of the wrapped parser, then the previous whitespace parser is restored.
+
+This allows grammars to define custom whitespace handling for specific parts of the grammar.
+
+```c#
+Parser<T> WithWhiteSpaceParser<T>(this Parser<T> parser, Parser<TextSpan> whiteSpaceParser)
+```
+
+Usage:
+
+```c#
+var hello = Terms.Text("hello");
+var world = Terms.Text("world");
+var parser = hello.And(world).WithWhiteSpaceParser(Capture(ZeroOrMany(Literals.Char('.'))));
+
+parser.Parse("..hello.world");  // Succeeds - dots are treated as whitespace
+parser.Parse("hello world");     // Fails - regular spaces are not whitespace
+```
+
+Result:
+
+```
+("hello", "world")
+null
+```
+
+This parser can be nested, with each level managing its own whitespace context:
+
+```c#
+var a = Terms.Text("a");
+var b = Terms.Text("b");
+var c = Terms.Text("c");
+
+var inner = a.And(b).WithWhiteSpaceParser(Capture(ZeroOrMany(Literals.Char('.'))));
+var outer = inner.And(c).WithWhiteSpaceParser(Capture(ZeroOrMany(Literals.Char('-'))));
+
+outer.Parse("a.b-c");  // Inner uses '.', outer uses '-' as whitespace
+```
+
+> Note: The custom whitespace parser must return a `TextSpan`. Use `Capture()` to wrap parsers that don't return `TextSpan`.
+
+### WithComments
+
+Based on `WithWhiteSpaceParser`, this helper makes it easier to define custom comments syntax.
+
+Usage:
+
+```c#
+var hello = Terms.Text("hello");
+var world = Terms.Text("world");
+var parser = hello.And(world)
+    .WithComments(builder =>
+    {
+        builder.WithSingleLine("--");
+        builder.WithSingleLine("#");
+        builder.WithMultiLine("/*", "*/");
+    });
+
+parser.Parse("hello -- comment\n world");
+parser.Parse("hello -- comment\r\n world");
+parser.Parse("hello # comment\n world");
+parser.Parse("hello /* multiline\n comment\n */ world");
+```
+
 ### Deferred
 
 Creates a parser that can be referenced before it is actually defined. This is used when there is a cyclic dependency between parsers.
@@ -791,6 +846,8 @@ Result:
 (0, "years")
 (123, "years")
 ```
+
+NB: This is similar to using `Optional()` since the result is always successful, but `Else()` returns a value. Use `Optional()` if you need to know if the parser was successful or not, and `Else()` if you only care about having a value as a result.
 
 ### ThenElse
 
@@ -965,6 +1022,8 @@ Returns any characters until the specified parser is matched.
 Parser<TextSpan> AnyCharBefore<T>(Parser<T> parser, bool canBeEmpty = false, bool failOnEof = false, bool consumeDelimiter = false)
 ```
 
+It is important to use `AnyCharBefore(a.Or(b))` instead of `AnyCharBefore(a).Or(AnyCharBefore(b))` for performance reasons. Otherwise the first parser will have to look ahead for the whole source if only the second parser can be matched. By using a single `AnyCharBefore`, it will check whatever is first in the source, and then jump to the next option.
+
 ### Always
 
 Always returns successfully, with an optional return type or value.
@@ -991,3 +1050,7 @@ Like [Or](#Or), with an unlimited list of parsers.
 ```c#
 Parser<T> OneOf<T>(params Parser<T>[] parsers)
 ```
+
+## Comments
+
+Whitespaces are parsed automatically when using `Terms` helper methods. To use custom comments 
