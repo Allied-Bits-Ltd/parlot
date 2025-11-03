@@ -6,7 +6,7 @@
     <Authors>Sebastien Ros</Authors>
     <PackageProjectUrl>https://github.com/AlliedBits/parlot</PackageProjectUrl>
     <PackageLicenseExpression>BSD-3-Clause</PackageLicenseExpression>
-    <Version>1.5.0</Version>
+    <Version>1.5.2</Version>
 
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
 
