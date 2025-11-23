@@ -11,13 +11,13 @@
     <description>Parlot is a fast, lightweight and simple to use .NET parser combinator.</description>
     <copyright>Sebastien Ros</copyright>
     <tags>parser interpreter</tags>
-    <repository type="git" url="https://github.com/Allied-Bits-Ltd/parlot" commit="8c744c6d098e05a0fb3fe2c3ae8c57b99fa54f04" />
+    <repository type="git" url="https://github.com/Allied-Bits-Ltd/parlot" commit="8819c20afcb5fdd867227d89840d5157105175f0" />
     <readme>README.md</readme>
     <dependencies>
       <group targetFramework=".NETFramework4.7.2">
         <dependency id="System.Memory" version="4.6.3" exclude="Build,Analyzers" />
       </group>
-      <group targetFramework="net6.0" />
+      <group targetFramework="net10.0" />
       <group targetFramework="net8.0" />
       <group targetFramework=".NETStandard2.0">
         <dependency id="System.Memory" version="4.6.3" exclude="Build,Analyzers" />
@@ -30,8 +30,8 @@
     <file src="src\Parlot\bin\Release\net472\Parlot.xml" target="lib\net472" />
     <file src="src\Parlot\bin\Release\netstandard2.0\Parlot.dll" target="lib\netstandard2.0" />
     <file src="src\Parlot\bin\Release\netstandard2.0\Parlot.xml" target="lib\netstandard2.0" />
-    <file src="src\Parlot\bin\Release\net6.0\Parlot.dll" target="lib\net6.0" />
-    <file src="src\Parlot\bin\Release\net6.0\Parlot.xml" target="lib\net6.0" />
+    <file src="src\Parlot\bin\Release\net10.0\Parlot.dll" target="lib\net10.0" />
+    <file src="src\Parlot\bin\Release\net10.0\Parlot.xml" target="lib\net10.0" />
     <file src="src\Parlot\bin\Release\net8.0\Parlot.dll" target="lib\net8.0" />
     <file src="src\Parlot\bin\Release\net8.0\Parlot.xml" target="lib\net8.0" />
   </files>
