@@ -21,7 +21,9 @@ Terms and Literals are accessed using the `Terms` and `Literals` properties from
 
 ### WhiteSpace
 
-Matches blank spaces, optionally including new lines. Returns a `TextSpan` with the matched spaces. This parser is not available in the `Terms` static class.
+#### Literals.WhiteSpace()
+
+Matches blank spaces, optionally including new lines. Returns a `TextSpan` with the matched spaces. 
 
 ```c#
 Parser<TextSpan> WhiteSpace(bool includeNewLines = false)
@@ -38,6 +40,26 @@ Result:
 
 ```
 "   \t"
+```
+
+#### Terms.WhiteSpace()
+
+Matches the `WhiteSpaceParser` configured in the current context.
+
+```c#
+Parser<TextSpan> WhiteSpace()
+```
+
+When used from `Terms` it parses whitespace (or comments) as defined in the `ParseContext` or from `WithWhiteSpaceParser(parser)`.
+
+When used from `Literals` it parses standard white spaces.
+
+Usage:
+
+```c#
+var parser = Literals.Text("hello").And(Terms.WhiteSpace()).And(Literals.Text("world"));
+parser.Parse("hello   world"); // success
+parser.Parse("helloworld"); // failure
 ```
 
 ### NonWhiteSpace
@@ -617,7 +639,7 @@ Result:
 
 ### SkipWhiteSpace
 
-Matches a parser after any blank spaces. This parser respects the `Scanner` options related to multi-line grammars.
+Matches a parser after any blank spaces. This parser respects the `Scanner.WhiteSpaceParser` option.
 
 
 ```c#
@@ -796,6 +818,7 @@ Convert the result of a parser. This is usually used to create custom data struc
 ```c#
 Parser<U> Then<U>(Func<T, U> conversion)
 Parser<U> Then<U>(Func<ParseContext, T, U> conversion)
+Parser<U> Then<U>(Func<ParseContext, int, int, T, U> conversion)
 Parser<U> Then<U>(U value)
 Parser<U?> Then<U>() // Converts the result to `U`
 ```
@@ -826,6 +849,28 @@ var parser = OneOf(
     Terms.Text("-").Then(UnaryOperator.Negate)
 );
 ```
+
+#### Accessing Start and End Positions
+
+The `Func<ParseContext, int, int, T, U>` overload provides access to the start and end offsets of the parsed result:
+
+```c#
+var parser = Literals.Identifier().Then((context, start, end, value) =>
+{
+    var length = end - start;
+    return $"Parsed '{value}' at offset {start}, length {length}";
+});
+
+parser.Parse("hello");
+```
+
+Result:
+
+```
+"Parsed 'hello' at offset 0, length 5"
+```
+
+> **Note:** The start and end parameters are integer offsets (positions in the input buffer), not `TextPosition` objects. For `Literals` parsers, these offsets correspond exactly to where the parser matched. For `Terms` parsers (which skip whitespace), the behavior differs slightly between compiled and non-compiled modes due to how whitespace skipping is handled in the compilation process.
 
 ### Else
 

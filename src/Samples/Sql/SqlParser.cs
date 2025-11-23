@@ -1,6 +1,7 @@
 #nullable enable
 
 using Parlot.Fluent;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using static Parlot.Fluent.Parsers;
@@ -56,6 +57,14 @@ public class SqlParser
         var OVER = Terms.Text("OVER", caseInsensitive: true);
         var PARTITION = Terms.Text("PARTITION", caseInsensitive: true);
 
+        var keywords = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "SELECT", "FROM", "WHERE", "AS", "JOIN", "INNER", "LEFT", "RIGHT", "ON",
+            "GROUP", "BY", "HAVING", "ORDER", "ASC", "DESC", "LIMIT", "OFFSET",
+            "UNION", "ALL", "DISTINCT", "WITH", "AND", "OR", "NOT", "BETWEEN",
+            "IN", "LIKE", "TRUE", "FALSE", "OVER", "PARTITION",
+        };
+
         // Literals
         var numberLiteral = Terms.Decimal().Then<Expression>(d => new LiteralExpression<decimal>(d));
 
@@ -71,6 +80,10 @@ public class SqlParser
             .Or(Between(Terms.Char('"'), Literals.NoneOf("\""), Terms.Char('"')));
 
         var identifier = Separated(DOT, simpleIdentifier)
+            .Then(parts => new Identifier(parts.Select(p => p.Span.ToString()).ToArray()));
+
+        // Without the keywords check "FROM a WHERE" would interpret "WHERE" as an alias since "AS" is optional
+        var identifierNoKeywords = Separated(DOT, simpleIdentifier).When((ctx, parts) => parts.Count > 0 && !keywords.Contains(parts[0].ToString()))
             .Then(parts => new Identifier(parts.Select(p => p.Span.ToString()).ToArray()));
 
         // Deferred parsers
@@ -93,9 +106,6 @@ public class SqlParser
         var functionCall = identifier.And(Between(LPAREN, functionArgs, RPAREN))
             .Then<Expression>(x => new FunctionCall(x.Item1, x.Item2));
 
-        // Parameter
-        var parameter = AT.And(identifier).Then<Expression>(x => new ParameterExpression(x.Item2));
-
         // Tuple
         var tuple = Between(LPAREN, expressionList, RPAREN)
             .Then<Expression>(exprs => new TupleExpression(exprs));
@@ -107,14 +117,19 @@ public class SqlParser
         // Basic term
         var identifierExpr = identifier.Then<Expression>(id => new IdentifierExpression(id));
 
-        var term = functionCall
+        var termNoParameter = functionCall
             .Or(parSelectStatement)
             .Or(tuple)
             .Or(booleanLiteral)
             .Or(stringLiteral)
             .Or(numberLiteral)
             .Or(identifierExpr)
-            .Or(parameter);
+            ;
+
+        // Parameter
+        var parameter = AT.SkipAnd(identifier).And(Literals.Char(':').SkipAnd(termNoParameter).Optional()).Then<Expression>(x => new ParameterExpression(x.Item1, x.Item2.HasValue ? x.Item2.Value : null));
+
+        var term = termNoParameter.Or(parameter);
 
         // Unary expressions
         var unaryMinus = Terms.Char('-').And(term).Then<Expression>(x => new UnaryExpression(UnaryOperator.Minus, x.Item2));
@@ -183,7 +198,7 @@ public class SqlParser
                 return new BetweenExpression(expr, lower, upper, notKeyword.HasValue);
             });
 
-        var inExpr = andExpr.And(NOT.Optional()).AndSkip(IN).AndSkip(LPAREN).And(expressionList).AndSkip(RPAREN)
+        var inExpr = andExpr.And(NOT.Optional()).AndSkip(IN).AndSkip(LPAREN).And(functionArgs).AndSkip(RPAREN)
             .Then<Expression>(result =>
             {
                 var (expr, notKeyword, values) = result;
@@ -225,7 +240,7 @@ public class SqlParser
         var columnSource = columnSourceFunc.Or(columnSourceId);
 
         // Column item with alias
-        var columnAlias = AS.SkipAnd(identifier);
+        var columnAlias = AS.Optional().SkipAnd(identifierNoKeywords);
 
         columnItem.Parser = columnSource.And(columnAlias.Optional())
             .Then(result =>
@@ -235,7 +250,7 @@ public class SqlParser
             });
 
         // Table source
-        var tableAlias = AS.SkipAnd(identifier);
+        var tableAlias = AS.Optional().SkipAnd(identifierNoKeywords);
 
         var tableSourceItem = identifier.And(tableAlias.Optional())
             .Then(result =>
@@ -301,12 +316,19 @@ public class SqlParser
         // ORDER BY item
         var orderDirection = ASC.Then(OrderDirection.Asc).Or(DESC.Then(OrderDirection.Desc));
 
-        orderByItem.Parser = identifier.And(orderDirection.Optional())
-            .Then(result =>
-            {
-                var (id, dir) = result;
-                return new OrderByItem(id, dir.OrSome(OrderDirection.NotSpecified));
-            });
+        orderByItem.Parser =
+            identifier.And(Between(LPAREN, functionArgs, RPAREN))
+                .Then(result =>
+                {
+                    var (id, arguments) = result;
+                    return new OrderByItem(id, arguments, OrderDirection.NotSpecified);
+                }).Or(
+            identifier.And(orderDirection.Optional())
+                .Then(result =>
+                {
+                    var (id, dir) = result;
+                    return new OrderByItem(id, null, dir.OrSome(OrderDirection.NotSpecified));
+                }));
 
         // LIMIT and OFFSET clauses
         var limitClause = LIMIT.And(expression).Then(x => new LimitClause(x.Item2));
@@ -388,10 +410,12 @@ public class SqlParser
             .Then(x => new StatementLine(x));
 
         // Statement list
-        var statementList = SkipWhiteSpace(ZeroOrMany(statementLine)
-            .Then(statements => new StatementList(statements)).Eof());
+        var statementList = ZeroOrMany(statementLine)
+            .Then(statements => new StatementList(statements))
+            .AndSkip(Terms.WhiteSpace().Optional()) // allow trailing whitespace
+            .Eof();
 
-        Statements = statementList.WithComments(comments => 
+        Statements = statementList.WithComments(comments =>
         {
             comments.WithSingleLine("--");
             comments.WithMultiLine("/*", "*/");
@@ -400,7 +424,7 @@ public class SqlParser
 
     public static StatementList? Parse(string input)
     {
-        if (TryParse(input, out var result, out var error))
+        if (TryParse(input, out var result, out var _))
         {
             return result;
         }

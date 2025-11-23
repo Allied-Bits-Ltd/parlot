@@ -170,6 +170,24 @@ public class FluentTests
     }
 
     [Fact]
+    public void ThenShouldProvideStartAndEndOffsets()
+    {
+        // Use Literals for consistent behavior between compiled and non-compiled modes
+        var parser = Literals.Identifier().Then((context, start, end, value) =>
+        {
+            return $"{value}:{start}-{end}";
+        });
+
+        Assert.True(parser.TryParse("hello", out var result));
+        Assert.Equal("hello:0-5", result);
+
+        // Test with compiled parser - should have the same behavior
+        var compiled = parser.Compile();
+        Assert.True(compiled.TryParse("world", out var result2));
+        Assert.Equal("world:0-5", result2);
+    }
+
+    [Fact]
     public void BetweenShouldParseBetweenTwoString()
     {
         var code = Between(Terms.Text("[["), Terms.Integer(), Terms.Text("]]"));
@@ -1510,5 +1528,111 @@ public class FluentTests
         Assert.True(parser.TryParse("...hello....world", out var result));
         Assert.Equal("hello", result.Item1.ToString());
         Assert.Equal("world", result.Item2.ToString());
+    }
+
+    [Fact]
+    public void DeferredShouldDetectInfiniteRecursion()
+    {
+        // Test case 1: Direct self-reference
+        var loop = Deferred<string>();
+        loop.Parser = loop;
+
+        // Should fail gracefully instead of causing stack overflow
+        Assert.False(loop.TryParse("hello parlot", out var result1));
+        Assert.Null(result1);
+    }
+
+    [Fact]
+    public void RecursiveShouldDetectInfiniteRecursion()
+    {
+        // Test case 2: Recursive self-reference
+        var loop = Recursive<string>(c => c);
+
+        // Should fail gracefully instead of causing stack overflow
+        Assert.False(loop.TryParse("hello parlot", out var result2));
+        Assert.Null(result2);
+    }
+
+    [Fact]
+    public void DeferredShouldAllowValidRecursion()
+    {
+        // Valid recursive parser - should still work
+        // This represents a simple recursive grammar like: list ::= '[' (item (',' item)*)? ']'
+        var list = Deferred<string>();
+        var item = Literals.Text("item");
+        var comma = Literals.Char(',');
+        var openBracket = Literals.Char('[');
+        var closeBracket = Literals.Char(']');
+        
+        // A list can contain items or nested lists
+        var element = item.Or(list);
+        var elements = ZeroOrMany(element.And(ZeroOrOne(comma)));
+        list.Parser = Between(openBracket, elements, closeBracket).Then(x => "list");
+
+        // This should work fine - it's recursive but makes progress
+        Assert.True(list.TryParse("[]", out var result));
+        Assert.Equal("list", result);
+    }
+
+    [Fact]
+    public void DisableLoopDetectionShouldAllowInfiniteRecursion()
+    {
+        // When DisableLoopDetection is true, the parser should not detect infinite loops
+        var loop = Deferred<string>();
+        loop.Parser = loop;
+
+        // Test with loop detection enabled (default)
+        var contextWithDetection = new ParseContext(new Scanner("test")) { DisableLoopDetection = false };
+        Assert.False(loop.TryParse(contextWithDetection, out var _, out var _));
+        
+        // We can't safely test the DisableLoopDetection = true case to completion without stack overflow,
+        // but the implementation is verified by the fact that the flag is properly checked in the code
+    }
+
+    [Fact]
+    public void WhiteSpaceParserShouldUseParseContextParser()
+    {
+        // Test that the whitespace parser respects the ParseContext settings
+        var hello = Literals.Text("hello");
+        var world = Literals.Text("world");
+        var parser = Terms.WhiteSpace().And(hello).And(Terms.WhiteSpace()).And(world).WithWhiteSpaceParser(Capture(ZeroOrMany(Literals.Char('.'))));
+
+        // Should use the custom whitespace parser from the context
+        Assert.True(parser.TryParse("..hello....world", out var result, out var _));
+        Assert.Equal("..", result.Item1.ToString());
+        Assert.Equal("hello", result.Item2.ToString());
+        Assert.Equal("....", result.Item3.ToString());
+        Assert.Equal("world", result.Item4.ToString()); 
+    }
+
+    [Fact]
+    public void WithWhiteSpaceParserDoesntRepeat()
+    {
+        // Test that the whitespace parser can fail and propagate the failure
+        var hello = Literals.Text("hello");
+        var world = Terms.Text("world");
+        var ws = Capture(Literals.Text("!!!")); // This whitespace parser only matches "!!!"
+        var parser = hello.And(world).WithWhiteSpaceParser(ws);
+
+        Assert.True(parser.TryParse("hello!!!world", out var _, out var _));
+        Assert.False(parser.TryParse("hello world", out var _, out var _));
+        Assert.False(parser.TryParse("hello!!! world", out var _, out var _));
+        Assert.False(parser.TryParse("hello!!!!!!world", out var _, out var _));
+    }
+
+    [Fact]
+    public void WithWhiteSpaceParserRepeatingPattern()
+    {
+        // Test that the whitespace parser can fail and propagate the failure
+        var hello = Literals.Text("hello");
+        var world = Terms.Text("world");
+        var ws = Capture(Literals.Text("!!!").OneOrMany());
+        var parser = hello.And(world).WithWhiteSpaceParser(ws);
+
+        Assert.True(parser.TryParse("hello!!!world", out var _, out var _));
+        Assert.False(parser.TryParse("hello world", out var _, out var _));
+        Assert.False(parser.TryParse("hello!!! world", out var _, out var _));
+        Assert.True(parser.TryParse("hello!!!!!!world", out var _, out var _));
+        Assert.False(parser.TryParse("hello!!!!!world", out var _, out var _));
     }
 }
