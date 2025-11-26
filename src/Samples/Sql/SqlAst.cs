@@ -1,6 +1,8 @@
 #nullable enable
 
 using System.Collections.Generic;
+using System.Collections.Specialized;
+using System.ComponentModel.Design;
 using System.Linq;
 
 namespace Parlot.Tests.Sql;
@@ -10,7 +12,7 @@ public interface ISqlNode
 }
 
 // Statements
-public class StatementList : ISqlNode
+public sealed class StatementList : ISqlNode
 {
     public IReadOnlyList<StatementLine> Statements { get; }
 
@@ -20,7 +22,7 @@ public class StatementList : ISqlNode
     }
 }
 
-public class StatementLine : ISqlNode
+public sealed class StatementLine : ISqlNode
 {
     public IReadOnlyList<UnionStatement> UnionStatements { get; }
 
@@ -30,7 +32,7 @@ public class StatementLine : ISqlNode
     }
 }
 
-public class UnionStatement : ISqlNode
+public sealed class UnionStatement : ISqlNode
 {
     public Statement Statement { get; }
     public UnionClause? UnionClause { get; }
@@ -42,7 +44,7 @@ public class UnionStatement : ISqlNode
     }
 }
 
-public class UnionClause : ISqlNode
+public sealed class UnionClause : ISqlNode
 {
     public bool IsAll { get; }
 
@@ -52,7 +54,7 @@ public class UnionClause : ISqlNode
     }
 }
 
-public class Statement : ISqlNode
+public sealed class Statement : ISqlNode
 {
     public WithClause? WithClause { get; }
     public SelectStatement SelectStatement { get; }
@@ -64,7 +66,7 @@ public class Statement : ISqlNode
     }
 }
 
-public class WithClause : ISqlNode
+public sealed class WithClause : ISqlNode
 {
     public IReadOnlyList<CommonTableExpression> CTEs { get; }
 
@@ -74,7 +76,7 @@ public class WithClause : ISqlNode
     }
 }
 
-public class CommonTableExpression : ISqlNode
+public sealed class CommonTableExpression : ISqlNode
 {
     public string Name { get; }
     public IReadOnlyList<string>? ColumnNames { get; }
@@ -88,7 +90,7 @@ public class CommonTableExpression : ISqlNode
     }
 }
 
-public class SelectStatement : ISqlNode
+public sealed class SelectStatement : ISqlNode
 {
     public SelectRestriction Restriction { get; }
     public IReadOnlyList<ColumnItem> ColumnItemList { get; }
@@ -130,7 +132,7 @@ public enum SelectRestriction
     Distinct,
 }
 
-public class ColumnItem : ISqlNode
+public sealed class ColumnItem : ISqlNode
 {
     public ColumnSource Source { get; }
     public Identifier? Alias { get; }
@@ -146,7 +148,7 @@ public abstract class ColumnSource : ISqlNode
 {
 }
 
-public class ColumnSourceIdentifier : ColumnSource
+public sealed class ColumnSourceIdentifier : ColumnSource
 {
     public Identifier Identifier { get; }
 
@@ -156,7 +158,7 @@ public class ColumnSourceIdentifier : ColumnSource
     }
 }
 
-public class ColumnSourceFunction : ColumnSource
+public sealed class ColumnSourceFunction : ColumnSource
 {
     public FunctionCall FunctionCall { get; }
     public OverClause? OverClause { get; }
@@ -169,7 +171,7 @@ public class ColumnSourceFunction : ColumnSource
 }
 
 // Clauses
-public class FromClause : ISqlNode
+public sealed class FromClause : ISqlNode
 {
     public IReadOnlyList<TableSource> TableSources { get; }
     public IReadOnlyList<JoinStatement>? Joins { get; }
@@ -185,7 +187,7 @@ public abstract class TableSource : ISqlNode
 {
 }
 
-public class TableSourceItem : TableSource
+public sealed class TableSourceItem : TableSource
 {
     public Identifier Identifier { get; }
     public Identifier? Alias { get; }
@@ -197,7 +199,7 @@ public class TableSourceItem : TableSource
     }
 }
 
-public class TableSourceSubQuery : TableSource
+public sealed class TableSourceSubQuery : TableSource
 {
     public IReadOnlyList<UnionStatement> Query { get; }
     public string Alias { get; }
@@ -209,7 +211,7 @@ public class TableSourceSubQuery : TableSource
     }
 }
 
-public class JoinStatement : ISqlNode
+public sealed class JoinStatement : ISqlNode
 {
     public JoinKind? JoinKind { get; }
     public IReadOnlyList<TableSourceItem> Tables { get; }
@@ -231,7 +233,7 @@ public enum JoinKind
     Right,
 }
 
-public class WhereClause : ISqlNode
+public sealed class WhereClause : ISqlNode
 {
     public Expression Expression { get; }
 
@@ -241,7 +243,7 @@ public class WhereClause : ISqlNode
     }
 }
 
-public class GroupByClause : ISqlNode
+public sealed class GroupByClause : ISqlNode
 {
     public IReadOnlyList<ColumnSource> Columns { get; }
 
@@ -251,7 +253,7 @@ public class GroupByClause : ISqlNode
     }
 }
 
-public class HavingClause : ISqlNode
+public sealed class HavingClause : ISqlNode
 {
     public Expression Expression { get; }
 
@@ -261,7 +263,7 @@ public class HavingClause : ISqlNode
     }
 }
 
-public class OrderByClause : ISqlNode
+public sealed class OrderByClause : ISqlNode
 {
     public IReadOnlyList<OrderByItem> Items { get; }
 
@@ -271,7 +273,7 @@ public class OrderByClause : ISqlNode
     }
 }
 
-public class OrderByItem : ISqlNode
+public sealed class OrderByItem : ISqlNode
 {
     public Identifier Identifier { get; }
     public FunctionArguments? Arguments { get; }
@@ -292,7 +294,7 @@ public enum OrderDirection
     Desc,
 }
 
-public class LimitClause : ISqlNode
+public sealed class LimitClause : ISqlNode
 {
     public Expression Expression { get; }
 
@@ -302,7 +304,7 @@ public class LimitClause : ISqlNode
     }
 }
 
-public class OffsetClause : ISqlNode
+public sealed class OffsetClause : ISqlNode
 {
     public Expression Expression { get; }
 
@@ -312,7 +314,7 @@ public class OffsetClause : ISqlNode
     }
 }
 
-public class OverClause : ISqlNode
+public sealed class OverClause : ISqlNode
 {
     public PartitionByClause? PartitionBy { get; }
     public OrderByClause? OrderBy { get; }
@@ -324,7 +326,7 @@ public class OverClause : ISqlNode
     }
 }
 
-public class PartitionByClause : ISqlNode
+public sealed class PartitionByClause : ISqlNode
 {
     public IReadOnlyList<ColumnItem> Columns { get; }
 
@@ -339,7 +341,7 @@ public abstract class Expression : ISqlNode
 {
 }
 
-public class BinaryExpression : Expression
+public sealed class BinaryExpression : Expression
 {
     public Expression Left { get; }
     public BinaryOperator Operator { get; }
@@ -382,7 +384,7 @@ public enum BinaryOperator
     NotLike,
 }
 
-public class UnaryExpression : Expression
+public sealed class UnaryExpression : Expression
 {
     public UnaryOperator Operator { get; }
     public Expression Expression { get; }
@@ -402,7 +404,7 @@ public enum UnaryOperator
     BitwiseNot,
 }
 
-public class BetweenExpression : Expression
+public sealed class BetweenExpression : Expression
 {
     public Expression Expression { get; }
     public bool IsNot { get; }
@@ -418,7 +420,7 @@ public class BetweenExpression : Expression
     }
 }
 
-public class InExpression : Expression
+public sealed class InExpression : Expression
 {
     public Expression Expression { get; }
     public bool IsNot { get; }
@@ -432,7 +434,7 @@ public class InExpression : Expression
     }
 }
 
-public class IdentifierExpression : Expression
+public sealed class IdentifierExpression : Expression
 {
     public Identifier Identifier { get; }
 
@@ -442,7 +444,7 @@ public class IdentifierExpression : Expression
     }
 }
 
-public class LiteralExpression<T> : Expression
+public sealed class LiteralExpression<T> : Expression
 {
     public T Value { get; }
 
@@ -452,7 +454,7 @@ public class LiteralExpression<T> : Expression
     }
 }
 
-public class FunctionCall : Expression
+public sealed class FunctionCall : Expression
 {
     public Identifier Name { get; }
     public FunctionArguments Arguments { get; }
@@ -468,15 +470,25 @@ public abstract class FunctionArguments : ISqlNode
 {
 }
 
-public class EmptyArguments : FunctionArguments
+public sealed class EmptyArguments : FunctionArguments
 {
+    public static readonly EmptyArguments Instance = new();
+
+    private EmptyArguments()
+    {
+    }
 }
 
-public class StarArgument : FunctionArguments
+public sealed class StarArgument : FunctionArguments
 {
+    public static readonly StarArgument Instance = new();
+
+    private StarArgument()
+    {
+    }
 }
 
-public class SelectStatementArgument : FunctionArguments
+public sealed class SelectStatementArgument : FunctionArguments
 {
     public SelectStatement SelectStatement { get; }
 
@@ -486,7 +498,7 @@ public class SelectStatementArgument : FunctionArguments
     }
 }
 
-public class ExpressionListArguments : FunctionArguments
+public sealed class ExpressionListArguments : FunctionArguments
 {
     public IReadOnlyList<Expression> Expressions { get; }
 
@@ -496,7 +508,7 @@ public class ExpressionListArguments : FunctionArguments
     }
 }
 
-public class TupleExpression : Expression
+public sealed class TupleExpression : Expression
 {
     public IReadOnlyList<Expression> Expressions { get; }
 
@@ -506,7 +518,7 @@ public class TupleExpression : Expression
     }
 }
 
-public class ParenthesizedSelectStatement : Expression
+public sealed class ParenthesizedSelectStatement : Expression
 {
     public SelectStatement SelectStatement { get; }
 
@@ -516,7 +528,7 @@ public class ParenthesizedSelectStatement : Expression
     }
 }
 
-public class ParameterExpression : Expression
+public sealed class ParameterExpression : Expression
 {
     public Identifier Name { get; }
     public Expression? DefaultValue { get; }
@@ -529,8 +541,12 @@ public class ParameterExpression : Expression
 }
 
 // Identifiers
-public class Identifier : ISqlNode
+public sealed class Identifier : ISqlNode
 {
+    public static readonly Identifier STAR = new (["*"]);
+
+    private string _cachedToString = null!;
+
     public IReadOnlyList<string> Parts { get; }
 
     public Identifier(IReadOnlyList<string> parts)
@@ -538,17 +554,8 @@ public class Identifier : ISqlNode
         Parts = parts;
     }
 
-    public Identifier(string name) : this(new[] { name })
-    {
-    }
-
-    public Identifier(params string[] parts)
-    {
-        Parts = parts.Where(p => !string.IsNullOrWhiteSpace(p)).ToArray();
-    }
-
     public override string ToString()
     {
-        return string.Join(".", Parts);
+        return _cachedToString ??= (Parts.Count == 1 ? Parts[0] : string.Join(".", Parts));
     }
 }

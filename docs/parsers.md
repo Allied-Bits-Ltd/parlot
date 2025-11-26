@@ -149,6 +149,40 @@ Result:
 'h'
 ```
 
+### Keyword
+
+Matches a keyword string, ensuring the following character is not a letter. This prevents partial matches of identifiers that start with the keyword text.
+
+```c#
+Parser<string> Keyword(string text, bool caseInsensitive = false)
+```
+
+This is useful when parsing programming language constructs like `if`, `while`, `return`, etc., where you want to match the exact keyword but not as part of a longer identifier.
+
+Usage:
+
+```c#
+var input = "if(x > 5)";
+var parser = Terms.Keyword("if");
+var result = parser.Parse(input);
+```
+
+Result:
+
+```
+"if"
+```
+
+However, parsing `"ifoo"` would fail:
+
+```c#
+var input = "ifoo";
+var parser = Terms.Keyword("if");
+var result = parser.Parse(input); // Returns null - failure
+```
+
+Any non-letter is considered valid after a keyword (non-letters): `(`, `)`, `;`, `,`, whitespace, digits, `_`, `$`, etc.
+
 ### Integer
 
 Matches an integral numeric value and an optional leading sign.
@@ -991,6 +1025,44 @@ Parser<T> When(Func<ParseContext, T, bool> predicate)
 ```
 
 To evaluate a condition before a parser is executed use the `If` parser instead.
+
+### WhenFollowedBy
+
+Ensures that the result of the current parser is followed by another parser without consuming its input. This implements positive lookahead.
+
+```c#
+Parser<T> WhenFollowedBy<U>(Parser<U> lookahead)
+```
+
+Usage:
+
+```c#
+// Parse a number only if it's followed by a colon
+var parser = Literals.Integer().WhenFollowedBy(Literals.Char(':'));
+parser.Parse("42:"); // success, returns 42
+parser.Parse("42");  // failure, lookahead doesn't match
+```
+
+The lookahead parser is checked at the current position but doesn't consume input. If the lookahead fails, the entire parser fails and the cursor is reset to the beginning.
+
+### WhenNotFollowedBy
+
+Ensures that the result of the current parser is NOT followed by another parser without consuming its input. This implements negative lookahead.
+
+```c#
+Parser<T> WhenNotFollowedBy<U>(Parser<U> lookahead)
+```
+
+Usage:
+
+```c#
+// Parse a number only if it's NOT followed by a colon
+var parser = Literals.Integer().WhenNotFollowedBy(Literals.Char(':'));
+parser.Parse("42");  // success, returns 42
+parser.Parse("42:"); // failure, lookahead matches
+```
+
+The lookahead parser is checked at the current position but doesn't consume input. If the lookahead succeeds, the entire parser fails and the cursor is reset to the beginning.
 
 ### If (Deprecated)
 

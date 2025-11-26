@@ -25,38 +25,39 @@ public class SqlParser
         var EQ = Terms.Char('=');
 
         // Keywords
-        var SELECT = Terms.Text("SELECT", caseInsensitive: true);
-        var FROM = Terms.Text("FROM", caseInsensitive: true);
-        var WHERE = Terms.Text("WHERE", caseInsensitive: true);
-        var AS = Terms.Text("AS", caseInsensitive: true);
-        var JOIN = Terms.Text("JOIN", caseInsensitive: true);
-        var INNER = Terms.Text("INNER", caseInsensitive: true);
-        var LEFT = Terms.Text("LEFT", caseInsensitive: true);
-        var RIGHT = Terms.Text("RIGHT", caseInsensitive: true);
-        var ON = Terms.Text("ON", caseInsensitive: true);
-        var GROUP = Terms.Text("GROUP", caseInsensitive: true);
-        var BY = Terms.Text("BY", caseInsensitive: true);
-        var HAVING = Terms.Text("HAVING", caseInsensitive: true);
-        var ORDER = Terms.Text("ORDER", caseInsensitive: true);
-        var ASC = Terms.Text("ASC", caseInsensitive: true);
-        var DESC = Terms.Text("DESC", caseInsensitive: true);
-        var LIMIT = Terms.Text("LIMIT", caseInsensitive: true);
-        var OFFSET = Terms.Text("OFFSET", caseInsensitive: true);
-        var UNION = Terms.Text("UNION", caseInsensitive: true);
-        var ALL = Terms.Text("ALL", caseInsensitive: true);
-        var DISTINCT = Terms.Text("DISTINCT", caseInsensitive: true);
-        var WITH = Terms.Text("WITH", caseInsensitive: true);
-        var AND = Terms.Text("AND", caseInsensitive: true);
-        var OR = Terms.Text("OR", caseInsensitive: true);
-        var NOT = Terms.Text("NOT", caseInsensitive: true);
-        var BETWEEN = Terms.Text("BETWEEN", caseInsensitive: true);
-        var IN = Terms.Text("IN", caseInsensitive: true);
-        var LIKE = Terms.Text("LIKE", caseInsensitive: true);
-        var TRUE = Terms.Text("TRUE", caseInsensitive: true);
-        var FALSE = Terms.Text("FALSE", caseInsensitive: true);
-        var OVER = Terms.Text("OVER", caseInsensitive: true);
-        var PARTITION = Terms.Text("PARTITION", caseInsensitive: true);
-
+        var SELECT = Terms.Keyword("SELECT", caseInsensitive: true);
+        var FROM = Terms.Keyword("FROM", caseInsensitive: true);
+        var WHERE = Terms.Keyword("WHERE", caseInsensitive: true);
+        var AS = Terms.Keyword("AS", caseInsensitive: true);
+        var JOIN = Terms.Keyword("JOIN", caseInsensitive: true);
+        var INNER = Terms.Keyword("INNER", caseInsensitive: true);
+        var LEFT = Terms.Keyword("LEFT", caseInsensitive: true);
+        var RIGHT = Terms.Keyword("RIGHT", caseInsensitive: true);
+        var ON = Terms.Keyword("ON", caseInsensitive: true);
+        var GROUP = Terms.Keyword("GROUP", caseInsensitive: true);
+        var BY = Terms.Keyword("BY", caseInsensitive: true);
+        var HAVING = Terms.Keyword("HAVING", caseInsensitive: true);
+        var ORDER = Terms.Keyword("ORDER", caseInsensitive: true);
+        var ASC = Terms.Keyword("ASC", caseInsensitive: true);
+        var DESC = Terms.Keyword("DESC", caseInsensitive: true);
+        var LIMIT = Terms.Keyword("LIMIT", caseInsensitive: true);
+        var OFFSET = Terms.Keyword("OFFSET", caseInsensitive: true);
+        var UNION = Terms.Keyword("UNION", caseInsensitive: true);
+        var ALL = Terms.Keyword("ALL", caseInsensitive: true);
+        var DISTINCT = Terms.Keyword("DISTINCT", caseInsensitive: true);
+        var WITH = Terms.Keyword("WITH", caseInsensitive: true);
+        var AND = Terms.Keyword("AND", caseInsensitive: true);
+        var OR = Terms.Keyword("OR", caseInsensitive: true);
+        var NOT = Terms.Keyword("NOT", caseInsensitive: true);
+        var BETWEEN = Terms.Keyword("BETWEEN", caseInsensitive: true);
+        var IN = Terms.Keyword("IN", caseInsensitive: true);
+        var LIKE = Terms.Keyword("LIKE", caseInsensitive: true);
+        var TRUE = Terms.Keyword("TRUE", caseInsensitive: true);
+        var FALSE = Terms.Keyword("FALSE", caseInsensitive: true);
+        var OVER = Terms.Keyword("OVER", caseInsensitive: true);
+        var PARTITION = Terms.Keyword("PARTITION", caseInsensitive: true);
+        
+        // Keywords can't be used as identifiers or function names
         var keywords = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
             "SELECT", "FROM", "WHERE", "AS", "JOIN", "INNER", "LEFT", "RIGHT", "ON",
@@ -69,23 +70,23 @@ public class SqlParser
         var numberLiteral = Terms.Decimal().Then<Expression>(d => new LiteralExpression<decimal>(d));
 
         var stringLiteral = Terms.String(StringLiteralQuotes.Single)
-            .Then<Expression>(s => new LiteralExpression<string>(s.Span.ToString()));
+            .Then<Expression>(s => new LiteralExpression<string>(s.ToString()));
 
         var booleanLiteral = TRUE.Then<Expression>(new LiteralExpression<bool>(true))
             .Or(FALSE.Then<Expression>(new LiteralExpression<bool>(false)));
 
         // Identifiers
-        var simpleIdentifier = Terms.Identifier()
-            .Or(Between(Terms.Char('['), Literals.NoneOf("]"), Terms.Char(']')))
-            .Or(Between(Terms.Char('"'), Literals.NoneOf("\""), Terms.Char('"')));
+        var simpleIdentifier = Terms.Identifier().Then(x => x.ToString())
+            .Or(Between(Terms.Char('['), Literals.NoneOf("]"), Terms.Char(']')).Then(x => x.ToString()))
+            .Or(Between(Terms.Char('"'), Literals.NoneOf("\""), Terms.Char('"')).Then(x => x.ToString()));
 
         var identifier = Separated(DOT, simpleIdentifier)
-            .Then(parts => new Identifier(parts.Select(p => p.Span.ToString()).ToArray()));
+            .Then(parts => new Identifier(parts));
 
         // Without the keywords check "FROM a WHERE" would interpret "WHERE" as an alias since "AS" is optional
-        var identifierNoKeywords = Separated(DOT, simpleIdentifier).When((ctx, parts) => parts.Count > 0 && !keywords.Contains(parts[0].ToString()))
-            .Then(parts => new Identifier(parts.Select(p => p.Span.ToString()).ToArray()));
-
+        var identifierNoKeywords = Separated(DOT, simpleIdentifier).When((ctx, parts) => parts.Count > 0 && !keywords.Contains(parts[0]))
+            .Then(parts => new Identifier(parts));
+            
         // Deferred parsers
         var expression = Deferred<Expression>();
         var selectStatement = Deferred<SelectStatement>();
@@ -96,15 +97,15 @@ public class SqlParser
         var expressionList = Separated(COMMA, expression);
 
         // Function arguments
-        var starArg = STAR.Then<FunctionArguments>(_ => new StarArgument());
+        var starArg = STAR.Then<FunctionArguments>(_ => StarArgument.Instance);
         var selectArg = selectStatement.Then<FunctionArguments>(s => new SelectStatementArgument(s));
         var exprListArg = expressionList.Then<FunctionArguments>(exprs => new ExpressionListArguments(exprs));
-        var emptyArg = Always<FunctionArguments>(new EmptyArguments());
+        var emptyArg = Always<FunctionArguments>(EmptyArguments.Instance);
         var functionArgs = starArg.Or(selectArg).Or(exprListArg).Or(emptyArg);
 
         // Function call
         var functionCall = identifier.And(Between(LPAREN, functionArgs, RPAREN))
-            .Then<Expression>(x => new FunctionCall(x.Item1, x.Item2));
+            .Then(x => new FunctionCall(x.Item1, x.Item2));
 
         // Tuple
         var tuple = Between(LPAREN, expressionList, RPAREN)
@@ -114,10 +115,14 @@ public class SqlParser
         var parSelectStatement = Between(LPAREN, selectStatement, RPAREN)
             .Then<Expression>(s => new ParenthesizedSelectStatement(s));
 
-        // Basic term
-        var identifierExpr = identifier.Then<Expression>(id => new IdentifierExpression(id));
+        // Basic term - use identifierNoKeywords to prevent keywords from being parsed as identifiers in expressions
+        var identifierExpr = identifierNoKeywords.Then<Expression>(id => new IdentifierExpression(id));
 
-        var termNoParameter = functionCall
+        // Function calls in expressions must use identifierNoKeywords to prevent keywords from being parsed as function names
+        var functionCallExpr = identifierNoKeywords.And(Between(LPAREN, functionArgs, RPAREN))
+            .Then<Expression>(x => new FunctionCall(x.Item1, x.Item2));
+
+        var termNoParameter = functionCallExpr
             .Or(parSelectStatement)
             .Or(tuple)
             .Or(booleanLiteral)
@@ -126,7 +131,7 @@ public class SqlParser
             .Or(identifierExpr)
             ;
 
-        // Parameter
+        // Parameter - keywords are allowed as parameter names
         var parameter = AT.SkipAnd(identifier).And(Literals.Char(':').SkipAnd(termNoParameter).Optional()).Then<Expression>(x => new ParameterExpression(x.Item1, x.Item2.HasValue ? x.Item2.Value : null));
 
         var term = termNoParameter.Or(parameter);
@@ -211,7 +216,7 @@ public class SqlParser
         var columnSourceId = identifier.Then<ColumnSource>(id => new ColumnSourceIdentifier(id));
 
         // Deferred for OVER clause components
-        var columnItemList = Separated(COMMA, columnItem.Or(STAR.Then(new ColumnItem(new ColumnSourceIdentifier(new Identifier("*")), null))));
+        var columnItemList = Separated(COMMA, columnItem.Or(STAR.Then(new ColumnItem(new ColumnSourceIdentifier(Identifier.STAR), null))));
         var orderByList = Separated(COMMA, orderByItem);
 
         var orderByClause = ORDER.AndSkip(BY).And(orderByList)
@@ -284,9 +289,7 @@ public class SqlParser
         var joinStatement = joinKind.Else(JoinKind.None).AndSkip(JOIN).And(tableSourceItemList).And(joinCondition)
             .Then(result =>
             {
-                var kind = result.Item1;
-                var tables = result.Item2;
-                var conditions = result.Item3;
+                var (kind, tables, conditions) = result;
                 return new JoinStatement(tables, conditions, kind);
             });
 
@@ -296,9 +299,7 @@ public class SqlParser
         var fromClause = FROM.SkipAnd(tableSourceList).And(joins)
             .Then(result =>
             {
-                // FROM, tableSourceList, joins -> 3 items
-                var tables = result.Item1;
-                var joinList = result.Item2;
+                var (tables, joinList) = result;
                 return new FromClause(tables, joinList.Any() ? joinList : null);
             });
 
@@ -365,8 +366,7 @@ public class SqlParser
             });
 
         // WITH clause (CTEs)
-        var columnNames = Separated(COMMA, simpleIdentifier)
-            .Then(names => names.Select(n => n.Span.ToString()).ToArray());
+        var columnNames = Separated(COMMA, simpleIdentifier);
 
         var cteColumnList = Between(LPAREN, columnNames, RPAREN);
 
@@ -377,7 +377,7 @@ public class SqlParser
             .Then(result =>
             {
                 var (name, columns, query) = result;
-                return new CommonTableExpression(name.ToString(), query, columns.OrSome(null));
+                return new CommonTableExpression(name, query, columns.OrSome(null));
             });
 
         var cteList = Separated(COMMA, cte);
@@ -417,8 +417,11 @@ public class SqlParser
 
         Statements = statementList.WithComments(comments =>
         {
-            comments.WithSingleLine("--");
-            comments.WithMultiLine("/*", "*/");
+            comments
+                .WithWhiteSpaceOrNewLine()
+                .WithSingleLine("--")
+                .WithMultiLine("/*", "*/")
+                ;
         });
     }
 
@@ -434,6 +437,7 @@ public class SqlParser
 
     public static bool TryParse(string input, out StatementList? result, out ParseError? error)
     {
-        return Statements.TryParse(input, out result, out error);
+        var context = new ParseContext(new Scanner(input), disableLoopDetection: true);
+        return Statements.TryParse(context, out result, out error);
     }
 }
