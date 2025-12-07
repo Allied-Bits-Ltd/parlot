@@ -1,12 +1,17 @@
+#if !AOT_COMPILATION
 using Parlot.Compilation;
+#endif
 using Parlot.Rewriting;
 using System;
+#if !AOT_COMPILATION
 using System.Linq.Expressions;
+#endif
 
 namespace Parlot.Fluent;
 
 /// <summary>
-/// A parser that succeeds when parsing whitespaces as defined in <see cref="ParseContext.WhiteSpaceParser"/>.
+/// A parser that succeeds when parsing whitespaces
+/// as defined in <see cref="ParseContext.WhiteSpaceParser"/>.
 /// </summary>
 public sealed class WhiteSpaceParser : Parser<TextSpan>
 {

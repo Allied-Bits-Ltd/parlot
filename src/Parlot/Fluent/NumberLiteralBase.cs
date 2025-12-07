@@ -1,10 +1,16 @@
+#if !AOT_COMPILATION
 using Parlot.Compilation;
+#endif
 using Parlot.Rewriting;
 using System;
 using System.Globalization;
+#if !AOT_COMPILATION
 using System.Linq.Expressions;
+#endif
 using System.Numerics;
+#if !AOT_COMPILATION
 using System.Reflection;
+#endif
 
 namespace Parlot.Fluent;
 
@@ -12,14 +18,21 @@ namespace Parlot.Fluent;
 /// This class is used as a base class for custom number parsers which don't implement INumber<typeparamref name="T"/> after .NET 7.0.
 /// </summary>
 /// <typeparam name="T"></typeparam>
-public abstract class NumberLiteralBase<T> : Parser<T>, ICompilable, ISeekable
+public abstract class NumberLiteralBase<T> : Parser<T>,
+#if !AOT_COMPILATION
+    ICompilable,
+#endif
+    ISeekable
 {
+#if !AOT_COMPILATION
     private static readonly MethodInfo _defaultTryParseMethodInfo = typeof(T).GetMethod("TryParse", [typeof(string), typeof(NumberStyles), typeof(IFormatProvider), typeof(T).MakeByRefType()])!;
-
+#endif
     private readonly char _decimalSeparator;
     private readonly char _secondDecimalSeparator;
     private readonly char _groupSeparator;
+#if !AOT_COMPILATION
     private readonly MethodInfo _tryParseMethodInfo;
+#endif
     private readonly NumberStyles _numberStyles;
     private readonly CultureInfo _culture = CultureInfo.InvariantCulture;
     private readonly CultureInfo? _culture2;
@@ -38,14 +51,19 @@ public abstract class NumberLiteralBase<T> : Parser<T>, ICompilable, ISeekable
 
     public abstract bool TryParseNumber(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider provider, out T value);
 
-    public NumberLiteralBase(NumberOptions numberOptions = NumberOptions.Number, char decimalSeparator = NumberLiterals.DefaultDecimalSeparator, char groupSeparator = NumberLiterals.DefaultGroupSeparator, char secondDecimalSeparator = '0', MethodInfo? tryParseMethodInfo = null)
+    public NumberLiteralBase(NumberOptions numberOptions = NumberOptions.Number, char decimalSeparator = NumberLiterals.DefaultDecimalSeparator, char groupSeparator = NumberLiterals.DefaultGroupSeparator, char secondDecimalSeparator = '0'
+#if !AOT_COMPILATION
+        , MethodInfo? tryParseMethodInfo = null
+#endif
+        )
     {
         _decimalSeparator = decimalSeparator;
         _secondDecimalSeparator = secondDecimalSeparator;
         if (secondDecimalSeparator == '\0' || secondDecimalSeparator != groupSeparator)
             _groupSeparator = groupSeparator;
-
+#if !AOT_COMPILATION
         _tryParseMethodInfo = tryParseMethodInfo ?? _defaultTryParseMethodInfo;
+#endif
         _numberStyles = numberOptions.ToNumberStyles();
 
         if (decimalSeparator != NumberLiterals.DefaultDecimalSeparator ||
@@ -135,6 +153,7 @@ public abstract class NumberLiteralBase<T> : Parser<T>, ICompilable, ISeekable
         return false;
     }
 
+#if !AOT_COMPILATION
     public CompilationResult Compile(CompilationContext context)
     {
         var result = context.CreateCompilationResult<T>();
@@ -200,6 +219,7 @@ public abstract class NumberLiteralBase<T> : Parser<T>, ICompilable, ISeekable
 
         return result;
     }
+#endif
 }
 
 internal sealed class ByteNumberLiteral : NumberLiteralBase<byte>

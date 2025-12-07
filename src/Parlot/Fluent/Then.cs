@@ -1,18 +1,25 @@
+#if !AOT_COMPILATION
 using Parlot.Compilation;
-using Parlot.Rewriting;
-using System;
 using System.Linq;
 using System.Linq.Expressions;
+#endif
+
+using Parlot.Rewriting;
+using System;
 
 namespace Parlot.Fluent;
 
 /// <summary>
-/// Returns a new <see cref="Parser{U}" /> converting the input value of 
+/// Returns a new <see cref="Parser{U}" /> converting the input value of
 /// type T to the output value of type U using a custom function.
 /// </summary>
 /// <typeparam name="T">The input parser type.</typeparam>
 /// <typeparam name="U">The output parser type.</typeparam>
-public sealed class Then<T, U> : Parser<U>, ICompilable, ISeekable
+public sealed class Then<T, U> : Parser<U>
+#if !AOT_COMPILATION
+    , ICompilable
+#endif
+    , ISeekable
 {
     private readonly Func<T, U>? _action1;
     private readonly Func<ParseContext, T, U>? _action2;
@@ -92,12 +99,13 @@ public sealed class Then<T, U> : Parser<U>, ICompilable, ISeekable
         return false;
     }
 
+#if !AOT_COMPILATION
     public CompilationResult Compile(CompilationContext context)
     {
         var result = context.CreateCompilationResult<U>(false, Expression.Default(typeof(U)));
 
         // parse1 instructions
-        // 
+        //
         // var startOffset = context.Scanner.Cursor.Offset; // Only for _action3
         // parser1 body (which may include whitespace skipping for Terms)
         // if (parser1.Success)
@@ -170,6 +178,6 @@ public sealed class Then<T, U> : Parser<U>, ICompilable, ISeekable
 
         return result;
     }
-
+#endif
     override public string ToString() => $"{_parser} (Then)";
 }

@@ -1,6 +1,8 @@
+#if !AOT_COMPILATION
 using Parlot.Compilation;
-using Parlot.Rewriting;
 using System.Linq.Expressions;
+#endif
+using Parlot.Rewriting;
 
 namespace Parlot.Fluent;
 
@@ -8,7 +10,10 @@ namespace Parlot.Fluent;
 /// Adapts an IParser&lt;T&gt; to a Parser&lt;T&gt; for use in contexts that require Parser.
 /// This is used internally to support covariance.
 /// </summary>
-internal sealed class IParserAdapter<T> : Parser<T>, ISeekable, ICompilable
+internal sealed class IParserAdapter<T> : Parser<T>, ISeekable
+#if !AOT_COMPILATION
+    , ICompilable
+#endif
 {
     private readonly IParser<T> _parser;
 
@@ -41,6 +46,7 @@ internal sealed class IParserAdapter<T> : Parser<T>, ISeekable, ICompilable
         return success;
     }
 
+#if !AOT_COMPILATION
     public CompilationResult Compile(CompilationContext context)
     {
         // If the wrapped parser is actually a Parser<T>, delegate compilation to it
@@ -82,6 +88,7 @@ internal sealed class IParserAdapter<T> : Parser<T>, ISeekable, ICompilable
 
         return result;
     }
+#endif
 
     public override string ToString() => _parser.ToString() ?? "IParserAdapter";
 }

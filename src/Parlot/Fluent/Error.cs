@@ -1,14 +1,22 @@
+#if !AOT_COMPILATION
 using Parlot.Compilation;
+#endif
+
 using Parlot.Rewriting;
 using System;
+#if !AOT_COMPILATION
 #if NET
 using System.Linq;
 #endif
 using System.Linq.Expressions;
+#endif
 
 namespace Parlot.Fluent;
 
-public sealed class ElseError<T> : Parser<T>, ICompilable
+public sealed class ElseError<T> : Parser<T>
+#if !AOT_COMPILATION
+    , ICompilable
+#endif
 {
     private readonly Parser<T> _parser;
     private readonly string _message;
@@ -33,13 +41,14 @@ public sealed class ElseError<T> : Parser<T>, ICompilable
         return true;
     }
 
+#if !AOT_COMPILATION
     public CompilationResult Compile(CompilationContext context)
     {
         var result = context.CreateCompilationResult<T>(true);
 
         // parse1 instructions
         // success = true
-        // 
+        //
         // if (parser1.Success)
         // {
         //   value = parser1.Value
@@ -75,11 +84,15 @@ public sealed class ElseError<T> : Parser<T>, ICompilable
 
         return result;
     }
+#endif
 
     public override string ToString() => $"{_parser} (ElseError)";
 }
 
-public sealed class Error<T> : Parser<T>, ICompilable
+public sealed class Error<T> : Parser<T>
+#if !AOT_COMPILATION
+    , ICompilable
+#endif
 {
     private readonly Parser<T> _parser;
     private readonly string _message;
@@ -104,6 +117,7 @@ public sealed class Error<T> : Parser<T>, ICompilable
         return false;
     }
 
+#if !AOT_COMPILATION
     public CompilationResult Compile(CompilationContext context)
     {
         var result = context.CreateCompilationResult<T>();
@@ -134,11 +148,16 @@ public sealed class Error<T> : Parser<T>, ICompilable
 
         return result;
     }
+#endif
 
     public override string ToString() => $"{_parser} (Error)";
 }
 
-public sealed class Error<T, U> : Parser<U>, ICompilable, ISeekable
+public sealed class Error<T, U> : Parser<U>,
+#if !AOT_COMPILATION
+    ICompilable,
+#endif
+    ISeekable
 {
     private readonly Parser<T> _parser;
     private readonly string _message;
@@ -178,13 +197,14 @@ public sealed class Error<T, U> : Parser<U>, ICompilable, ISeekable
         return false;
     }
 
+#if !AOT_COMPILATION
     public CompilationResult Compile(CompilationContext context)
     {
         var result = context.CreateCompilationResult<U>();
 
         // parse1 instructions
         // success = false;
-        // 
+        //
         // if (parser1.Success)
         // {
         //    throw new ParseException(_message, context.Scanner.Cursor.Position);
@@ -207,6 +227,7 @@ public sealed class Error<T, U> : Parser<U>, ICompilable, ISeekable
 
         return result;
     }
+#endif
 
     public override string ToString() => $"{_parser} (Error)";
 }

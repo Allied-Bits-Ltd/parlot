@@ -1,7 +1,9 @@
+#if !AOT_COMPILATION
 using Parlot.Compilation;
-using System;
 using System.Linq.Expressions;
 using System.Reflection;
+#endif
+using System;
 
 namespace Parlot.Fluent;
 
@@ -11,10 +13,15 @@ namespace Parlot.Fluent;
 /// <remarks>
 /// This parser will always succeed. If the previous parser fails, it will return an empty list.
 /// </remarks>
-public sealed class Optional<T> : Parser<Option<T>>, ICompilable
+public sealed class Optional<T> : Parser<Option<T>>
+#if !AOT_COMPILATION
+    , ICompilable
+#endif
 {
+#if !AOT_COMPILATION
     private static readonly ConstructorInfo _optionConstructor = typeof(Option<T>).GetConstructor([typeof(T)])!;
-    
+#endif
+
     private readonly Parser<T> _parser;
     public Optional(Parser<T> parser)
     {
@@ -36,6 +43,7 @@ public sealed class Optional<T> : Parser<Option<T>>, ICompilable
         return true;
     }
 
+#if !AOT_COMPILATION
     public CompilationResult Compile(CompilationContext context)
     {
         var result = context.CreateCompilationResult<Option<T>>(true);
@@ -43,7 +51,7 @@ public sealed class Optional<T> : Parser<Option<T>>, ICompilable
         // T value = _defaultValue;
         //
         // parse1 instructions
-        // 
+        //
         // value = new OptionalResult<T>(parser1.Success, success ? [parsed.Value] : []);
         //
 
@@ -67,6 +75,7 @@ public sealed class Optional<T> : Parser<Option<T>>, ICompilable
 
         return result;
     }
+#endif
 
     public override string ToString() => $"{_parser}?";
 }

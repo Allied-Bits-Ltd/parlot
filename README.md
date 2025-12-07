@@ -3,7 +3,8 @@
 [![NuGet](https://img.shields.io/nuget/v/Parlot.svg)](https://nuget.org/packages/AlliedBits.Parlot)
 [![BSD 3-Clause](https://img.shields.io/github/license/sebastienros/parlot)](https://github.com/sebastienros/parlot/blob/main/LICENSE) [![Join the chat at https://gitter.im/sebastienros/parlot](https://badges.gitter.im/sebastienros/parlot.svg)](https://gitter.im/sebastienros/parlot?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge)
 
-_This version of Parlot includes optional support for underscores in numbers and for a secondary decimal separator in number parsers, which are not included in the official Parlot project and cannot be introduced by any non-intrusive means like subclassing. This version is and will be synchronized with the official Parlot project. The official Parlot project resides [here on github](https://github.com/sebastienros/parlot) and its packages are available [here in nuget](https://nuget.org/packages/Parlot)_
+_This version of Parlot includes optional support for underscores in numbers and for a secondary decimal separator in number parsers, which are not included in the official Parlot project and cannot be introduced by any non-intrusive means like subclassing. Additionally, this version includes an AOT-compatible assembly._ 
+_This version is and will be synchronized with the official Parlot project. The official Parlot project resides [here on github](https://github.com/sebastienros/parlot) and its packages are available [here in nuget](https://nuget.org/packages/Parlot)._
 
 Parlot is a __fast__, __lightweight__ and simple to use .NET parser combinator.
 
@@ -100,7 +101,7 @@ static FluentParser()
 
 ## Compilation
 
-Grammar trees built using the Fluent API can optionally be compiled with the `Compile()` method. At that point, instead of evaluating recursively all the parsers in the grammar tree, these 
+Grammar trees built using the Fluent API can optionally be compiled with the `Compile()` method (compilation is not supported in the AOT-compatible assembly). At that point, instead of evaluating recursively all the parsers in the grammar tree, these 
 are converted to a more linear and optimized but equivalent compiled IL. This can improve the performance by 20% (see benchmarks results).
 
 ## Performance

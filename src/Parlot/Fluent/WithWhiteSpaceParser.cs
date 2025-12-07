@@ -1,14 +1,22 @@
+#if !AOT_COMPILATION
 using Parlot.Compilation;
+#endif
 using Parlot.Rewriting;
 using System;
+#if !AOT_COMPILATION
 using System.Linq.Expressions;
+#endif
 
 namespace Parlot.Fluent;
 
 /// <summary>
 /// A parser that temporarily sets a custom whitespace parser for its inner parser.
 /// </summary>
-public sealed class WithWhiteSpaceParser<T> : Parser<T>, ICompilable, ISeekable
+public sealed class WithWhiteSpaceParser<T> : Parser<T>,
+#if !AOT_COMPILATION
+    ICompilable,
+#endif
+    ISeekable
 {
     private readonly Parser<T> _parser;
     private readonly Parser<TextSpan> _whiteSpaceParser;
@@ -57,6 +65,7 @@ public sealed class WithWhiteSpaceParser<T> : Parser<T>, ICompilable, ISeekable
         }
     }
 
+#if !AOT_COMPILATION
     public CompilationResult Compile(CompilationContext context)
     {
         var result = context.CreateCompilationResult<T>();
@@ -104,6 +113,6 @@ public sealed class WithWhiteSpaceParser<T> : Parser<T>, ICompilable, ISeekable
 
         return result;
     }
-
+#endif
     public override string ToString() => $"{_parser} (With Custom WS)";
 }

@@ -1,3 +1,4 @@
+#if !AOT_COMPILATION
 using FastExpressionCompiler;
 using Parlot.Fluent;
 using System;
@@ -122,3 +123,4 @@ public static class ExpressionHelper
 
     public static ConstantExpression TrueExpression { get; } = Expression.Constant(true, typeof(bool));
 }
+#endif

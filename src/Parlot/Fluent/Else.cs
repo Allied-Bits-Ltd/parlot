@@ -1,13 +1,18 @@
+#if !AOT_COMPILATION
 using Parlot.Compilation;
-using System;
 using System.Linq.Expressions;
+#endif
+using System;
 
 namespace Parlot.Fluent;
 
 /// <summary>
 /// Returns a default value if the previous parser failed.
 /// </summary>
-public sealed class Else<T> : Parser<T>, ICompilable
+public sealed class Else<T> : Parser<T>
+#if !AOT_COMPILATION
+    , ICompilable
+#endif
 {
     private readonly Parser<T> _parser;
     private readonly T? _value;
@@ -46,6 +51,7 @@ public sealed class Else<T> : Parser<T>, ICompilable
         return true;
     }
 
+#if !AOT_COMPILATION
     public CompilationResult Compile(CompilationContext context)
     {
         var result = context.CreateCompilationResult<T>(true);
@@ -55,7 +61,7 @@ public sealed class Else<T> : Parser<T>, ICompilable
         // success = true;
         //
         // parser instructions
-        // 
+        //
         // if (parser.success)
         // {
         //    value = parser.Value
@@ -96,6 +102,6 @@ public sealed class Else<T> : Parser<T>, ICompilable
 
         return result;
     }
-
+#endif
     public override string ToString() => $"{_parser} (Else)";
 }

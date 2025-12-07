@@ -1,10 +1,15 @@
+#if !AOT_COMPILATION
 using Parlot.Compilation;
-using System;
 using System.Linq.Expressions;
+#endif
+using System;
 
 namespace Parlot.Fluent;
 
-public sealed class ZeroOrOne<T> : Parser<T>, ICompilable
+public sealed class ZeroOrOne<T> : Parser<T>
+#if !AOT_COMPILATION
+    , ICompilable
+#endif
 {
     private readonly Parser<T> _parser;
     private readonly T _defaultValue;
@@ -30,6 +35,7 @@ public sealed class ZeroOrOne<T> : Parser<T>, ICompilable
         return true;
     }
 
+#if !AOT_COMPILATION
     public CompilationResult Compile(CompilationContext context)
     {
         var result = context.CreateCompilationResult<T>(true, Expression.Constant(_defaultValue, typeof(T)));
@@ -37,7 +43,7 @@ public sealed class ZeroOrOne<T> : Parser<T>, ICompilable
         // T value = _defaultValue;
         //
         // parse1 instructions
-        // 
+        //
         // value = new OptionalResult<T>(parser1.Success, parse1.Value);
         //
 
@@ -61,6 +67,6 @@ public sealed class ZeroOrOne<T> : Parser<T>, ICompilable
 
         return result;
     }
-
+#endif
     public override string ToString() => $"{_parser}?";
 }

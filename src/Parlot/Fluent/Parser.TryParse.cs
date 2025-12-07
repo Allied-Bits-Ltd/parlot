@@ -5,8 +5,10 @@ namespace Parlot.Fluent;
 
 public abstract partial class Parser<T>
 {
+#if !AOT_COMPILATION
     private int _invocations;
     private volatile Parser<T>? _compiledParser;
+#endif
 
     /// <summary>
     /// Gets or sets the text which is to render the textual representation of the parser.
@@ -41,8 +43,13 @@ public abstract partial class Parser<T>
         return default;
     }
 
+
     private Parser<T> CheckCompiled(ParseContext context)
     {
+#if AOT_COMPILATION
+        return this;
+#else
+
 #if NETSTANDARD2_1_OR_GREATER || NETCOREAPP3_0_OR_GREATER
         if (!System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported)
         {
@@ -60,7 +67,7 @@ public abstract partial class Parser<T>
         }
 
         // Only the thread that reaches CompilationThreshold compiles the parser.
-        // Any other concurrent call here will return 'this'. This prevents multiple compilations of 
+        // Any other concurrent call here will return 'this'. This prevents multiple compilations of
         // the same parser, and a lock.
 
         if (context.CompilationThreshold > 0 &&
@@ -71,6 +78,7 @@ public abstract partial class Parser<T>
         }
 
         return this;
+#endif
     }
 
     public bool TryParse(string text, out T? value)

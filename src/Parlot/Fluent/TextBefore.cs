@@ -1,22 +1,30 @@
+#if !AOT_COMPILATION
 using Parlot.Compilation;
+#endif
 using Parlot.Rewriting;
 using System;
 #if NET8_0_OR_GREATER
 using System.Buffers;
 #endif
 
+#if !AOT_COMPILATION
 #if NETCOREAPP
 using System.Linq;
 #endif
 using System.Linq.Expressions;
 using System.Reflection;
+#endif
 
 namespace Parlot.Fluent;
 
-public sealed class TextBefore<T> : Parser<TextSpan>, ICompilable
+public sealed class TextBefore<T> : Parser<TextSpan>
+#if !AOT_COMPILATION
+    , ICompilable
+#endif
 {
+#if !AOT_COMPILATION
     private static readonly MethodInfo _jumpToNextExpectedCharMethod = typeof(TextBefore<T>).GetMethod(nameof(JumpToNextExpectedChar), BindingFlags.NonPublic | BindingFlags.Static)!;
-
+#endif
     private readonly Parser<T> _delimiter;
     private readonly bool _canBeEmpty;
     private readonly bool _failOnEof;
@@ -138,7 +146,7 @@ public sealed class TextBefore<T> : Parser<TextSpan>, ICompilable
     {
         var indexOfAny = int.MaxValue;
         var span = context.Scanner.Cursor.Span;
-        
+
         foreach (var c in expectedChars)
         {
             var index = span.IndexOf(c);
@@ -161,6 +169,7 @@ public sealed class TextBefore<T> : Parser<TextSpan>, ICompilable
     }
 #endif
 
+#if !AOT_COMPILATION
     public CompilationResult Compile(CompilationContext context)
     {
         var result = context.CreateCompilationResult<TextSpan>();
@@ -284,6 +293,7 @@ public sealed class TextBefore<T> : Parser<TextSpan>, ICompilable
 
         return result;
     }
+#endif
 
     public override string ToString() => $"TextBefore({_delimiter})";
 }

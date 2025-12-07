@@ -1,6 +1,8 @@
+#if !AOT_COMPILATION
 using Parlot.Compilation;
-using System;
 using System.Linq.Expressions;
+#endif
+using System;
 
 namespace Parlot.Fluent;
 
@@ -8,7 +10,10 @@ namespace Parlot.Fluent;
 /// Doesn't parse anything and return the default value.
 /// </summary>
 [Obsolete("Use the Then parser instead.")]
-public sealed class Discard<T, U> : Parser<U>, ICompilable
+public sealed class Discard<T, U> : Parser<U>
+#if !AOT_COMPILATION
+    , ICompilable
+#endif
 {
     private readonly Parser<T> _parser;
     private readonly U _value;
@@ -37,6 +42,7 @@ public sealed class Discard<T, U> : Parser<U>, ICompilable
         return false;
     }
 
+#if !AOT_COMPILATION
     public CompilationResult Compile(CompilationContext context)
     {
         var result = context.CreateCompilationResult<U>(false, Expression.Constant(_value, typeof(U)));
@@ -45,9 +51,9 @@ public sealed class Discard<T, U> : Parser<U>, ICompilable
 
         // success = false;
         // value = _value;
-        // 
+        //
         // parser instructions
-        // 
+        //
         // success = parser.success;
 
         result.Body.Add(
@@ -60,6 +66,6 @@ public sealed class Discard<T, U> : Parser<U>, ICompilable
 
         return result;
     }
-
+#endif
     public override string ToString() => $"{_parser} (Discard)";
 }

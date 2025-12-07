@@ -1,9 +1,14 @@
+#if !AOT_COMPILATION
 using Parlot.Compilation;
 using System.Linq.Expressions;
+#endif
 
 namespace Parlot.Fluent;
 
-public sealed class NonWhiteSpaceLiteral : Parser<TextSpan>, ICompilable
+public sealed class NonWhiteSpaceLiteral : Parser<TextSpan>
+#if !AOT_COMPILATION
+    , ICompilable
+#endif
 {
     private readonly bool _includeNewLines;
 
@@ -48,6 +53,7 @@ public sealed class NonWhiteSpaceLiteral : Parser<TextSpan>, ICompilable
         return true;
     }
 
+#if !AOT_COMPILATION
     public CompilationResult Compile(CompilationContext context)
     {
         var result = context.CreateCompilationResult<TextSpan>();
@@ -55,14 +61,14 @@ public sealed class NonWhiteSpaceLiteral : Parser<TextSpan>, ICompilable
         // if (!context.Scanner.Cursor.Eof)
         // {
         //     var start = context.Scanner.Cursor.Offset;
-        //     
+        //
         //     [if (_includeNewLines)]
         //         context.Scanner.ReadNonWhiteSpaceOrNewLine();
         //     [else]
         //         context.Scanner.ReadNonWhiteSpace();
-        //     
+        //
         //     var end = context.Scanner.Cursor.Offset;
-        //     
+        //
         //     if (start != end)
         //     {
         //         value = new TextSpan(context.Scanner.Buffer, start, end - start);
@@ -97,4 +103,5 @@ public sealed class NonWhiteSpaceLiteral : Parser<TextSpan>, ICompilable
 
         return result;
     }
+#endif
 }

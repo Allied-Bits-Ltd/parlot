@@ -1,7 +1,11 @@
+#if !AOT_COMPILATION
 using Parlot.Compilation;
+#endif
 using System;
+#if !AOT_COMPILATION
 using System.Linq.Expressions;
 using System.Reflection;
+#endif
 
 namespace Parlot.Fluent;
 
@@ -10,10 +14,15 @@ namespace Parlot.Fluent;
 /// </summary>
 /// <typeparam name="C">The concrete <see cref="ParseContext" /> type to use.</typeparam>
 /// <typeparam name="T">The output parser type.</typeparam>
-public sealed class Select<C, T> : Parser<T>, ICompilable where C : ParseContext
+public sealed class Select<C, T> : Parser<T>
+#if !AOT_COMPILATION
+    , ICompilable
+#endif
+    where C : ParseContext
 {
+#if !AOT_COMPILATION
     private static readonly MethodInfo _parse = typeof(Parser<T>).GetMethod(nameof(Parse), [typeof(ParseContext), typeof(ParseResult<T>).MakeByRefType()])!;
-
+#endif
     private readonly Func<C, Parser<T>> _selector;
 
     public Select(Func<C, Parser<T>> selector)
@@ -47,6 +56,7 @@ public sealed class Select<C, T> : Parser<T>, ICompilable where C : ParseContext
         return false;
     }
 
+#if !AOT_COMPILATION
     public CompilationResult Compile(CompilationContext context)
     {
         var result = context.CreateCompilationResult<T>();
@@ -77,6 +87,6 @@ public sealed class Select<C, T> : Parser<T>, ICompilable where C : ParseContext
 
         return result;
     }
-
+#endif
     public override string ToString() => "(Select)";
 }

@@ -1,12 +1,17 @@
+#if !AOT_COMPILATION
 using Parlot.Compilation;
 using System.Linq.Expressions;
+#endif
 
 namespace Parlot.Fluent;
 
 /// <summary>
 /// Doesn't parse anything and fails parsing.
 /// </summary>
-public sealed class Fail<T> : Parser<T>, ICompilable
+public sealed class Fail<T> : Parser<T>
+#if !AOT_COMPILATION
+    , ICompilable
+#endif
 {
     public Fail()
     {
@@ -21,8 +26,10 @@ public sealed class Fail<T> : Parser<T>, ICompilable
         return false;
     }
 
+#if !AOT_COMPILATION
     public CompilationResult Compile(CompilationContext context)
     {
         return context.CreateCompilationResult<T>(false, Expression.Constant(default(T), typeof(T)));
     }
+#endif
 }

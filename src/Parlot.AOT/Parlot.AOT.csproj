@@ -1,0 +1,142 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>net9.0;net10.0</TargetFrameworks>
+    <Title>Parser combinator for .NET</Title>
+    <Description>Parlot is a fast, lightweight and simple to use .NET parser combinator.</Description>
+    <PackageTags>parser;interpreter;</PackageTags>
+    <IsPackable>true</IsPackable>
+    <AssemblyName>Parlot.AOT</AssemblyName>
+    <AssemblyOriginatorKeyFile>..\Parlot\Parlot.snk</AssemblyOriginatorKeyFile>
+    <SignAssembly>true</SignAssembly>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);1591</NoWarn>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Nullable>enable</Nullable>
+    <LangVersion>Latest</LangVersion>
+    <Configurations>Debug;Release</Configurations>
+    <IsAotCompatible>true</IsAotCompatible>
+    <DefineConstants>$(DefineConstants);AOT_COMPILATION</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\Parlot\Character.Class.cs" Link="Character.Class.cs" />
+    <Compile Include="..\Parlot\Character.cs" Link="Character.cs" />
+    <Compile Include="..\Parlot\Character.Generated.cs" Link="Character.Generated.cs" />
+    <Compile Include="..\Parlot\Character.Mask.cs" Link="Character.Mask.cs" />
+    <Compile Include="..\Parlot\Character.SearchValues.cs" Link="Character.SearchValues.cs" />
+    <Compile Include="..\Parlot\CharMap.cs" Link="CharMap.cs" />
+    <Compile Include="..\Parlot\CharToStringTable.cs" Link="CharToStringTable.cs" />
+    <Compile Include="..\Parlot\Cursor.cs" Link="Cursor.cs" />
+    <Compile Include="..\Parlot\Fluent\Always.cs" Link="Fluent\Always.cs" />
+    <Compile Include="..\Parlot\Fluent\Between.cs" Link="Fluent\Between.cs" />
+    <Compile Include="..\Parlot\Fluent\Capture.cs" Link="Fluent\Capture.cs" />
+    <Compile Include="..\Parlot\Fluent\CharLiteral.cs" Link="Fluent\CharLiteral.cs" />
+    <Compile Include="..\Parlot\Fluent\Deferred.cs" Link="Fluent\Deferred.cs" />
+    <Compile Include="..\Parlot\Fluent\Discard.cs" Link="Fluent\Discard.cs" />
+    <Compile Include="..\Parlot\Fluent\Else.cs" Link="Fluent\Else.cs" />
+    <Compile Include="..\Parlot\Fluent\Eof.cs" Link="Fluent\Eof.cs" />
+    <Compile Include="..\Parlot\Fluent\Error.cs" Link="Fluent\Error.cs" />
+    <Compile Include="..\Parlot\Fluent\Fail.cs" Link="Fluent\Fail.cs" />
+    <Compile Include="..\Parlot\Fluent\Helpers.cs" Link="Fluent\Helpers.cs" />
+    <Compile Include="..\Parlot\Fluent\HybridList.cs" Link="Fluent\HybridList.cs" />
+    <Compile Include="..\Parlot\Fluent\Identifier.cs" Link="Fluent\Identifier.cs" />
+    <Compile Include="..\Parlot\Fluent\IdentifierLiteral.cs" Link="Fluent\IdentifierLiteral.cs" />
+    <Compile Include="..\Parlot\Fluent\If.cs" Link="Fluent\If.cs" />
+    <Compile Include="..\Parlot\Fluent\IParser.cs" Link="Fluent\IParser.cs" />
+    <Compile Include="..\Parlot\Fluent\IParserAdapter.cs" Link="Fluent\IParserAdapter.cs" />
+    <Compile Include="..\Parlot\Fluent\ISequenceParser.cs" Link="Fluent\ISequenceParser.cs" />
+    <Compile Include="..\Parlot\Fluent\ListOfCharsLiteral.cs" Link="Fluent\ListOfCharsLiteral.cs" />
+    <Compile Include="..\Parlot\Fluent\NonWhiteSpaceLiteral.cs" Link="Fluent\NonWhiteSpaceLiteral.cs" />
+    <Compile Include="..\Parlot\Fluent\Not.cs" Link="Fluent\Not.cs" />
+    <Compile Include="..\Parlot\Fluent\NumberLiteral.cs" Link="Fluent\NumberLiteral.cs" />
+    <Compile Include="..\Parlot\Fluent\NumberLiteralBase.cs" Link="Fluent\NumberLiteralBase.cs" />
+    <Compile Include="..\Parlot\Fluent\NumberLiterals.cs" Link="Fluent\NumberLiterals.cs" />
+    <Compile Include="..\Parlot\Fluent\NumberOptions.cs" Link="Fluent\NumberOptions.cs" />
+    <Compile Include="..\Parlot\Fluent\OneOf.ABT.cs" Link="Fluent\OneOf.ABT.cs" />
+    <Compile Include="..\Parlot\Fluent\OneOf.cs" Link="Fluent\OneOf.cs" />
+    <Compile Include="..\Parlot\Fluent\OneOrMany.cs" Link="Fluent\OneOrMany.cs" />
+    <Compile Include="..\Parlot\Fluent\Optional.cs" Link="Fluent\Optional.cs" />
+    <Compile Include="..\Parlot\Fluent\ParseContext.cs" Link="Fluent\ParseContext.cs" />
+    <Compile Include="..\Parlot\Fluent\Parser.Compile.cs" Link="Fluent\Parser.Compile.cs" />
+    <Compile Include="..\Parlot\Fluent\Parser.cs" Link="Fluent\Parser.cs" />
+    <Compile Include="..\Parlot\Fluent\Parser.TryParse.cs" Link="Fluent\Parser.TryParse.cs" />
+    <Compile Include="..\Parlot\Fluent\ParseResult.cs" Link="Fluent\ParseResult.cs" />
+    <Compile Include="..\Parlot\Fluent\ParserExtensions.Cardinality.cs" Link="Fluent\ParserExtensions.Cardinality.cs" />
+    <Compile Include="..\Parlot\Fluent\ParserExtensions.WhiteSpace.cs" Link="Fluent\ParserExtensions.WhiteSpace.cs" />
+    <Compile Include="..\Parlot\Fluent\Parsers.And.cs" Link="Fluent\Parsers.And.cs" />
+    <Compile Include="..\Parlot\Fluent\Parsers.AndSkip.cs" Link="Fluent\Parsers.AndSkip.cs" />
+    <Compile Include="..\Parlot\Fluent\Parsers.cs" Link="Fluent\Parsers.cs" />
+    <Compile Include="..\Parlot\Fluent\Parsers.OneOf.cs" Link="Fluent\Parsers.OneOf.cs" />
+    <Compile Include="..\Parlot\Fluent\Parsers.SkipAnd.cs" Link="Fluent\Parsers.SkipAnd.cs" />
+    <Compile Include="..\Parlot\Fluent\Parsers.Structure.cs" Link="Fluent\Parsers.Structure.cs" />
+    <Compile Include="..\Parlot\Fluent\PatternLiteral.cs" Link="Fluent\PatternLiteral.cs" />
+    <Compile Include="..\Parlot\Fluent\SearchValuesCharLiteral.cs" Link="Fluent\SearchValuesCharLiteral.cs" />
+    <Compile Include="..\Parlot\Fluent\Seekable.cs" Link="Fluent\Seekable.cs" />
+    <Compile Include="..\Parlot\Fluent\Select.cs" Link="Fluent\Select.cs" />
+    <Compile Include="..\Parlot\Fluent\Separated.cs" Link="Fluent\Separated.cs" />
+    <Compile Include="..\Parlot\Fluent\Sequence.cs" Link="Fluent\Sequence.cs" />
+    <Compile Include="..\Parlot\Fluent\SequenceAndSkip.cs" Link="Fluent\SequenceAndSkip.cs" />
+    <Compile Include="..\Parlot\Fluent\SequenceCompileHelper.cs" Link="Fluent\SequenceCompileHelper.cs" />
+    <Compile Include="..\Parlot\Fluent\SequenceSkipAnd.cs" Link="Fluent\SequenceSkipAnd.cs" />
+    <Compile Include="..\Parlot\Fluent\SkipWhiteSpace.cs" Link="Fluent\SkipWhiteSpace.cs" />
+    <Compile Include="..\Parlot\Fluent\StringLiteral.cs" Link="Fluent\StringLiteral.cs" />
+    <Compile Include="..\Parlot\Fluent\Switch.cs" Link="Fluent\Switch.cs" />
+    <Compile Include="..\Parlot\Fluent\TextBefore.cs" Link="Fluent\TextBefore.cs" />
+    <Compile Include="..\Parlot\Fluent\TextLiteral.cs" Link="Fluent\TextLiteral.cs" />
+    <Compile Include="..\Parlot\Fluent\Then.cs" Link="Fluent\Then.cs" />
+    <Compile Include="..\Parlot\Fluent\When.cs" Link="Fluent\When.cs" />
+    <Compile Include="..\Parlot\Fluent\WhenFollowedBy.cs" Link="Fluent\WhenFollowedBy.cs" />
+    <Compile Include="..\Parlot\Fluent\WhenNotFollowedBy.cs" Link="Fluent\WhenNotFollowedBy.cs" />
+    <Compile Include="..\Parlot\Fluent\WhiteSpaceLiteral.cs" Link="Fluent\WhiteSpaceLiteral.cs" />
+    <Compile Include="..\Parlot\Fluent\WhiteSpaceParser.cs" Link="Fluent\WhiteSpaceParser.cs" />
+    <Compile Include="..\Parlot\Fluent\WithWhiteSpaceParser.cs" Link="Fluent\WithWhiteSpaceParser.cs" />
+    <Compile Include="..\Parlot\Fluent\ZeroOrMany.cs" Link="Fluent\ZeroOrMany.cs" />
+    <Compile Include="..\Parlot\Fluent\ZeroOrOne.cs" Link="Fluent\ZeroOrOne.cs" />
+    <Compile Include="..\Parlot\GlobalSuppressions.cs" Link="GlobalSuppressions.cs" />
+    <Compile Include="..\Parlot\GlobalUsings.cs" Link="GlobalUsings.cs" />
+    <Compile Include="..\Parlot\HexConverter.cs" Link="HexConverter.cs" />
+    <Compile Include="..\Parlot\Option.cs" Link="Option.cs" />
+    <Compile Include="..\Parlot\ParseError.cs" Link="ParseError.cs" />
+    <Compile Include="..\Parlot\ParseException.cs" Link="ParseException.cs" />
+    <Compile Include="..\Parlot\ParserOperatorExtensions.cs" />
+    <Compile Include="..\Parlot\Polyfill.cs" Link="Polyfill.cs" />
+    <Compile Include="..\Parlot\Rewriting\IRewritable.cs" Link="Rewriting\IRewritable.cs" />
+    <Compile Include="..\Parlot\Rewriting\ISeekable.cs" Link="Rewriting\ISeekable.cs" />
+    <Compile Include="..\Parlot\Scanner.cs" Link="Scanner.cs" />
+    <Compile Include="..\Parlot\TextPosition.cs" Link="TextPosition.cs" />
+    <Compile Include="..\Parlot\TextSpan.cs" Link="TextSpan.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.Memory" Condition="!$([MSBuild]::IsTargetFrameworkCompatible('$(TargetFramework)', 'net8.0'))" />
+  </ItemGroup>
+
+  <!-- Include build props file in the NuGet package for automatic using static import when ImplicitUsings is enabled -->
+  <ItemGroup>
+    <None Include="..\Parlot\Parlot.snk" Link="Parlot.snk" />
+    <None Include="buildTransitive\Parlot.props" Pack="true" PackagePath="buildTransitive" />
+  </ItemGroup>
+  <ItemGroup>
+    <Service Include="{508349b6-6b84-4df5-91f0-309beebad82d}" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Update="..\Parlot\ParserOperatorExtensions.cs" Link="ParserOperatorExtensions.cs">
+      <DesignTime>True</DesignTime>
+      <AutoGen>True</AutoGen>
+      <DependentUpon>ParserOperatorExtensions.tt</DependentUpon>
+    </Compile>
+  </ItemGroup>
+  <ItemGroup>
+    <None Update="..\Parlot\ParserOperatorExtensions.tt">
+      <Generator>TextTemplatingFileGenerator</Generator>
+      <LastGenOutput>ParserOperatorExtensions.cs</LastGenOutput>
+    </None>
+  </ItemGroup>
+  <ItemGroup>
+    <Folder Include="Fluent\" />
+    <Folder Include="Fluent\" />
+    <Folder Include="Rewriting\" />
+  </ItemGroup>
+
+</Project>

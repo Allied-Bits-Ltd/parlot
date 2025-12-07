@@ -1,12 +1,20 @@
+#if !AOT_COMPILATION
 using Parlot.Compilation;
+#endif
 using Parlot.Rewriting;
 using System;
+#if !AOT_COMPILATION
 using System.Linq;
 using System.Linq.Expressions;
+#endif
 
 namespace Parlot.Fluent;
 
-public sealed class SequenceAndSkip<T1, T2> : Parser<T1>, ICompilable, ISkippableSequenceParser, ISeekable
+public sealed class SequenceAndSkip<T1, T2> : Parser<T1>,
+#if !AOT_COMPILATION
+    ICompilable, ISkippableSequenceParser,
+#endif
+    ISeekable
 {
     private readonly Parser<T1> _parser1;
     private readonly Parser<T2> _parser2;
@@ -57,6 +65,7 @@ public sealed class SequenceAndSkip<T1, T2> : Parser<T1>, ICompilable, ISkippabl
         return false;
     }
 
+#if !AOT_COMPILATION
     public SkippableCompilationResult[] BuildSkippableParsers(CompilationContext context)
     {
         return
@@ -75,16 +84,16 @@ public sealed class SequenceAndSkip<T1, T2> : Parser<T1>, ICompilable, ISkippabl
         // T value;
         //
         // parse1 instructions
-        // 
+        //
         // var start = context.Scanner.Cursor.Position;
         //
         // parse1 instructions
         //
         // if (parser1.Success)
         // {
-        //    
+        //
         //    parse2 instructions
-        //   
+        //
         //    if (parser2.Success)
         //    {
         //       success = true;
@@ -127,11 +136,16 @@ public sealed class SequenceAndSkip<T1, T2> : Parser<T1>, ICompilable, ISkippabl
 
         return result;
     }
+#endif
 
     public override string ToString() => $"{_parser1} & (skip) {_parser2}";
 }
 
-public sealed class SequenceAndSkip<T1, T2, T3> : Parser<ValueTuple<T1, T2>>, ICompilable, ISkippableSequenceParser, ISeekable
+public sealed class SequenceAndSkip<T1, T2, T3> : Parser<ValueTuple<T1, T2>>,
+#if !AOT_COMPILATION
+    ICompilable, ISkippableSequenceParser,
+#endif
+    ISeekable
 {
     private readonly Parser<ValueTuple<T1, T2>> _parser;
     private readonly Parser<T3> _lastParser;
@@ -190,6 +204,7 @@ public sealed class SequenceAndSkip<T1, T2, T3> : Parser<ValueTuple<T1, T2>>, IC
         return false;
     }
 
+#if !AOT_COMPILATION
     public SkippableCompilationResult[] BuildSkippableParsers(CompilationContext context)
     {
         if (_parser is not ISkippableSequenceParser sequenceParser)
@@ -204,12 +219,17 @@ public sealed class SequenceAndSkip<T1, T2, T3> : Parser<ValueTuple<T1, T2>>, IC
     {
         return SequenceCompileHelper.CreateSequenceCompileResult(BuildSkippableParsers(context), context);
     }
+#endif
 
     public override string ToString() => $"{_parser} & (skip) {_lastParser}";
 
 }
 
-public sealed class SequenceAndSkip<T1, T2, T3, T4> : Parser<ValueTuple<T1, T2, T3>>, ICompilable, ISkippableSequenceParser, ISeekable
+public sealed class SequenceAndSkip<T1, T2, T3, T4> : Parser<ValueTuple<T1, T2, T3>>,
+#if !AOT_COMPILATION
+    ICompilable, ISkippableSequenceParser,
+#endif
+    ISeekable
 {
     private readonly Parser<ValueTuple<T1, T2, T3>> _parser;
     private readonly Parser<T4> _lastParser;
@@ -266,6 +286,7 @@ public sealed class SequenceAndSkip<T1, T2, T3, T4> : Parser<ValueTuple<T1, T2, 
         return false;
     }
 
+#if !AOT_COMPILATION
     public SkippableCompilationResult[] BuildSkippableParsers(CompilationContext context)
     {
         if (_parser is not ISkippableSequenceParser sequenceParser)
@@ -280,11 +301,16 @@ public sealed class SequenceAndSkip<T1, T2, T3, T4> : Parser<ValueTuple<T1, T2, 
     {
         return SequenceCompileHelper.CreateSequenceCompileResult(BuildSkippableParsers(context), context);
     }
+#endif
 
     public override string ToString() => $"{_parser} & (skip) {_lastParser}";
 }
 
-public sealed class SequenceAndSkip<T1, T2, T3, T4, T5> : Parser<ValueTuple<T1, T2, T3, T4>>, ICompilable, ISkippableSequenceParser, ISeekable
+public sealed class SequenceAndSkip<T1, T2, T3, T4, T5> : Parser<ValueTuple<T1, T2, T3, T4>>,
+#if !AOT_COMPILATION
+    ICompilable, ISkippableSequenceParser,
+#endif
+    ISeekable
 {
     private readonly Parser<ValueTuple<T1, T2, T3, T4>> _parser;
     private readonly Parser<T5> _lastParser;
@@ -342,6 +368,7 @@ public sealed class SequenceAndSkip<T1, T2, T3, T4, T5> : Parser<ValueTuple<T1, 
         return false;
     }
 
+#if !AOT_COMPILATION
     public SkippableCompilationResult[] BuildSkippableParsers(CompilationContext context)
     {
         if (_parser is not ISkippableSequenceParser sequenceParser)
@@ -356,12 +383,17 @@ public sealed class SequenceAndSkip<T1, T2, T3, T4, T5> : Parser<ValueTuple<T1, 
     {
         return SequenceCompileHelper.CreateSequenceCompileResult(BuildSkippableParsers(context), context);
     }
+#endif
 
     public override string ToString() => $"{_parser} & (skip) {_lastParser}";
 
 }
 
-public sealed class SequenceAndSkip<T1, T2, T3, T4, T5, T6> : Parser<ValueTuple<T1, T2, T3, T4, T5>>, ICompilable, ISkippableSequenceParser, ISeekable
+public sealed class SequenceAndSkip<T1, T2, T3, T4, T5, T6> : Parser<ValueTuple<T1, T2, T3, T4, T5>>,
+#if !AOT_COMPILATION
+    ICompilable, ISkippableSequenceParser,
+#endif
+    ISeekable
 {
     private readonly Parser<ValueTuple<T1, T2, T3, T4, T5>> _parser;
     private readonly Parser<T6> _lastParser;
@@ -422,6 +454,7 @@ public sealed class SequenceAndSkip<T1, T2, T3, T4, T5, T6> : Parser<ValueTuple<
         return false;
     }
 
+#if !AOT_COMPILATION
     public SkippableCompilationResult[] BuildSkippableParsers(CompilationContext context)
     {
         if (_parser is not ISkippableSequenceParser sequenceParser)
@@ -436,11 +469,16 @@ public sealed class SequenceAndSkip<T1, T2, T3, T4, T5, T6> : Parser<ValueTuple<
     {
         return SequenceCompileHelper.CreateSequenceCompileResult(BuildSkippableParsers(context), context);
     }
+#endif
 
     public override string ToString() => $"{_parser} & (skip) {_lastParser}";
 }
 
-public sealed class SequenceAndSkip<T1, T2, T3, T4, T5, T6, T7> : Parser<ValueTuple<T1, T2, T3, T4, T5, T6>>, ICompilable, ISkippableSequenceParser, ISeekable
+public sealed class SequenceAndSkip<T1, T2, T3, T4, T5, T6, T7> : Parser<ValueTuple<T1, T2, T3, T4, T5, T6>>,
+#if !AOT_COMPILATION
+    ICompilable, ISkippableSequenceParser,
+#endif
+    ISeekable
 {
     private readonly Parser<ValueTuple<T1, T2, T3, T4, T5, T6>> _parser;
     private readonly Parser<T7> _lastParser;
@@ -501,6 +539,7 @@ public sealed class SequenceAndSkip<T1, T2, T3, T4, T5, T6, T7> : Parser<ValueTu
         return false;
     }
 
+#if !AOT_COMPILATION
     public SkippableCompilationResult[] BuildSkippableParsers(CompilationContext context)
     {
         if (_parser is not ISkippableSequenceParser sequenceParser)
@@ -515,12 +554,16 @@ public sealed class SequenceAndSkip<T1, T2, T3, T4, T5, T6, T7> : Parser<ValueTu
     {
         return SequenceCompileHelper.CreateSequenceCompileResult(BuildSkippableParsers(context), context);
     }
-
+#endif
     public override string ToString() => $"{_parser} & (skip) {_lastParser}";
 
 }
 
-public sealed class SequenceAndSkip<T1, T2, T3, T4, T5, T6, T7, T8> : Parser<ValueTuple<T1, T2, T3, T4, T5, T6, T7>>, ICompilable, ISkippableSequenceParser, ISeekable
+public sealed class SequenceAndSkip<T1, T2, T3, T4, T5, T6, T7, T8> : Parser<ValueTuple<T1, T2, T3, T4, T5, T6, T7>>,
+#if !AOT_COMPILATION
+    ICompilable, ISkippableSequenceParser,
+#endif
+    ISeekable
 {
     private readonly Parser<ValueTuple<T1, T2, T3, T4, T5, T6, T7>> _parser;
     private readonly Parser<T8> _lastParser;
@@ -582,6 +625,7 @@ public sealed class SequenceAndSkip<T1, T2, T3, T4, T5, T6, T7, T8> : Parser<Val
         return false;
     }
 
+#if !AOT_COMPILATION
     public SkippableCompilationResult[] BuildSkippableParsers(CompilationContext context)
     {
         if (_parser is not ISkippableSequenceParser sequenceParser)
@@ -596,7 +640,7 @@ public sealed class SequenceAndSkip<T1, T2, T3, T4, T5, T6, T7, T8> : Parser<Val
     {
         return SequenceCompileHelper.CreateSequenceCompileResult(BuildSkippableParsers(context), context);
     }
-
+#endif
     public override string ToString() => $"{_parser} & (skip) {_lastParser}";
 
 }

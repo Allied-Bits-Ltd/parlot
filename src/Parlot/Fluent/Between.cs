@@ -1,7 +1,10 @@
+#if !AOT_COMPILATION
+using System.Linq.Expressions;
 using Parlot.Compilation;
+#endif
+
 using Parlot.Rewriting;
 using System;
-using System.Linq.Expressions;
 
 namespace Parlot.Fluent;
 
@@ -12,7 +15,11 @@ namespace Parlot.Fluent;
 /// <typeparam name="A">The type of the parser before the main parser.</typeparam>
 /// <typeparam name="T">The type of the value parsed by the main parser.</typeparam>
 /// <typeparam name="B">The type of the parser after the main parser.</typeparam>
-public sealed class Between<A, T, B> : Parser<T>, ICompilable, ISeekable
+public sealed class Between<A, T, B> : Parser<T>,
+#if !AOT_COMPILATION
+    ICompilable,
+#endif
+    ISeekable
 {
     private readonly Parser<T> _parser;
     private readonly Parser<A> _before;
@@ -78,6 +85,7 @@ public sealed class Between<A, T, B> : Parser<T>, ICompilable, ISeekable
         return true;
     }
 
+    #if !AOT_COMPILATION
     public CompilationResult Compile(CompilationContext context)
     {
         var result = context.CreateCompilationResult<T>();
@@ -89,20 +97,20 @@ public sealed class Between<A, T, B> : Parser<T>, ICompilable, ISeekable
         // if (before.Success)
         // {
         //      parser instructions
-        //      
+        //
         //      if (parser.Success)
         //      {
         //         after instructions
-        //      
+        //
         //         if (after.Success)
         //         {
         //            success = true;
         //            value = parser.Value;
-        //         }  
+        //         }
         //      }
         //
         //      if (!success)
-        //      {  
+        //      {
         //          resetPosition(start);
         //      }
         // }
@@ -149,6 +157,7 @@ public sealed class Between<A, T, B> : Parser<T>, ICompilable, ISeekable
 
         return result;
     }
+#endif
 
     public override string ToString() => Name ?? $"Between({_before},{_parser},{_after})";
 

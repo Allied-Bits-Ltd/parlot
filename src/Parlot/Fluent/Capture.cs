@@ -1,10 +1,16 @@
+#if !AOT_COMPILATION
 using Parlot.Compilation;
+#endif
 using Parlot.Rewriting;
 using System.Linq.Expressions;
 
 namespace Parlot.Fluent;
 
-public sealed class Capture<T> : Parser<TextSpan>, ICompilable, ISeekable
+public sealed class Capture<T> : Parser<TextSpan>,
+#if !AOT_COMPILATION
+    ICompilable,
+#endif
+    ISeekable
 {
     private readonly Parser<T> _parser;
 
@@ -51,6 +57,7 @@ public sealed class Capture<T> : Parser<TextSpan>, ICompilable, ISeekable
         return false;
     }
 
+#if !AOT_COMPILATION
     public CompilationResult Compile(CompilationContext context)
     {
         var result = context.CreateCompilationResult<TextSpan>();
@@ -71,9 +78,9 @@ public sealed class Capture<T> : Parser<TextSpan>, ICompilable, ISeekable
         // {
         //     var end = context.Scanner.Cursor.Offset;
         //     var length = end - start.Offset;
-        //   
+        //
         //     value = new TextSpan(context.Scanner.Buffer, start.Offset, length);
-        //   
+        //
         //     success = true;
         // }
 
@@ -101,6 +108,7 @@ public sealed class Capture<T> : Parser<TextSpan>, ICompilable, ISeekable
 
         return result;
     }
+#endif
 
     public override string ToString() => $"{_parser} (Capture)";
 }

@@ -1,8 +1,10 @@
+#if !AOT_COMPILATION
 using Parlot.Compilation;
-using Parlot.Rewriting;
-using System;
 using System.Linq.Expressions;
 using System.Reflection;
+#endif
+using System;
+using Parlot.Rewriting;
 
 namespace Parlot.Fluent;
 
@@ -15,10 +17,15 @@ public enum StringLiteralQuotes
     Custom
 }
 
-public sealed class StringLiteral : Parser<TextSpan>, ICompilable, ISeekable
+public sealed class StringLiteral : Parser<TextSpan>,
+#if !AOT_COMPILATION
+    ICompilable,
+#endif
+    ISeekable
 {
+#if !AOT_COMPILATION
     private static readonly MethodInfo _decodeStringMethodInfo = typeof(Character).GetMethod("DecodeString", [typeof(string), typeof(int), typeof(int)])!;
-
+#endif
     static readonly char[] SingleQuotes = ['\''];
     static readonly char[] DoubleQuotes = ['\"'];
     static readonly char[] Backtick = ['`'];
@@ -104,6 +111,7 @@ public sealed class StringLiteral : Parser<TextSpan>, ICompilable, ISeekable
         }
     }
 
+#if !AOT_COMPILATION
     public CompilationResult Compile(CompilationContext context)
     {
         var result = context.CreateCompilationResult<TextSpan>();
@@ -154,4 +162,5 @@ public sealed class StringLiteral : Parser<TextSpan>, ICompilable, ISeekable
 
         return result;
     }
+#endif
 }

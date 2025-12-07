@@ -1,10 +1,15 @@
+#if !AOT_COMPILATION
 using Parlot.Compilation;
-using System;
 using System.Linq.Expressions;
+#endif
+using System;
 
 namespace Parlot.Fluent;
 
-public sealed class Not<T> : Parser<T>, ICompilable
+public sealed class Not<T> : Parser<T>
+#if !AOT_COMPILATION
+    , ICompilable
+#endif
 {
     private readonly Parser<T> _parser;
 
@@ -31,6 +36,7 @@ public sealed class Not<T> : Parser<T>, ICompilable
         return false;
     }
 
+#if !AOT_COMPILATION
     public CompilationResult Compile(CompilationContext context)
     {
         var result = context.CreateCompilationResult<T>();
@@ -44,7 +50,7 @@ public sealed class Not<T> : Parser<T>, ICompilable
         // success = false;
         //
         // parser instructions
-        // 
+        //
         // if (parser.succcess)
         // {
         //     context.Scanner.Cursor.ResetPosition(start);
@@ -53,7 +59,7 @@ public sealed class Not<T> : Parser<T>, ICompilable
         // {
         //     success = true;
         // }
-        // 
+        //
 
         result.Body.Add(
             Expression.Block(
@@ -69,6 +75,6 @@ public sealed class Not<T> : Parser<T>, ICompilable
 
         return result;
     }
-
+#endif
     public override string ToString() => $"Not ({_parser})";
 }

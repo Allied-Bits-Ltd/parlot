@@ -1,3 +1,4 @@
+#if !AOT_COMPILATION
 using FastExpressionCompiler;
 using Parlot.Compilation;
 using System;
@@ -79,7 +80,7 @@ public abstract partial class Parser<T>
     }
 
     /// <summary>
-    /// Invokes the <see cref="ICompilable.Compile(CompilationContext)"/> method of the <see cref="Parser{T}"/> if it's available or 
+    /// Invokes the <see cref="ICompilable.Compile(CompilationContext)"/> method of the <see cref="Parser{T}"/> if it's available or
     /// creates a generic one.
     /// </summary>
     /// <param name="context">The <see cref="CompilationContext"/> instance.</param>
@@ -119,7 +120,7 @@ public abstract partial class Parser<T>
     {
         var result = context.CreateCompilationResult<T>(false);
 
-        // 
+        //
         // T value;
         // ParseResult parseResult;
         //
@@ -130,7 +131,7 @@ public abstract partial class Parser<T>
         //    value = parseResult.Value;
         // }
         // #endif
-        // 
+        //
 
         // ParseResult<T> parseResult;
 
@@ -164,3 +165,4 @@ public abstract partial class Parser<T>
         return result;
     }
 }
+#endif

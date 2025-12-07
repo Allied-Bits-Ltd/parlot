@@ -1,13 +1,21 @@
+#if !AOT_COMPILATION
 using Parlot.Compilation;
+#endif
 using Parlot.Rewriting;
 using System;
-using System.Linq;
+#if !AOT_COMPILATION
 using System.Linq.Expressions;
+#endif
+using System.Linq;
 using System.Globalization;
 
 namespace Parlot.Fluent;
 
-public sealed class TextLiteral : Parser<string>, ICompilable, ISeekable
+public sealed class TextLiteral : Parser<string>,
+#if !AOT_COMPILATION
+    ICompilable,
+#endif
+    ISeekable
 {
     private readonly StringComparison _comparisonType;
     private readonly bool _hasNewLines;
@@ -79,8 +87,8 @@ public sealed class TextLiteral : Parser<string>, ICompilable, ISeekable
             var parsedText = context.Scanner.Buffer.AsSpan(start, end - start);
 
             // Prevent an allocation if the text matches exactly
-            result.Set(start, end, parsedText.Equals(Text, StringComparison.Ordinal) 
-                ? Text 
+            result.Set(start, end, parsedText.Equals(Text, StringComparison.Ordinal)
+                ? Text
                 : parsedText.ToString());
 
             context.ExitParser(this);
@@ -91,6 +99,7 @@ public sealed class TextLiteral : Parser<string>, ICompilable, ISeekable
         return false;
     }
 
+#if !AOT_COMPILATION
     public CompilationResult Compile(CompilationContext context)
     {
         var result = context.CreateCompilationResult<string>();
@@ -99,7 +108,7 @@ public sealed class TextLiteral : Parser<string>, ICompilable, ISeekable
         var resultSpan = Expression.Variable(typeof(ReadOnlySpan<char>), $"result{context.NextNumber}");
         result.Variables.Add(resultSpan);
 
-        var readTextMethod = typeof(Scanner).GetMethod(nameof(Scanner.ReadText), 
+        var readTextMethod = typeof(Scanner).GetMethod(nameof(Scanner.ReadText),
             [typeof(ReadOnlySpan<char>), typeof(StringComparison), typeof(ReadOnlySpan<char>).MakeByRefType()])!;
 
         var ifReadText = Expression.IfThen(
@@ -122,6 +131,6 @@ public sealed class TextLiteral : Parser<string>, ICompilable, ISeekable
 
         return result;
     }
-
+#endif
     public override string ToString() => $"Text(\"{Text}\")";
 }

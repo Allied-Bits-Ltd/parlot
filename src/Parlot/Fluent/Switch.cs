@@ -1,8 +1,12 @@
+#if !AOT_COMPILATION
 using Parlot.Compilation;
+#endif
 using System;
+#if !AOT_COMPILATION
 using System.Linq;
 using System.Linq.Expressions;
 using System.Reflection;
+#endif
 
 namespace Parlot.Fluent;
 
@@ -10,9 +14,15 @@ namespace Parlot.Fluent;
 /// <summary>
 /// Routes the parsing based on a custom delegate.
 /// </summary>
-public sealed class Switch<T, U> : Parser<U>, ICompilable
+public sealed class Switch<T, U> : Parser<U>
+#if !AOT_COMPILATION
+    , ICompilable
+#endif
+
 {
+    #if !AOT_COMPILATION
     private static readonly MethodInfo _uParse = typeof(Parser<U>).GetMethod("Parse", [typeof(ParseContext), typeof(ParseResult<U>).MakeByRefType()])!;
+    #endif
 
     private readonly Parser<T> _previousParser;
     private readonly Func<ParseContext, T, Parser<U>> _action;
@@ -56,12 +66,13 @@ public sealed class Switch<T, U> : Parser<U>, ICompilable
         return false;
     }
 
+#if !AOT_COMPILATION
     public CompilationResult Compile(CompilationContext context)
     {
         var result = context.CreateCompilationResult<U>();
 
         // previousParser instructions
-        // 
+        //
         // if (previousParser.Success)
         // {
         //    var nextParser = _action(context, previousParser.Value);
@@ -114,6 +125,7 @@ public sealed class Switch<T, U> : Parser<U>, ICompilable
 
         return result;
     }
+#endif
 
     public override string ToString() => $"{_previousParser} (Switch)";
 }

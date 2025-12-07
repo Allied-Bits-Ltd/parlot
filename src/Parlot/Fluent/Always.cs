@@ -1,12 +1,17 @@
+#if !AOT_COMPILATION
 using Parlot.Compilation;
 using System.Linq.Expressions;
+#endif
 
 namespace Parlot.Fluent;
 
 /// <summary>
 /// Doesn't parse anything and return the default value.
 /// </summary>
-public sealed class Always<T> : Parser<T>, ICompilable
+public sealed class Always<T> : Parser<T>
+#if !AOT_COMPILATION
+    , ICompilable
+#endif
 {
     private readonly T _value;
 
@@ -26,8 +31,10 @@ public sealed class Always<T> : Parser<T>, ICompilable
         return true;
     }
 
+#if !AOT_COMPILATION
     public CompilationResult Compile(CompilationContext context)
     {
         return context.CreateCompilationResult<T>(true, Expression.Constant(_value, typeof(T)));
     }
+#endif
 }

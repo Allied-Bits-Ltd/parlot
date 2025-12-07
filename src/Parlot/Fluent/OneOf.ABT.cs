@@ -1,10 +1,17 @@
+#if !AOT_COMPILATION
 using Parlot.Compilation;
+#endif
 using System;
+#if !AOT_COMPILATION
 using System.Linq.Expressions;
+#endif
 
 namespace Parlot.Fluent;
 
-public sealed class OneOf<A, B, T> : Parser<T>, ICompilable
+public sealed class OneOf<A, B, T> : Parser<T>
+#if !AOT_COMPILATION
+    , ICompilable
+#endif
     where A : T
     where B : T
 {
@@ -45,6 +52,7 @@ public sealed class OneOf<A, B, T> : Parser<T>, ICompilable
         return false;
     }
 
+#if !AOT_COMPILATION
     public CompilationResult Compile(CompilationContext context)
     {
         var result = context.CreateCompilationResult<T>();
@@ -52,7 +60,7 @@ public sealed class OneOf<A, B, T> : Parser<T>, ICompilable
         // T value;
         //
         // parse1 instructions
-        // 
+        //
         // if (parser1.Success)
         // {
         //    success = true;
@@ -61,7 +69,7 @@ public sealed class OneOf<A, B, T> : Parser<T>, ICompilable
         // else
         // {
         //   parse2 instructions
-        //   
+        //
         //   if (parser2.Success)
         //   {
         //      success = true;
@@ -103,6 +111,6 @@ public sealed class OneOf<A, B, T> : Parser<T>, ICompilable
 
         return result;
     }
-
+#endif
     public override string ToString() => $"{_parserA} | {_parserB}";
 }

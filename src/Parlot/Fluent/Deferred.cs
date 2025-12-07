@@ -1,16 +1,24 @@
+#if !AOT_COMPILATION
 using FastExpressionCompiler;
 using Parlot.Compilation;
+#endif
 using Parlot.Rewriting;
 using System;
 
+#if !AOT_COMPILATION
 #if NET
 using System.Linq;
 #endif
 using System.Linq.Expressions;
+#endif
 
 namespace Parlot.Fluent;
 
-public sealed class Deferred<T> : Parser<T>, ICompilable, ISeekable
+public sealed class Deferred<T> : Parser<T>,
+#if !AOT_COMPILATION
+    ICompilable,
+#endif
+    ISeekable
 {
     private Parser<T>? _parser;
 
@@ -80,6 +88,7 @@ public sealed class Deferred<T> : Parser<T>, ICompilable, ISeekable
         return outcome;
     }
 
+#if !AOT_COMPILATION
     private bool _initialized;
     private readonly Closure _closure = new();
 
@@ -105,7 +114,7 @@ public sealed class Deferred<T> : Parser<T>, ICompilable, ISeekable
             // lambda (ParserContext)
             // {
             //   parse1 instructions
-            //   
+            //
             //   var result = new ValueTuple<bool, T>(parser1.Success, parse1.Value);
             //   return result;
             // }
@@ -168,6 +177,7 @@ public sealed class Deferred<T> : Parser<T>, ICompilable, ISeekable
 
         return result;
     }
+#endif
 
     private bool _toString;
 

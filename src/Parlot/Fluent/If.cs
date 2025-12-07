@@ -1,9 +1,13 @@
+#if !AOT_COMPILATION
 using Parlot.Compilation;
+#endif
 using System;
+#if !AOT_COMPILATION
 #if NET
 using System.Linq;
 #endif
 using System.Linq.Expressions;
+#endif
 
 namespace Parlot.Fluent;
 
@@ -13,7 +17,11 @@ namespace Parlot.Fluent;
 /// <typeparam name="C">The concrete <see cref="ParseContext" /> type to use.</typeparam>
 /// <typeparam name="S">The type of the state to pass.</typeparam>
 /// <typeparam name="T">The output parser type.</typeparam>
-public sealed class If<C, S, T> : Parser<T>, ICompilable where C : ParseContext
+public sealed class If<C, S, T> : Parser<T>
+#if !AOT_COMPILATION
+    , ICompilable
+#endif
+    where C : ParseContext
 {
     private readonly Func<C, S?, bool> _predicate;
     private readonly S? _state;
@@ -46,6 +54,7 @@ public sealed class If<C, S, T> : Parser<T>, ICompilable where C : ParseContext
         return valid;
     }
 
+#if !AOT_COMPILATION
     public CompilationResult Compile(CompilationContext context)
     {
         var result = context.CreateCompilationResult<T>();
@@ -66,7 +75,7 @@ public sealed class If<C, S, T> : Parser<T>, ICompilable where C : ParseContext
         //     value = parser.Value;
         //   }
         // }
-        // 
+        //
         // if (!success)
         // {
         //    context.ResetPosition(start);
@@ -105,6 +114,6 @@ public sealed class If<C, S, T> : Parser<T>, ICompilable where C : ParseContext
 
         return result;
     }
-
+#endif
     public override string ToString() => $"{_parser} (If)";
 }

@@ -1,15 +1,20 @@
+#if !AOT_COMPILATION
 using Parlot.Compilation;
-using Parlot.Rewriting;
-using System;
-using System.Linq;
 using System.Linq.Expressions;
+#endif
+using System.Linq;
+using System;
+using Parlot.Rewriting;
 
 namespace Parlot.Fluent;
 
 /// <summary>
 /// Wraps an existing parser as an <see cref="ISeekable"/> implementation by provide the seekable properties.
 /// </summary>
-internal sealed class Seekable<T> : Parser<T>, ISeekable, ICompilable
+internal sealed class Seekable<T> : Parser<T>, ISeekable
+#if !AOT_COMPILATION
+    , ICompilable
+#endif
 {
     public bool CanSeek { get; set; }
 
@@ -37,6 +42,7 @@ internal sealed class Seekable<T> : Parser<T>, ISeekable, ICompilable
         return success;
     }
 
+#if !AOT_COMPILATION
     public CompilationResult Compile(CompilationContext context)
     {
         // Passthrough implementation.
@@ -54,6 +60,7 @@ internal sealed class Seekable<T> : Parser<T>, ISeekable, ICompilable
 
         return result;
     }
+#endif
 
     public override string ToString() => $"{Parser} (Seekable)";
 }

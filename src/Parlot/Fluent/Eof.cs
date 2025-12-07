@@ -1,12 +1,17 @@
+#if !AOT_COMPILATION
 using Parlot.Compilation;
 using System.Linq.Expressions;
+#endif
 
 namespace Parlot.Fluent;
 
 /// <summary>
 /// Successful when the cursor is at the end of the string.
 /// </summary>
-public sealed class Eof<T> : Parser<T>, ICompilable
+public sealed class Eof<T> : Parser<T>
+#if !AOT_COMPILATION
+    , ICompilable
+#endif
 {
     private readonly Parser<T> _parser;
 
@@ -29,12 +34,13 @@ public sealed class Eof<T> : Parser<T>, ICompilable
         return false;
     }
 
+#if !AOT_COMPILATION
     public CompilationResult Compile(CompilationContext context)
     {
         var result = context.CreateCompilationResult<T>();
 
         // parse1 instructions
-        // 
+        //
         // if (parser1.Success && context.Scanner.Cursor.Eof)
         // {
         //    value = parse1.Value;
@@ -61,6 +67,6 @@ public sealed class Eof<T> : Parser<T>, ICompilable
 
         return result;
     }
-
+#endif
     public override string ToString() => $"{_parser} (Eof)";
 }

@@ -1,3 +1,4 @@
+#if !AOT_COMPILATION
 using Parlot.Fluent;
 using System;
 
@@ -51,3 +52,4 @@ public class CompiledParser<T> : Parser<T>, ICompiledParser
         return false;
     }
 }
+#endif

@@ -1,21 +1,31 @@
 #if NET8_0_OR_GREATER
+#if !AOT_COMPILATION
 using Parlot.Compilation;
+#endif
 using Parlot.Rewriting;
 using System;
 using System.Globalization;
+#if !AOT_COMPILATION
 using System.Linq.Expressions;
-using System.Numerics;
 using System.Reflection;
+#endif
+using System.Numerics;
 
 namespace Parlot.Fluent;
 
-public sealed class NumberLiteral<T> : Parser<T>, ICompilable, ISeekable
+public sealed class NumberLiteral<T> : Parser<T>,
+#if !AOT_COMPILATION
+    ICompilable,
+#endif
+    ISeekable
     where T : INumber<T>
 {
     private const char DefaultDecimalSeparator = '.';
     private const char DefaultGroupSeparator = ',';
 
+#if !AOT_COMPILATION
     private static readonly MethodInfo _tryParseMethodInfo = typeof(T).GetMethod(nameof(INumber<T>.TryParse), [typeof(ReadOnlySpan<char>), typeof(NumberStyles), typeof(IFormatProvider), typeof(T).MakeByRefType()])!;
+#endif
 
     private readonly char _decimalSeparator;
     private readonly char _secondDecimalSeparator;
@@ -131,6 +141,7 @@ public sealed class NumberLiteral<T> : Parser<T>, ICompilable, ISeekable
         return false;
     }
 
+#if !AOT_COMPILATION
     public CompilationResult Compile(CompilationContext context)
     {
         var result = context.CreateCompilationResult<T>();
@@ -196,5 +207,6 @@ public sealed class NumberLiteral<T> : Parser<T>, ICompilable, ISeekable
 
         return result;
     }
+#endif
 }
 #endif

@@ -1,16 +1,26 @@
+#if !AOT_COMPILATION
 using Parlot.Compilation;
+#endif
 using Parlot.Rewriting;
 using System;
 using System.Collections.Generic;
+#if !AOT_COMPILATION
 using System.Linq.Expressions;
 using System.Reflection;
+#endif
 
 namespace Parlot.Fluent;
 
-public sealed class OneOrMany<T> : Parser<IReadOnlyList<T>>, ICompilable, ISeekable
+public sealed class OneOrMany<T> : Parser<IReadOnlyList<T>>,
+#if !AOT_COMPILATION
+    ICompilable,
+#endif
+    ISeekable
 {
     private readonly Parser<T> _parser;
+#if !AOT_COMPILATION
     private static readonly MethodInfo _listAddMethodInfo = typeof(List<T>).GetMethod("Add")!;
+#endif
 
     public OneOrMany(Parser<T> parser)
     {
@@ -59,6 +69,7 @@ public sealed class OneOrMany<T> : Parser<IReadOnlyList<T>>, ICompilable, ISeeka
         return true;
     }
 
+#if !AOT_COMPILATION
     public CompilationResult Compile(CompilationContext context)
     {
         var result = context.CreateCompilationResult<IReadOnlyList<T>>();
@@ -69,7 +80,7 @@ public sealed class OneOrMany<T> : Parser<IReadOnlyList<T>>, ICompilable, ISeeka
         // while (true)
         // {
         //   parse1 instructions
-        // 
+        //
         //   if (parser1.Success)
         //   {
         //      value.Add(parse1.Value);
@@ -90,7 +101,7 @@ public sealed class OneOrMany<T> : Parser<IReadOnlyList<T>>, ICompilable, ISeeka
         //     success = true;
         //     result = value;
         // }
-        // 
+        //
 
         var parserCompileResult = _parser.Build(context);
 
@@ -125,6 +136,7 @@ public sealed class OneOrMany<T> : Parser<IReadOnlyList<T>>, ICompilable, ISeeka
 
         return result;
     }
+#endif
 
     public override string ToString() => $"{_parser}+";
 }

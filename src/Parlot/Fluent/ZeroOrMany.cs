@@ -1,14 +1,23 @@
+#if !AOT_COMPILATION
 using Parlot.Compilation;
+#endif
 using System;
 using System.Collections.Generic;
+#if !AOT_COMPILATION
 using System.Linq.Expressions;
 using System.Reflection;
+#endif
 
 namespace Parlot.Fluent;
 
-public sealed class ZeroOrMany<T> : Parser<IReadOnlyList<T>>, ICompilable
+public sealed class ZeroOrMany<T> : Parser<IReadOnlyList<T>>
+#if !AOT_COMPILATION
+    , ICompilable
+#endif
 {
+#if !AOT_COMPILATION
     private static readonly MethodInfo _listAdd = typeof(List<T>).GetMethod("Add")!;
+#endif
 
     private readonly Parser<T> _parser;
 
@@ -42,7 +51,7 @@ public sealed class ZeroOrMany<T> : Parser<IReadOnlyList<T>>, ICompilable
             }
 
             end = parsed.End;
-            
+
             results!.Add(parsed.Value);
         }
 
@@ -52,6 +61,7 @@ public sealed class ZeroOrMany<T> : Parser<IReadOnlyList<T>>, ICompilable
         return true;
     }
 
+#if !AOT_COMPILATION
     public CompilationResult Compile(CompilationContext context)
     {
         var result = context.CreateCompilationResult<IReadOnlyList<T>>(true, ExpressionHelper.ArrayEmpty<T>());
@@ -68,7 +78,7 @@ public sealed class ZeroOrMany<T> : Parser<IReadOnlyList<T>>, ICompilable
         // {
         //
         //   parse1 instructions
-        // 
+        //
         //   if (parser1.Success)
         //   {
         //      if (results == null)
@@ -127,6 +137,7 @@ public sealed class ZeroOrMany<T> : Parser<IReadOnlyList<T>>, ICompilable
 
         return result;
     }
+#endif
 
     public override string ToString() => $"{_parser}*";
 }

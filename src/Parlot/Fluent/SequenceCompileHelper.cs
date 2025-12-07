@@ -1,8 +1,8 @@
-﻿using Parlot.Compilation;
+#if !AOT_COMPILATION
+using Parlot.Compilation;
 using System;
 using System.Linq;
 using System.Linq.Expressions;
-
 namespace Parlot.Fluent;
 
 internal static class SequenceCompileHelper
@@ -22,19 +22,19 @@ internal static class SequenceCompileHelper
         var start = context.DeclarePositionVariable(result);
 
         // parse1 instructions
-        // 
+        //
         // if (parser1Success)
         // {
         //
         //   parse2 instructions
-        //   
+        //
         //   if (parser2Success)
         //   {
         //      success = true;
         //      value = new ValueTuple<T1, T2>(parser1.Value, parse2.Value)
         //   }
         // }
-        // 
+        //
 
         static Type GetValueTuple(int length)
         {
@@ -92,3 +92,4 @@ internal static class SequenceCompileHelper
         return result;
     }
 }
+#endif

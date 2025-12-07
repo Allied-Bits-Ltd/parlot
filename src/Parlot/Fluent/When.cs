@@ -1,10 +1,14 @@
+#if !AOT_COMPILATION
 using Parlot.Compilation;
+#endif
 using Parlot.Rewriting;
 using System;
+#if !AOT_COMPILATION
 #if NET
 using System.Linq;
 #endif
 using System.Linq.Expressions;
+#endif
 
 namespace Parlot.Fluent;
 
@@ -12,7 +16,11 @@ namespace Parlot.Fluent;
 /// Ensure the given parser is valid based on a condition, and backtracks if not.
 /// </summary>
 /// <typeparam name="T">The output parser type.</typeparam>
-public sealed class When<T> : Parser<T>, ICompilable, ISeekable
+public sealed class When<T> : Parser<T>,
+#if !AOT_COMPILATION
+    ICompilable,
+#endif
+    ISeekable
 {
     private readonly Func<ParseContext, T, bool> _action;
     private readonly Parser<T> _parser;
@@ -65,6 +73,7 @@ public sealed class When<T> : Parser<T>, ICompilable, ISeekable
         return valid;
     }
 
+#if !AOT_COMPILATION
     public CompilationResult Compile(CompilationContext context)
     {
         var result = context.CreateCompilationResult<T>();
@@ -75,7 +84,7 @@ public sealed class When<T> : Parser<T>, ICompilable, ISeekable
         // value = default;
         // start = context.Scanner.Cursor.Position;
         // parser instructions
-        // 
+        //
         // if (parser.Success && _action(value))
         // {
         //   success = true;
@@ -114,6 +123,6 @@ public sealed class When<T> : Parser<T>, ICompilable, ISeekable
 
         return result;
     }
-
+#endif
     public override string ToString() => $"{_parser} (When)";
 }

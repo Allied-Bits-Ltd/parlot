@@ -1,16 +1,25 @@
+#if !AOT_COMPILATION
 using Parlot.Compilation;
+#endif
 using Parlot.Rewriting;
 using System;
 using System.Collections.Generic;
+#if !AOT_COMPILATION
 using System.Linq.Expressions;
 using System.Reflection;
+#endif
 
 namespace Parlot.Fluent;
 
-public sealed class Separated<U, T> : Parser<IReadOnlyList<T>>, ICompilable, ISeekable
+public sealed class Separated<U, T> : Parser<IReadOnlyList<T>>,
+#if !AOT_COMPILATION
+    ICompilable,
+#endif
+    ISeekable
 {
+#if !AOT_COMPILATION
     private static readonly MethodInfo _listAddMethodInfo = typeof(List<T>).GetMethod("Add")!;
-
+#endif
     private readonly Parser<U> _separator;
     private readonly Parser<T> _parser;
 
@@ -90,6 +99,7 @@ public sealed class Separated<U, T> : Parser<IReadOnlyList<T>>, ICompilable, ISe
         return true;
     }
 
+#if !AOT_COMPILATION
     public CompilationResult Compile(CompilationContext context)
     {
         var result = context.CreateCompilationResult<IReadOnlyList<T>>(false, ExpressionHelper.ArrayEmpty<T>());
@@ -106,7 +116,7 @@ public sealed class Separated<U, T> : Parser<IReadOnlyList<T>>, ICompilable, ISe
         // while (true)
         // {
         //   parse1 instructions
-        // 
+        //
         //   if (parser1.Success)
         //   {
         //      success = true;
@@ -123,7 +133,7 @@ public sealed class Separated<U, T> : Parser<IReadOnlyList<T>>, ICompilable, ISe
         //   {
         //      break;
         //   }
-        //   
+        //
         //   parseSeparatorExpression with conditional break
         //
         //   if (context.Scanner.Cursor.Eof)
@@ -131,9 +141,9 @@ public sealed class Separated<U, T> : Parser<IReadOnlyList<T>>, ICompilable, ISe
         //      break;
         //   }
         // }
-        // 
+        //
         // resetPosition(end);
-        // 
+        //
 
         var parserCompileResult = _parser.Build(context);
         var breakLabel = Expression.Label($"break{context.NextNumber}");
@@ -187,6 +197,7 @@ public sealed class Separated<U, T> : Parser<IReadOnlyList<T>>, ICompilable, ISe
 
         return result;
     }
+#endif
 
     public override string ToString() => $"Separated({_separator}, {_parser})";
 }

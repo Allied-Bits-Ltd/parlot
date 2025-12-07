@@ -1,19 +1,27 @@
+#if !AOT_COMPILATION
 using Parlot.Compilation;
+#endif
 using Parlot.Rewriting;
 using System;
 using System.Collections.Generic;
+
+#if !AOT_COMPILATION
 #if NET
 using System.Linq;
 #endif
 using System.Linq.Expressions;
-
+#endif
 namespace Parlot.Fluent;
 
 /// <summary>
 /// Ensure the given parser matches at the current position without consuming input (positive lookahead).
 /// </summary>
 /// <typeparam name="T">The output parser type.</typeparam>
-public sealed class WhenFollowedBy<T> : Parser<T>, ICompilable, ISeekable
+public sealed class WhenFollowedBy<T> : Parser<T>,
+#if !AOT_COMPILATION
+    ICompilable,
+#endif
+    ISeekable
 {
     private readonly Parser<T> _parser;
     private readonly Parser<object> _lookahead;
@@ -75,6 +83,7 @@ public sealed class WhenFollowedBy<T> : Parser<T>, ICompilable, ISeekable
         return true;
     }
 
+#if !AOT_COMPILATION
     public CompilationResult Compile(CompilationContext context)
     {
         var result = context.CreateCompilationResult<T>();
@@ -84,9 +93,9 @@ public sealed class WhenFollowedBy<T> : Parser<T>, ICompilable, ISeekable
         // For now, don't attempt to compile the lookahead check. Just compile the main parser.
         // Compilation support for lookahead can be added later if needed.
         // This ensures the parser still benefits from compilation of the main parser.
-        
+
         var parserResult = context.CreateCompilationResult<T>();
-        
+
         // Just add the compiled main parser
         foreach (var variable in mainParserCompileResult.Variables)
         {
@@ -97,6 +106,6 @@ public sealed class WhenFollowedBy<T> : Parser<T>, ICompilable, ISeekable
 
         return parserResult;
     }
-
+#endif
     public override string ToString() => $"{_parser} (WhenFollowedBy {_lookahead})";
 }

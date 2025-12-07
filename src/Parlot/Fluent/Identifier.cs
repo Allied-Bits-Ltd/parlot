@@ -1,14 +1,21 @@
+#if !AOT_COMPILATION
 using Parlot.Compilation;
-using System;
 using System.Linq.Expressions;
 using System.Reflection;
+#endif
+using System;
 
 namespace Parlot.Fluent;
 
-public sealed class Identifier : Parser<TextSpan>, ICompilable
+public sealed class Identifier : Parser<TextSpan>
+#if !AOT_COMPILATION
+    , ICompilable
+#endif
 {
+#if !AOT_COMPILATION
     private static readonly MethodInfo _isIdentifierStartMethodInfo = typeof(Character).GetMethod(nameof(Character.IsIdentifierStart))!;
     private static readonly MethodInfo _isIdentifierPartMethodInfo = typeof(Character).GetMethod(nameof(Character.IsIdentifierPart))!;
+#endif
 
     private readonly Func<char, bool>? _extraStart;
     private readonly Func<char, bool>? _extraPart;
@@ -52,6 +59,7 @@ public sealed class Identifier : Parser<TextSpan>, ICompilable
         return false;
     }
 
+#if !AOT_COMPILATION
     public CompilationResult Compile(CompilationContext context)
     {
         var result = context.CreateCompilationResult<TextSpan>();
@@ -65,18 +73,18 @@ public sealed class Identifier : Parser<TextSpan>, ICompilable
         //
         // success = false;
         // TextSpan value;
-        // 
+        //
         // if (Character.IsIdentifierStart(first) [_extraStart != null] || _extraStart(first))
         // {
         //    var start = context.Scanner.Cursor.Offset;
         //
         //    context.Scanner.Cursor.Advance();
-        //    
+        //
         //    while (!context.Scanner.Cursor.Eof && (Character.IsIdentifierPart(context.Scanner.Cursor.Current) || (_extraPart != null && _extraPart(context.Scanner.Cursor.Current))))
         //    {
         //        context.Scanner.Cursor.Advance();
         //    }
-        //    
+        //
         //    value = new TextSpan(context.Scanner.Buffer, start, context.Scanner.Cursor.Offset - start);
         //    success = true;
         // }
@@ -125,4 +133,5 @@ public sealed class Identifier : Parser<TextSpan>, ICompilable
 
         return result;
     }
+#endif
 }

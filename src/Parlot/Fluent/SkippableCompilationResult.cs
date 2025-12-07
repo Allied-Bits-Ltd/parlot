@@ -1,4 +1,5 @@
-﻿using Parlot.Compilation;
+#if !AOT_COMPILATION
+using Parlot.Compilation;
 
 namespace Parlot.Fluent;
 
@@ -13,3 +14,4 @@ public class SkippableCompilationResult
     public CompilationResult CompilationResult { get; set; }
     public bool Skip { get; set; }
 }
+#endif

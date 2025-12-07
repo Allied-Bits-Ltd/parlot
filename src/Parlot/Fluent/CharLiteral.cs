@@ -1,10 +1,16 @@
+#if !AOT_COMPILATION
 using Parlot.Compilation;
-using Parlot.Rewriting;
 using System.Linq.Expressions;
+#endif
+using Parlot.Rewriting;
 
 namespace Parlot.Fluent;
 
-public sealed class CharLiteral : Parser<char>, ICompilable, ISeekable
+public sealed class CharLiteral : Parser<char>,
+#if !AOT_COMPILATION
+    ICompilable,
+#endif
+    ISeekable
 {
     public CharLiteral(char c)
     {
@@ -40,6 +46,7 @@ public sealed class CharLiteral : Parser<char>, ICompilable, ISeekable
         return false;
     }
 
+#if !AOT_COMPILATION
     public CompilationResult Compile(CompilationContext context)
     {
         var result = context.CreateCompilationResult<char>();
@@ -58,6 +65,7 @@ public sealed class CharLiteral : Parser<char>, ICompilable, ISeekable
 
         return result;
     }
+#endif
 
     public override string ToString() => $"Char('{Char}')";
 }

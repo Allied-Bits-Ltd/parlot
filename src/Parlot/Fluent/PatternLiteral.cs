@@ -1,10 +1,15 @@
+#if !AOT_COMPILATION
 using Parlot.Compilation;
-using System;
 using System.Linq.Expressions;
+#endif
+using System;
 
 namespace Parlot.Fluent;
 
-public sealed class PatternLiteral : Parser<TextSpan>, ICompilable
+public sealed class PatternLiteral : Parser<TextSpan>
+#if !AOT_COMPILATION
+    , ICompilable
+#endif
 {
     private readonly Func<char, bool> _predicate;
     private readonly int _minSize;
@@ -57,6 +62,7 @@ public sealed class PatternLiteral : Parser<TextSpan>, ICompilable
         return false;
     }
 
+#if !AOT_COMPILATION
     public CompilationResult Compile(CompilationContext context)
     {
         var result = context.CreateCompilationResult<TextSpan>();
@@ -87,7 +93,7 @@ public sealed class PatternLiteral : Parser<TextSpan>, ICompilable
         //     }
         //
         //     context.Scanner.Cursor.Advance();
-        // 
+        //
         //     size++;
         //
         //     #if _maxSize > 0 ?
@@ -156,4 +162,5 @@ public sealed class PatternLiteral : Parser<TextSpan>, ICompilable
 
         return result;
     }
+#endif
 }
