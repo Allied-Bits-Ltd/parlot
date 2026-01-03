@@ -1,8 +1,10 @@
+#if !AOT_COMPILATION
 using Parlot.Compilation;
+using System.Linq.Expressions;
+#endif
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Linq.Expressions;
 
 namespace Parlot.Fluent;
 
@@ -12,7 +14,10 @@ namespace Parlot.Fluent;
 /// </summary>
 /// <typeparam name="T">The type of the value being parsed.</typeparam>
 /// <typeparam name="TInput">The type of the operator parsers.</typeparam>
-public sealed class LeftAssociative<T, TInput> : Parser<T>, ICompilable
+public sealed class LeftAssociative<T, TInput> : Parser<T>
+#if !AOT_COMPILATION
+          , ICompilable
+#endif
 {
     private readonly Parser<T> _parser;
     private readonly (Parser<TInput> Op, Func<T, T, T> Factory)[] _operators;
@@ -85,6 +90,7 @@ public sealed class LeftAssociative<T, TInput> : Parser<T>, ICompilable
         return true;
     }
 
+#if !AOT_COMPILATION
     public CompilationResult Compile(CompilationContext context)
     {
         var result = context.CreateCompilationResult<T>();
@@ -199,11 +205,15 @@ public sealed class LeftAssociative<T, TInput> : Parser<T>, ICompilable
 
         return result;
     }
+#endif
 
     public override string ToString() => Name ?? $"LeftAssociative({_parser})";
 }
 
-public sealed class LeftAssociativeWithContext<T, TInput> : Parser<T>, ICompilable
+public sealed class LeftAssociativeWithContext<T, TInput> : Parser<T>
+#if !AOT_COMPILATION
+    , ICompilable
+#endif
 {
     private readonly Parser<T> _parser;
     private readonly (Parser<TInput> Op, Func<ParseContext, T, T, T> Factory)[] _operators;
@@ -269,6 +279,7 @@ public sealed class LeftAssociativeWithContext<T, TInput> : Parser<T>, ICompilab
         return true;
     }
 
+#if !AOT_COMPILATION
     public CompilationResult Compile(CompilationContext context)
     {
         var result = context.CreateCompilationResult<T>();
@@ -381,6 +392,7 @@ public sealed class LeftAssociativeWithContext<T, TInput> : Parser<T>, ICompilab
 
         return result;
     }
+#endif
 
     public override string ToString() => Name ?? $"LeftAssociative({_parser})";
 }

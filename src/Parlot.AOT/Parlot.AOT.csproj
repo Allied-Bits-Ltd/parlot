@@ -46,6 +46,7 @@
     <Compile Include="..\Parlot\Fluent\IParser.cs" Link="Fluent\IParser.cs" />
     <Compile Include="..\Parlot\Fluent\IParserAdapter.cs" Link="Fluent\IParserAdapter.cs" />
     <Compile Include="..\Parlot\Fluent\ISequenceParser.cs" Link="Fluent\ISequenceParser.cs" />
+    <Compile Include="..\Parlot\Fluent\LeftAssociative.cs" Link="Fluent\LeftAssociative.cs" />
     <Compile Include="..\Parlot\Fluent\ListOfCharsLiteral.cs" Link="Fluent\ListOfCharsLiteral.cs" />
     <Compile Include="..\Parlot\Fluent\NonWhiteSpaceLiteral.cs" Link="Fluent\NonWhiteSpaceLiteral.cs" />
     <Compile Include="..\Parlot\Fluent\Not.cs" Link="Fluent\Not.cs" />
@@ -85,6 +86,7 @@
     <Compile Include="..\Parlot\Fluent\TextBefore.cs" Link="Fluent\TextBefore.cs" />
     <Compile Include="..\Parlot\Fluent\TextLiteral.cs" Link="Fluent\TextLiteral.cs" />
     <Compile Include="..\Parlot\Fluent\Then.cs" Link="Fluent\Then.cs" />
+    <Compile Include="..\Parlot\Fluent\Unary.cs" Link="Fluent\Unary.cs" />
     <Compile Include="..\Parlot\Fluent\When.cs" Link="Fluent\When.cs" />
     <Compile Include="..\Parlot\Fluent\WhenFollowedBy.cs" Link="Fluent\WhenFollowedBy.cs" />
     <Compile Include="..\Parlot\Fluent\WhenNotFollowedBy.cs" Link="Fluent\WhenNotFollowedBy.cs" />

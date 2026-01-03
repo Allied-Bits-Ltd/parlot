@@ -1,9 +1,16 @@
+#if !AOT_COMPILATION
 using FastExpressionCompiler;
 using Parlot.Compilation;
+using System.Linq.Expressions;
+#endif
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Linq.Expressions;
+
+#if AOT_COMPILATION
+#pragma warning disable CS0169
+#pragma warning disable CS0649
+#endif
 
 namespace Parlot.Fluent;
 
@@ -13,7 +20,10 @@ namespace Parlot.Fluent;
 /// </summary>
 /// <typeparam name="T">The type of the value being parsed.</typeparam>
 /// <typeparam name="TInput">The type of the operator parsers.</typeparam>
-public sealed class Unary<T, TInput> : Parser<T>, ICompilable
+public sealed class Unary<T, TInput> : Parser<T>
+#if !AOT_COMPILATION
+    , ICompilable
+#endif
 {
     private readonly Parser<T> _parser;
     private readonly (Parser<TInput> Op, Func<T, T> Factory)[] _operators;
@@ -68,6 +78,7 @@ public sealed class Unary<T, TInput> : Parser<T>, ICompilable
         public object? Func;
     }
 
+#if !AOT_COMPILATION
     public CompilationResult Compile(CompilationContext context)
     {
         var result = context.CreateCompilationResult<T>();
@@ -234,11 +245,15 @@ public sealed class Unary<T, TInput> : Parser<T>, ICompilable
 
         return result;
     }
+#endif
 
     public override string ToString() => Name ?? $"Unary({_parser})";
 }
 
-public sealed class UnaryWithContext<T, TInput> : Parser<T>, ICompilable
+public sealed class UnaryWithContext<T, TInput> : Parser<T>
+#if !AOT_COMPILATION
+    , ICompilable
+#endif
 {
     private readonly Parser<T> _parser;
     private readonly (Parser<TInput> Op, Func<ParseContext, T, T> Factory)[] _operators;
@@ -292,6 +307,7 @@ public sealed class UnaryWithContext<T, TInput> : Parser<T>, ICompilable
         public object? Func;
     }
 
+#if !AOT_COMPILATION
     public CompilationResult Compile(CompilationContext context)
     {
         var result = context.CreateCompilationResult<T>();
@@ -458,6 +474,7 @@ public sealed class UnaryWithContext<T, TInput> : Parser<T>, ICompilable
 
         return result;
     }
+#endif
 
     public override string ToString() => Name ?? $"Unary({_parser})";
 }
