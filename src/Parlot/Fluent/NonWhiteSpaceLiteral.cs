@@ -1,9 +1,9 @@
-using Parlot.Compilation;
-using System.Linq.Expressions;
+using Parlot.SourceGeneration;
+using System;
 
 namespace Parlot.Fluent;
 
-public sealed class NonWhiteSpaceLiteral : Parser<TextSpan>, ICompilable
+public sealed class NonWhiteSpaceLiteral : Parser<TextSpan>, ISourceable
 {
     private readonly bool _includeNewLines;
 
@@ -48,52 +48,41 @@ public sealed class NonWhiteSpaceLiteral : Parser<TextSpan>, ICompilable
         return true;
     }
 
-    public CompilationResult Compile(CompilationContext context)
+
+    public SourceResult GenerateSource(SourceGenerationContext context)
     {
-        var result = context.CreateCompilationResult<TextSpan>();
+        ThrowHelper.ThrowIfNull(context, nameof(context));
 
-        // if (!context.Scanner.Cursor.Eof)
-        // {
-        //     var start = context.Scanner.Cursor.Offset;
-        //     
-        //     [if (_includeNewLines)]
-        //         context.Scanner.ReadNonWhiteSpaceOrNewLine();
-        //     [else]
-        //         context.Scanner.ReadNonWhiteSpace();
-        //     
-        //     var end = context.Scanner.Cursor.Offset;
-        //     
-        //     if (start != end)
-        //     {
-        //         value = new TextSpan(context.Scanner.Buffer, start, end - start);
-        //         success = true;
-        //     }
-        // }
+        var result = context.CreateResult(typeof(TextSpan));
+        var cursorName = context.CursorName;
+        var scannerName = context.ScannerName;
 
-        var start = Expression.Parameter(typeof(int));
-        var end = Expression.Parameter(typeof(int));
+        var startName = $"start{context.NextNumber()}";
+        var endName = $"end{context.NextNumber()}";
 
-        result.Body.Add(
-            Expression.IfThen(
-                Expression.Not(context.Eof()),
-                Expression.Block(
-                    [start, end],
-                    Expression.Assign(start, context.Offset()),
-                    _includeNewLines
-                        ? context.ReadNonWhiteSpaceOrNewLine()
-                        : context.ReadNonWhiteSpace(),
-                    Expression.Assign(end, context.Offset()),
-                    Expression.IfThen(
-                        Expression.NotEqual(start, end),
-                        Expression.Block(
-                            Expression.Assign(result.Success, Expression.Constant(true, typeof(bool))),
-                            context.DiscardResult
-                                ? Expression.Empty()
-                                : Expression.Assign(result.Value, context.NewTextSpan(context.Buffer(), start, Expression.Subtract(end, start))
-                            )
-                        )
-                )))
-        );
+        result.Body.Add($"if (!{cursorName}.Eof)");
+        result.Body.Add("{");
+        result.Body.Add($"    var {startName} = {cursorName}.Offset;");
+        
+        if (_includeNewLines)
+        {
+            result.Body.Add($"    {scannerName}.ReadNonWhiteSpaceOrNewLine();");
+        }
+        else
+        {
+            result.Body.Add($"    {scannerName}.ReadNonWhiteSpace();");
+        }
+
+        result.Body.Add($"    var {endName} = {cursorName}.Offset;");
+        result.Body.Add($"    if ({startName} != {endName})");
+        result.Body.Add("    {");
+        if (!context.DiscardResult)
+        {
+            result.Body.Add($"        {result.ValueVariable} = new global::Parlot.TextSpan({scannerName}.Buffer, {startName}, {endName} - {startName});");
+        }
+        result.Body.Add($"        {result.SuccessVariable} = true;");
+        result.Body.Add("    }");
+        result.Body.Add("}");
 
         return result;
     }

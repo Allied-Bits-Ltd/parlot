@@ -1,10 +1,9 @@
-using Parlot.Compilation;
+using Parlot.SourceGeneration;
 using System;
-using System.Linq.Expressions;
 
 namespace Parlot.Fluent;
 
-public sealed class OneOf<A, B, T> : Parser<T>, ICompilable
+public sealed class OneOf<A, B, T> : Parser<T>, ISourceable
     where A : T
     where B : T
 {
@@ -45,61 +44,52 @@ public sealed class OneOf<A, B, T> : Parser<T>, ICompilable
         return false;
     }
 
-    public CompilationResult Compile(CompilationContext context)
+
+    public SourceResult GenerateSource(SourceGenerationContext context)
     {
-        var result = context.CreateCompilationResult<T>();
+        ThrowHelper.ThrowIfNull(context, nameof(context));
 
-        // T value;
-        //
-        // parse1 instructions
-        // 
-        // if (parser1.Success)
-        // {
-        //    success = true;
-        //    value = (T) parse1.Value;
-        // }
-        // else
-        // {
-        //   parse2 instructions
-        //   
-        //   if (parser2.Success)
-        //   {
-        //      success = true;
-        //      value = (T) parse2.Value
-        //   }
-        // }
+        if (_parserA is not ISourceable sourceableA || _parserB is not ISourceable sourceableB)
+        {
+            throw new NotSupportedException("OneOf requires source-generatable parsers.");
+        }
 
-        var parser1CompileResult = _parserA.Build(context);
-        var parser2CompileResult = _parserB.Build(context);
+        var result = context.CreateResult(typeof(T));
+        var valueTypeNameA = SourceGenerationContext.GetTypeName(typeof(A));
+        var valueTypeNameB = SourceGenerationContext.GetTypeName(typeof(B));
+        var valueTypeNameT = SourceGenerationContext.GetTypeName(typeof(T));
 
-        result.Body.Add(
-            Expression.Block(
-                parser1CompileResult.Variables,
-                Expression.Block(parser1CompileResult.Body),
-                Expression.IfThenElse(
-                    parser1CompileResult.Success,
-                    Expression.Block(
-                        Expression.Assign(result.Success, Expression.Constant(true, typeof(bool))),
-                        context.DiscardResult
-                        ? Expression.Empty()
-                        : Expression.Assign(result.Value, Expression.Convert(parser1CompileResult.Value, typeof(T)))
-                        ),
-                    Expression.Block(
-                        parser2CompileResult.Variables,
-                        Expression.Block(parser2CompileResult.Body),
-                        Expression.IfThen(
-                            parser2CompileResult.Success,
-                            Expression.Block(
-                                Expression.Assign(result.Success, Expression.Constant(true, typeof(bool))),
-                                context.DiscardResult
-                                ? Expression.Empty()
-                                : Expression.Assign(result.Value, Expression.Convert(parser2CompileResult.Value, typeof(T)))
-                                )
-                            )
-                        )
-                    )
-                )
-            );
+        // Use helpers instead of inlining
+        var helperNameA = context.Helpers
+            .GetOrCreate(sourceableA, $"{context.MethodNamePrefix}_OneOf_A", valueTypeNameA, () => sourceableA.GenerateSource(context))
+            .MethodName;
+
+        var helperNameB = context.Helpers
+            .GetOrCreate(sourceableB, $"{context.MethodNamePrefix}_OneOf_B", valueTypeNameB, () => sourceableB.GenerateSource(context))
+            .MethodName;
+
+        var valueAName = $"valueA{context.NextNumber()}";
+        var valueBName = $"valueB{context.NextNumber()}";
+
+        result.Body.Add($"if ({helperNameA}({context.ParseContextName}, out var {valueAName}))");
+        result.Body.Add("{");
+        result.Body.Add($"    {result.SuccessVariable} = true;");
+        if (!context.DiscardResult)
+        {
+            result.Body.Add($"    {result.ValueVariable} = ({valueTypeNameT}){valueAName};");
+        }
+        result.Body.Add("}");
+        result.Body.Add("else");
+        result.Body.Add("{");
+        result.Body.Add($"    if ({helperNameB}({context.ParseContextName}, out var {valueBName}))");
+        result.Body.Add("    {");
+        result.Body.Add($"        {result.SuccessVariable} = true;");
+        if (!context.DiscardResult)
+        {
+            result.Body.Add($"        {result.ValueVariable} = ({valueTypeNameT}){valueBName};");
+        }
+        result.Body.Add("    }");
+        result.Body.Add("}");
 
         return result;
     }

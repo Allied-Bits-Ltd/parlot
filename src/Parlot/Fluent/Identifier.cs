@@ -1,11 +1,10 @@
-using Parlot.Compilation;
+using Parlot.SourceGeneration;
 using System;
-using System.Linq.Expressions;
 using System.Reflection;
 
 namespace Parlot.Fluent;
 
-public sealed class Identifier : Parser<TextSpan>, ICompilable
+public sealed class Identifier : Parser<TextSpan>, ISourceable
 {
     private static readonly MethodInfo _isIdentifierStartMethodInfo = typeof(Character).GetMethod(nameof(Character.IsIdentifierStart))!;
     private static readonly MethodInfo _isIdentifierPartMethodInfo = typeof(Character).GetMethod(nameof(Character.IsIdentifierPart))!;
@@ -27,7 +26,7 @@ public sealed class Identifier : Parser<TextSpan>, ICompilable
 
         var first = context.Scanner.Cursor.Current;
 
-        if (Character.IsIdentifierStart(first) || _extraStart != null && _extraStart(first))
+        if (Character.IsIdentifierStart(first) || (_extraStart != null && _extraStart(first)))
         {
             var start = context.Scanner.Cursor.Offset;
 
@@ -52,76 +51,60 @@ public sealed class Identifier : Parser<TextSpan>, ICompilable
         return false;
     }
 
-    public CompilationResult Compile(CompilationContext context)
+
+    public SourceResult GenerateSource(SourceGenerationContext context)
     {
-        var result = context.CreateCompilationResult<TextSpan>();
+        ThrowHelper.ThrowIfNull(context, nameof(context));
 
-        // var first = context.Scanner.Cursor.Current;
+        var result = context.CreateResult(typeof(TextSpan));
+        var cursorName = context.CursorName;
+        var scannerName = context.ScannerName;
 
-        var first = Expression.Parameter(typeof(char), $"first{context.NextNumber}");
-        result.Body.Add(Expression.Assign(first, context.Current()));
-        result.Variables.Add(first);
+        var firstCharName = $"first{context.NextNumber()}";
+        var startName = $"start{context.NextNumber()}";
+        var endName = $"end{context.NextNumber()}";
 
-        //
-        // success = false;
-        // TextSpan value;
-        // 
-        // if (Character.IsIdentifierStart(first) [_extraStart != null] || _extraStart(first))
-        // {
-        //    var start = context.Scanner.Cursor.Offset;
-        //
-        //    context.Scanner.Cursor.Advance();
-        //    
-        //    while (!context.Scanner.Cursor.Eof && (Character.IsIdentifierPart(context.Scanner.Cursor.Current) || (_extraPart != null && _extraPart(context.Scanner.Cursor.Current))))
-        //    {
-        //        context.Scanner.Cursor.Advance();
-        //    }
-        //    
-        //    value = new TextSpan(context.Scanner.Buffer, start, context.Scanner.Cursor.Offset - start);
-        //    success = true;
-        // }
+        result.Body.Add($"var {firstCharName} = {cursorName}.Current;");
 
-        var start = Expression.Parameter(typeof(int), $"start{context.NextNumber}");
+        // Check if first char is an identifier start
+        var startCondition = _extraStart != null
+            ? $"global::Parlot.Character.IsIdentifierStart({firstCharName}) || extraStart{context.NextNumber()}({firstCharName})"
+            : $"global::Parlot.Character.IsIdentifierStart({firstCharName})";
 
-        var breakLabel = Expression.Label($"break_{context.NextNumber}");
+        if (_extraStart != null)
+        {
+            var extraStartLambda = context.RegisterLambda(_extraStart);
+            startCondition = $"global::Parlot.Character.IsIdentifierStart({firstCharName}) || {extraStartLambda}({firstCharName})";
+        }
 
-        var block = Expression.Block(
-            Expression.IfThen(
-                Expression.OrElse(
-                    Expression.Call(_isIdentifierStartMethodInfo, first),
-                    _extraStart != null
-                        ? Expression.Invoke(Expression.Constant(_extraStart), first)
-                        : Expression.Constant(false, typeof(bool))
-                        ),
-                Expression.Block(
-                    [start],
-                    Expression.Assign(start, context.Offset()),
-                    context.AdvanceNoNewLine(Expression.Constant(1)),
-                    Expression.Loop(
-                        Expression.IfThenElse(
-                            /* if */ Expression.AndAlso(
-                                Expression.Not(context.Eof()),
-                                    Expression.OrElse(
-                                        Expression.Call(_isIdentifierPartMethodInfo, context.Current()),
-                                        _extraPart != null
-                                            ? Expression.Invoke(Expression.Constant(_extraPart), context.Current())
-                                            : Expression.Constant(false, typeof(bool))
-                                        )
-                                ),
-                            /* then */ context.AdvanceNoNewLine(Expression.Constant(1)),
-                            /* else */ Expression.Break(breakLabel)
-                            ),
-                        breakLabel
-                        ),
-                    context.DiscardResult
-                        ? Expression.Empty()
-                        : Expression.Assign(result.Value, context.NewTextSpan(context.Buffer(), start, Expression.Subtract(context.Offset(), start))),
-                    Expression.Assign(result.Success, Expression.Constant(true, typeof(bool)))
-                )
-            )
-        );
+        result.Body.Add($"if ({startCondition})");
+        result.Body.Add("{");
+        result.Body.Add($"    var {startName} = {cursorName}.Offset;");
+        result.Body.Add($"    {cursorName}.AdvanceNoNewLines(1);");
 
-        result.Body.Add(block);
+        // Continue reading while it's an identifier part
+        var partCondition = _extraPart != null
+            ? $"!{cursorName}.Eof && (global::Parlot.Character.IsIdentifierPart({cursorName}.Current) || extraPart{context.NextNumber()}({cursorName}.Current))"
+            : $"!{cursorName}.Eof && global::Parlot.Character.IsIdentifierPart({cursorName}.Current)";
+
+        if (_extraPart != null)
+        {
+            var extraPartLambda = context.RegisterLambda(_extraPart);
+            partCondition = $"!{cursorName}.Eof && (global::Parlot.Character.IsIdentifierPart({cursorName}.Current) || {extraPartLambda}({cursorName}.Current))";
+        }
+
+        result.Body.Add($"    while ({partCondition})");
+        result.Body.Add("    {");
+        result.Body.Add($"        {cursorName}.AdvanceNoNewLines(1);");
+        result.Body.Add("    }");
+
+        result.Body.Add($"    var {endName} = {cursorName}.Offset;");
+        if (!context.DiscardResult)
+        {
+            result.Body.Add($"    {result.ValueVariable} = new global::Parlot.TextSpan({scannerName}.Buffer, {startName}, {endName} - {startName});");
+        }
+        result.Body.Add($"    {result.SuccessVariable} = true;");
+        result.Body.Add("}");
 
         return result;
     }

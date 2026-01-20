@@ -1,6 +1,5 @@
-using Parlot.Compilation;
+using Parlot.SourceGeneration;
 using System;
-using System.Linq.Expressions;
 using System.Reflection;
 
 namespace Parlot.Fluent;
@@ -11,10 +10,10 @@ namespace Parlot.Fluent;
 /// <remarks>
 /// This parser will always succeed. If the previous parser fails, it will return an empty list.
 /// </remarks>
-public sealed class Optional<T> : Parser<Option<T>>, ICompilable
+public sealed class Optional<T> : Parser<Option<T>>, ISourceable
 {
     private static readonly ConstructorInfo _optionConstructor = typeof(Option<T>).GetConstructor([typeof(T)])!;
-    
+
     private readonly Parser<T> _parser;
     public Optional(Parser<T> parser)
     {
@@ -36,34 +35,50 @@ public sealed class Optional<T> : Parser<Option<T>>, ICompilable
         return true;
     }
 
-    public CompilationResult Compile(CompilationContext context)
+
+    public SourceResult GenerateSource(SourceGenerationContext context)
     {
-        var result = context.CreateCompilationResult<Option<T>>(true);
+        ThrowHelper.ThrowIfNull(context, nameof(context));
 
-        // T value = _defaultValue;
-        //
-        // parse1 instructions
-        // 
-        // value = new OptionalResult<T>(parser1.Success, success ? [parsed.Value] : []);
-        //
+        if (_parser is not ISourceable sourceable)
+        {
+            throw new NotSupportedException("Optional requires a source-generatable parser.");
+        }
 
-        var parserCompileResult = _parser.Build(context);
+        var result = context.CreateResult(typeof(Option<T>), defaultSuccess: true);
+        var elementTypeName = SourceGenerationContext.GetTypeName(typeof(T));
+        var innerValueTypeName = SourceGenerationContext.GetTypeName(typeof(T));
 
-        var block = Expression.Block(
-            parserCompileResult.Variables,
-                Expression.Block(
-                    Expression.Block(parserCompileResult.Body),
-                    context.DiscardResult
-                        ? Expression.Empty()
-                        : Expression.IfThenElse(
-                            parserCompileResult.Success,
-                            Expression.Assign(result.Value, Expression.New(_optionConstructor, parserCompileResult.Value)),
-                            Expression.Assign(result.Value, Expression.Constant(new Option<T>(), typeof(Option<T>)))
-                        )
-                    )
-                );
+        // Use helper instead of inlining
+        var helperName = context.Helpers
+            .GetOrCreate(sourceable, $"{context.MethodNamePrefix}_Optional", innerValueTypeName, () => sourceable.GenerateSource(context))
+            .MethodName;
 
-        result.Body.Add(block);
+        // if (Helper(context, out var innerValue))
+        // {
+        //     value = new Option<T>(innerValue);
+        // }
+        // else
+        // {
+        //     value = new Option<T>();
+        // }
+        // success = true; (always succeeds)
+        var innerValueName = $"innerValue{context.NextNumber()}";
+        result.Body.Add($"if ({helperName}({context.ParseContextName}, out var {innerValueName}))");
+        result.Body.Add("{");
+        if (!context.DiscardResult)
+        {
+            result.Body.Add($"    {result.ValueVariable} = new global::Parlot.Option<{elementTypeName}>({innerValueName});");
+        }
+        result.Body.Add("}");
+        result.Body.Add("else");
+        result.Body.Add("{");
+        if (!context.DiscardResult)
+        {
+            result.Body.Add($"    {result.ValueVariable} = new global::Parlot.Option<{elementTypeName}>();");
+        }
+        result.Body.Add("}");
+        result.Body.Add($"{result.SuccessVariable} = true;");
 
         return result;
     }

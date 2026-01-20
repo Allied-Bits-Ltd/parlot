@@ -1,7 +1,6 @@
-using Parlot.Compilation;
 using Parlot.Rewriting;
+using Parlot.SourceGeneration;
 using System;
-using System.Linq.Expressions;
 
 namespace Parlot.Fluent;
 
@@ -12,7 +11,7 @@ namespace Parlot.Fluent;
 /// <typeparam name="A">The type of the parser before the main parser.</typeparam>
 /// <typeparam name="T">The type of the value parsed by the main parser.</typeparam>
 /// <typeparam name="B">The type of the parser after the main parser.</typeparam>
-public sealed class Between<A, T, B> : Parser<T>, ICompilable, ISeekable
+public sealed class Between<A, T, B> : Parser<T>, ISeekable, ISourceable
 {
     private readonly Parser<T> _parser;
     private readonly Parser<A> _before;
@@ -78,74 +77,70 @@ public sealed class Between<A, T, B> : Parser<T>, ICompilable, ISeekable
         return true;
     }
 
-    public CompilationResult Compile(CompilationContext context)
+
+    public SourceResult GenerateSource(SourceGenerationContext context)
     {
-        var result = context.CreateCompilationResult<T>();
+        ThrowHelper.ThrowIfNull(context, nameof(context));
 
-        // start = context.Scanner.Cursor.Position;
-        //
-        // before instructions
-        //
-        // if (before.Success)
-        // {
-        //      parser instructions
-        //      
-        //      if (parser.Success)
-        //      {
-        //         after instructions
-        //      
-        //         if (after.Success)
-        //         {
-        //            success = true;
-        //            value = parser.Value;
-        //         }  
-        //      }
-        //
-        //      if (!success)
-        //      {  
-        //          resetPosition(start);
-        //      }
-        // }
+        if (_before is not ISourceable beforeSourceable || _parser is not ISourceable parserSourceable || _after is not ISourceable afterSourceable)
+        {
+            throw new NotSupportedException("Between requires all parsers to be source-generatable.");
+        }
 
-        var beforeCompileResult = _before.Build(context);
-        var parserCompileResult = _parser.Build(context);
-        var afterCompileResult = _after.Build(context);
+        var result = context.CreateResult(typeof(T));
+        var cursorName = context.CursorName;
+        var startName = $"start{context.NextNumber()}";
 
-        var start = context.DeclarePositionVariable(result);
+        result.Body.Add($"var {startName} = {cursorName}.Position;");
+        result.Body.Add($"{result.SuccessVariable} = false;");
 
-        var block = Expression.Block(
-                beforeCompileResult.Variables,
-                Expression.Block(beforeCompileResult.Body),
-                Expression.IfThen(
-                    beforeCompileResult.Success,
-                    Expression.Block(
-                        parserCompileResult.Variables,
-                        Expression.Block(parserCompileResult.Body),
-                        Expression.IfThen(
-                            parserCompileResult.Success,
-                            Expression.Block(
-                                afterCompileResult.Variables,
-                                Expression.Block(afterCompileResult.Body),
-                                Expression.IfThen(
-                                    afterCompileResult.Success,
-                                    Expression.Block(
-                                        Expression.Assign(result.Success, Expression.Constant(true, typeof(bool))),
-                                        context.DiscardResult
-                                        ? Expression.Empty()
-                                        : Expression.Assign(result.Value, parserCompileResult.Value)
-                                        )
-                                    )
-                                )
-                            ),
-                        Expression.IfThen(
-                            Expression.Not(result.Success),
-                            context.ResetPosition(start)
-                            )
-                        )
-                    )
-                );
+        static Type GetParserValueType(object parser)
+        {
+            var type = parser.GetType();
+            while (type != null)
+            {
+                if (type.IsGenericType && type.GetGenericTypeDefinition().FullName == "Parlot.Fluent.Parser`1")
+                {
+                    return type.GetGenericArguments()[0];
+                }
+                type = type.BaseType!;
+            }
+            throw new InvalidOperationException("Unable to determine parser value type.");
+        }
 
-        result.Body.Add(block);
+        string Helper(ISourceable p, string suffix)
+        {
+            var valueTypeName = SourceGenerationContext.GetTypeName(GetParserValueType(p));
+            return context.Helpers
+                .GetOrCreate(p, $"{context.MethodNamePrefix}_Between_{suffix}", valueTypeName, () => p.GenerateSource(context))
+                .MethodName;
+        }
+
+        var helperBefore = Helper(beforeSourceable, "Before");
+        var helperParser = Helper(parserSourceable, "Parser");
+        var helperAfter = Helper(afterSourceable, "After");
+
+        result.Body.Add($"if ({helperBefore}({context.ParseContextName}, out _))");
+        result.Body.Add("{");
+        if (context.DiscardResult)
+        {
+            result.Body.Add($"    if ({helperParser}({context.ParseContextName}, out _))");
+        }
+        else
+        {
+            result.Body.Add($"    if ({helperParser}({context.ParseContextName}, out {result.ValueVariable}))");
+        }
+        result.Body.Add("    {");
+        result.Body.Add($"        if ({helperAfter}({context.ParseContextName}, out _))");
+        result.Body.Add("        {");
+        result.Body.Add($"            {result.SuccessVariable} = true;");
+        result.Body.Add("        }");
+        result.Body.Add("    }");
+        result.Body.Add("}");
+        result.Body.Add($"if (!{result.SuccessVariable})");
+        result.Body.Add("{");
+        result.Body.Add($"    {cursorName}.ResetPosition({startName});");
+        result.Body.Add("}");
 
         return result;
     }

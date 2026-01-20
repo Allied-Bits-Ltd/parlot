@@ -1,7 +1,7 @@
-using Parlot.Compilation;
 using Parlot.Rewriting;
+using Parlot.SourceGeneration;
 using System;
-using System.Linq.Expressions;
+using System.Linq;
 using System.Reflection;
 
 namespace Parlot.Fluent;
@@ -15,7 +15,7 @@ public enum StringLiteralQuotes
     Custom
 }
 
-public sealed class StringLiteral : Parser<TextSpan>, ICompilable, ISeekable
+public sealed class StringLiteral : Parser<TextSpan>, ISeekable, ISourceable
 {
     private static readonly MethodInfo _decodeStringMethodInfo = typeof(Character).GetMethod("DecodeString", [typeof(string), typeof(int), typeof(int)])!;
 
@@ -98,53 +98,37 @@ public sealed class StringLiteral : Parser<TextSpan>, ICompilable, ISeekable
         }
     }
 
-    public CompilationResult Compile(CompilationContext context)
+
+    public SourceResult GenerateSource(SourceGenerationContext context)
     {
-        var result = context.CreateCompilationResult<TextSpan>();
+        ThrowHelper.ThrowIfNull(context, nameof(context));
 
-        // var start = context.Scanner.Cursor.Offset;
+        var result = context.CreateResult(typeof(TextSpan));
+        var cursorName = context.CursorName;
+        var scannerName = context.ScannerName;
 
-        var start = Expression.Variable(typeof(int), $"start{context.NextNumber}");
-        result.Variables.Add(start);
+        var startName = $"start{context.NextNumber()}";
+        var endName = $"end{context.NextNumber()}";
 
-        result.Body.Add(Expression.Assign(start, context.Offset()));
+        result.Body.Add($"var {startName} = {cursorName}.Offset;");
 
-        var parseStringExpression = _quotes switch
+        // Generate the appropriate read method call based on quote type
+        var readMethod = _quotes switch
         {
-            StringLiteralQuotes.Single => context.ReadSingleQuotedString(),
-            StringLiteralQuotes.Double => context.ReadDoubleQuotedString(),
-            StringLiteralQuotes.SingleOrDouble => context.ReadQuotedString(),
-            StringLiteralQuotes.Backtick => context.ReadBacktickString(),
-            StringLiteralQuotes.Custom => context.ReadCustomString(Expression.Constant(ExpectedChars)),
+            StringLiteralQuotes.Single => $"{scannerName}.ReadSingleQuotedString()",
+            StringLiteralQuotes.Double => $"{scannerName}.ReadDoubleQuotedString()",
+            StringLiteralQuotes.SingleOrDouble => $"{scannerName}.ReadQuotedString()",
+            StringLiteralQuotes.Backtick => $"{scannerName}.ReadBacktickString()",
+            StringLiteralQuotes.Custom => $"{scannerName}.ReadQuotedString(new char[] {{ {string.Join(", ", ExpectedChars.Select(c => $"'{c}'"))} }})",
             _ => throw new InvalidOperationException()
         };
 
-        // if (context.Scanner.ReadSingleQuotedString())
-        // {
-        //     var end = context.Scanner.Cursor.Offset;
-        //     success = true;
-        //     value = Character.DecodeString(context.Scanner.Buffer, start + 1, end - start - 2);
-        // }
-
-        var end = Expression.Variable(typeof(int), $"end{context.NextNumber}");
-
-        result.Body.Add(
-            Expression.IfThen(
-                parseStringExpression,
-                Expression.Block(
-                    [end],
-                    Expression.Assign(end, context.Offset()),
-                    Expression.Assign(result.Success, Expression.Constant(true, typeof(bool))),
-                    context.DiscardResult
-                    ? Expression.Empty()
-                    : Expression.Assign(result.Value,
-                        Expression.Call(_decodeStringMethodInfo,
-                            context.Buffer(),
-                            Expression.Add(start, Expression.Constant(1)),
-                            Expression.Subtract(Expression.Subtract(end, start), Expression.Constant(2))
-                            ))
-                )
-            ));
+        result.Body.Add($"if ({readMethod})");
+        result.Body.Add("{");
+        result.Body.Add($"    var {endName} = {cursorName}.Offset;");
+        result.Body.Add($"    {result.SuccessVariable} = true;");
+        result.Body.Add($"    {result.ValueVariable} = global::Parlot.Character.DecodeString({scannerName}.Buffer, {startName} + 1, {endName} - {startName} - 2);");
+        result.Body.Add("}");
 
         return result;
     }

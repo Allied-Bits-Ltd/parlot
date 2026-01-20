@@ -1,9 +1,8 @@
-using Parlot.Compilation;
+using Parlot.SourceGeneration;
 using System;
 #if NET
 using System.Linq;
 #endif
-using System.Linq.Expressions;
 
 namespace Parlot.Fluent;
 
@@ -13,7 +12,7 @@ namespace Parlot.Fluent;
 /// <typeparam name="C">The concrete <see cref="ParseContext" /> type to use.</typeparam>
 /// <typeparam name="S">The type of the state to pass.</typeparam>
 /// <typeparam name="T">The output parser type.</typeparam>
-public sealed class If<C, S, T> : Parser<T>, ICompilable where C : ParseContext
+public sealed class If<C, S, T> : Parser<T>, ISourceable where C : ParseContext
 {
     private readonly Func<C, S?, bool> _predicate;
     private readonly S? _state;
@@ -46,62 +45,63 @@ public sealed class If<C, S, T> : Parser<T>, ICompilable where C : ParseContext
         return valid;
     }
 
-    public CompilationResult Compile(CompilationContext context)
+
+    public SourceResult GenerateSource(SourceGenerationContext context)
     {
-        var result = context.CreateCompilationResult<T>();
+        ThrowHelper.ThrowIfNull(context, nameof(context));
 
-        var parserCompileResult = _parser.Build(context, requireResult: true);
+        if (_parser is not ISourceable sourceable)
+        {
+            throw new NotSupportedException("If requires a source-generatable parser.");
+        }
 
-        // success = false;
-        // value = default;
-        //
-        // start = context.Scanner.Cursor.Position;
-        // if (_predicate((C)context, _state) )
+        var result = context.CreateResult(typeof(T));
+        var cursorName = context.CursorName;
+        var ctx = context.ParseContextName;
+
+        var startName = $"start{context.NextNumber()}";
+        result.Body.Add($"var {startName} = {cursorName}.Position;");
+
+        // Register the predicate lambda
+        var predicateLambda = context.RegisterLambda(_predicate);
+        var stateLambda = context.RegisterLambda(new Func<S?>(() => _state));
+        var valueTypeName = SourceGenerationContext.GetTypeName(typeof(T));
+
+        // Use helper instead of inlining
+        var helperName = context.Helpers
+            .GetOrCreate(sourceable, $"{context.MethodNamePrefix}_If", valueTypeName, () => sourceable.GenerateSource(context))
+            .MethodName;
+
+        // if (_predicate((C)context, _state))
         // {
-        //   parser instructions
-        //
-        //   if (parser.success)
-        //   {
-        //     success = true;
-        //     value = parser.Value;
-        //   }
+        //     if (Helper(context, out value))
+        //     {
+        //         success = true;
+        //     }
         // }
-        // 
         // if (!success)
         // {
-        //    context.ResetPosition(start);
+        //     cursor.ResetPosition(start);
         // }
-        //
 
-        var start = context.DeclarePositionVariable(result);
-//                                    parserCompileResult.Success
-
-        var block = Expression.Block(
-                Expression.IfThen(
-                    Expression.Invoke(Expression.Constant(_predicate), [Expression.Convert(context.ParseContext, typeof(C)), Expression.Constant(_state, typeof(S))]),
-                    Expression.Block(
-                        Expression.Block(
-                            parserCompileResult.Variables,
-                            parserCompileResult.Body),
-                        Expression.IfThen(
-                            parserCompileResult.Success,
-                            Expression.Block(
-                                Expression.Assign(result.Success, Expression.Constant(true, typeof(bool))),
-                                    context.DiscardResult
-                                        ? Expression.Empty()
-                                        : Expression.Assign(result.Value, parserCompileResult.Value)
-                            )
-                        )
-                    )
-                ),
-                Expression.IfThen(
-                    Expression.Not(result.Success),
-                    context.ResetPosition(start)
-                    )
-                );
-
-
-        result.Body.Add(block);
+        result.Body.Add($"if ({predicateLambda}(({SourceGenerationContext.GetTypeName(typeof(C))}){ctx}, {stateLambda}()))");
+        result.Body.Add("{");
+        if (context.DiscardResult)
+        {
+            result.Body.Add($"    if ({helperName}({ctx}, out _))");
+        }
+        else
+        {
+            result.Body.Add($"    if ({helperName}({ctx}, out {result.ValueVariable}))");
+        }
+        result.Body.Add("    {");
+        result.Body.Add($"        {result.SuccessVariable} = true;");
+        result.Body.Add("    }");
+        result.Body.Add("}");
+        result.Body.Add($"if (!{result.SuccessVariable})");
+        result.Body.Add("{");
+        result.Body.Add($"    {cursorName}.ResetPosition({startName});");
+        result.Body.Add("}");
 
         return result;
     }

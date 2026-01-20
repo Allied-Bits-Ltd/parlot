@@ -1,6 +1,6 @@
-using Parlot.Compilation;
 using Parlot.Rewriting;
-using System.Linq.Expressions;
+using Parlot.SourceGeneration;
+using System;
 
 namespace Parlot.Fluent;
 
@@ -8,7 +8,7 @@ namespace Parlot.Fluent;
 /// Adapts an IParser&lt;T&gt; to a Parser&lt;T&gt; for use in contexts that require Parser.
 /// This is used internally to support covariance.
 /// </summary>
-internal sealed class IParserAdapter<T> : Parser<T>, ISeekable, ICompilable
+internal sealed class IParserAdapter<T> : Parser<T>, ISeekable, ISourceable
 {
     private readonly IParser<T> _parser;
 
@@ -41,44 +41,32 @@ internal sealed class IParserAdapter<T> : Parser<T>, ISeekable, ICompilable
         return success;
     }
 
-    public CompilationResult Compile(CompilationContext context)
+
+    public SourceResult GenerateSource(SourceGenerationContext context)
     {
-        // If the wrapped parser is actually a Parser<T>, delegate compilation to it
-        if (_parser is Parser<T> parser)
+        ThrowHelper.ThrowIfNull(context, nameof(context));
+
+        // If the wrapped parser is actually a Parser<T> that implements ISourceable, delegate to it
+        if (_parser is Parser<T> { } parser && parser is ISourceable sourceable)
         {
-            return parser.Build(context);
+            return sourceable.GenerateSource(context);
         }
 
-        // Otherwise, fall back to the default non-compilable behavior
-        // This uses the Parse method which will work with any IParser<T>
-        var result = context.CreateCompilationResult<T>(false);
+        // Otherwise, fall back to using the Parse method
+        var result = context.CreateResult(typeof(T));
+        var ctx = context.ParseContextName;
 
-        // ParseResult<T> parseResult;
-        var parseResult = Expression.Variable(typeof(ParseResult<T>), $"value{context.NextNumber}");
-        result.Variables.Add(parseResult);
+        var parseResultName = $"parseResult{context.NextNumber()}";
 
-        // success = this.Parse(context.ParseContext, ref parseResult)
-        result.Body.Add(
-            Expression.Assign(result.Success,
-                Expression.Call(
-                    Expression.Constant(this),
-                    GetType().GetMethod("Parse", [typeof(ParseContext), typeof(ParseResult<T>).MakeByRefType()])!,
-                    context.ParseContext,
-                    parseResult))
-            );
+        // Create a lambda that captures this instance
+        var adapterLambda = context.RegisterLambda(new Func<IParserAdapter<T>>(() => this));
 
-        if (!context.DiscardResult)
-        {
-            var value = result.Value = Expression.Variable(typeof(T), $"value{context.NextNumber}");
-            result.Variables.Add(value);
-
-            result.Body.Add(
-                Expression.IfThen(
-                    result.Success,
-                    Expression.Assign(value, Expression.Field(parseResult, "Value"))
-                    )
-                );
-        }
+        result.Body.Add($"var {parseResultName} = new global::Parlot.ParseResult<{SourceGenerationContext.GetTypeName(typeof(T))}>();");
+        result.Body.Add($"{result.SuccessVariable} = {adapterLambda}().Parse({ctx}, ref {parseResultName});");
+        result.Body.Add($"if ({result.SuccessVariable})");
+        result.Body.Add("{");
+        result.Body.Add($"    {result.ValueVariable} = {parseResultName}.Value;");
+        result.Body.Add("}");
 
         return result;
     }

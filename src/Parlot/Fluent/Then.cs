@@ -1,18 +1,18 @@
-using Parlot.Compilation;
+using Parlot;
 using Parlot.Rewriting;
 using System;
 using System.Linq;
-using System.Linq.Expressions;
+using Parlot.SourceGeneration;
 
 namespace Parlot.Fluent;
 
 /// <summary>
-/// Returns a new <see cref="Parser{U}" /> converting the input value of 
+/// Returns a new <see cref="Parser{U}" /> converting the input value of
 /// type T to the output value of type U using a custom function.
 /// </summary>
 /// <typeparam name="T">The input parser type.</typeparam>
 /// <typeparam name="U">The output parser type.</typeparam>
-public sealed class Then<T, U> : Parser<U>, ICompilable, ISeekable
+public sealed class Then<T, U> : Parser<U>, ISeekable, ISourceable
 {
     private readonly Func<T, U>? _action1;
     private readonly Func<ParseContext, T, U>? _action2;
@@ -92,84 +92,105 @@ public sealed class Then<T, U> : Parser<U>, ICompilable, ISeekable
         return false;
     }
 
-    public CompilationResult Compile(CompilationContext context)
+
+    
+    public Parlot.SourceGeneration.SourceResult GenerateSource(Parlot.SourceGeneration.SourceGenerationContext context)
     {
-        var result = context.CreateCompilationResult<U>(false, Expression.Default(typeof(U)));
+        ThrowHelper.ThrowIfNull(context, nameof(context));
 
-        // parse1 instructions
-        // 
-        // var startOffset = context.Scanner.Cursor.Offset; // Only for _action3
-        // parser1 body (which may include whitespace skipping for Terms)
-        // if (parser1.Success)
-        // {
-        //    var endOffset = context.Scanner.Cursor.Offset;  // Only for _action3
-        //    success = true;
-        //    value = action(parse1.Value) // or action(context, start, end, parse1.Value) for _action3
-        // }
-
-        ParameterExpression? startOffset = null;
-        ParameterExpression? endOffset = null;
-
-        if (_action3 != null)
+        if (_parser is not ISourceable sourceable)
         {
-            // Capture the start offset before the parser runs
-            // Note: For Terms parsers (which skip whitespace), this will be before whitespace is skipped
-            // This differs from non-compiled mode where parsed.Start is after whitespace skipping
-            startOffset = result.DeclareVariable<int>($"startOffset{context.NextNumber}", context.Offset());
-            endOffset = result.DeclareVariable<int>($"endOffset{context.NextNumber}");
+            throw new NotSupportedException("Then requires a source-generatable parser.");
         }
 
-        var parserCompileResult = _parser.Build(context, requireResult: true);
+        var result = context.CreateResult(typeof(U));
+        var ctx = context.ParseContextName;
+        var parsedName = $"parsed{context.NextNumber()}";
+        var parsedTypeName = SourceGenerationContext.GetTypeName(typeof(T));
+        var valueTypeName = SourceGenerationContext.GetTypeName(typeof(U));
 
-        Expression assignValue;
+        // Register helper for the inner parser
+        static Type GetParserValueType(object parser)
+        {
+            var type = parser.GetType();
+            while (type != null)
+            {
+                if (type.IsGenericType && type.GetGenericTypeDefinition().FullName == "Parlot.Fluent.Parser`1")
+                {
+                    return type.GetGenericArguments()[0];
+                }
+                type = type.BaseType!;
+            }
+            throw new InvalidOperationException("Unable to determine parser value type.");
+        }
+
+        var innerValueTypeName = SourceGenerationContext.GetTypeName(GetParserValueType(sourceable));
+        var helperKey = $"{context.MethodNamePrefix}_Then_{context.NextNumber()}";
+        var helperName = context.Helpers
+            .GetOrCreate(sourceable, helperKey, innerValueTypeName, () => sourceable.GenerateSource(context))
+            .MethodName;
+
+        result.Body.Add($"if ({helperName}({ctx}, out var {parsedName}Value))");
+        result.Body.Add("{");
 
         if (_action1 != null)
         {
-            assignValue = context.DiscardResult
-                ? Expression.Invoke(Expression.Constant(_action1), [parserCompileResult.Value])
-                : Expression.Assign(result.Value, Expression.Invoke(Expression.Constant(_action1), [parserCompileResult.Value]));
+            var lambdaName = context.RegisterLambda(_action1);
+            if (context.DiscardResult)
+            {
+                result.Body.Add($"    {lambdaName}({parsedName}Value);");
+            }
+            else
+            {
+                result.Body.Add($"    {result.ValueVariable} = {lambdaName}({parsedName}Value);");
+            }
         }
         else if (_action2 != null)
         {
-            assignValue = context.DiscardResult
-                ? Expression.Invoke(Expression.Constant(_action2), [context.ParseContext, parserCompileResult.Value])
-                : Expression.Assign(result.Value, Expression.Invoke(Expression.Constant(_action2), [context.ParseContext, parserCompileResult.Value]));
+            var lambdaName = context.RegisterLambda(_action2);
+            if (context.DiscardResult)
+            {
+                result.Body.Add($"    {lambdaName}({ctx}, {parsedName}Value);");
+            }
+            else
+            {
+                result.Body.Add($"    {result.ValueVariable} = {lambdaName}({ctx}, {parsedName}Value);");
+            }
         }
         else if (_action3 != null)
         {
-            // Capture end offset when parser succeeds, then invoke the action
-            assignValue = Expression.Block(
-                Expression.Assign(endOffset!, context.Offset()),
-                context.DiscardResult
-                    ? Expression.Invoke(Expression.Constant(_action3), [context.ParseContext, startOffset!, endOffset!, parserCompileResult.Value])
-                    : Expression.Assign(result.Value, Expression.Invoke(Expression.Constant(_action3), [context.ParseContext, startOffset!, endOffset!, parserCompileResult.Value]))
-            );
+            var lambdaName = context.RegisterLambda(_action3);
+            if (context.DiscardResult)
+            {
+                result.Body.Add($"    {lambdaName}({ctx}, 0, 0, {parsedName}Value);");
+            }
+            else
+            {
+                result.Body.Add($"    {result.ValueVariable} = {lambdaName}({ctx}, 0, 0, {parsedName}Value);");
+            }
         }
         else
         {
-            assignValue = context.DiscardResult
-                ? Expression.Empty()
-                : Expression.Assign(result.Value, Expression.Constant(_value, typeof(U)));
+            // Value-based: try to use LiteralHelper for supported types
+            var valueExpr = LiteralHelper.ToLiteral(_value);
+            if (valueExpr == null)
+            {
+                throw new NotSupportedException(
+                    $"Then<{typeof(T).Name}, {typeof(U).Name}> with a value of type '{typeof(U).Name}' cannot be source-generated. " +
+                    $"Use a lambda instead, e.g., .Then(static _ => yourValue)");
+            }
+            
+            if (!context.DiscardResult)
+            {
+                result.Body.Add($"    {result.ValueVariable} = {valueExpr};");
+            }
         }
-
-        var block = Expression.Block(
-                parserCompileResult.Variables,
-                parserCompileResult.Body
-                .Append(
-                    Expression.IfThen(
-                        parserCompileResult.Success,
-                        Expression.Block(
-                            Expression.Assign(result.Success, Expression.Constant(true, typeof(bool))),
-                            assignValue
-                            )
-                        )
-                    )
-                );
-
-        result.Body.Add(block);
+        
+        result.Body.Add($"    {result.SuccessVariable} = true;");
+        result.Body.Add("}");
 
         return result;
     }
 
-    override public string ToString() => $"{_parser} (Then)";
+override public string ToString() => $"{_parser} (Then)";
 }

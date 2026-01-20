@@ -1,8 +1,8 @@
-using Parlot.Compilation;
 using Parlot.Rewriting;
+using Parlot.SourceGeneration;
 using System;
 using System.Globalization;
-using System.Linq.Expressions;
+using System.Linq;
 using System.Numerics;
 using System.Reflection;
 
@@ -12,14 +12,15 @@ namespace Parlot.Fluent;
 /// This class is used as a base class for custom number parsers which don't implement INumber<typeparamref name="T"/> after .NET 7.0.
 /// </summary>
 /// <typeparam name="T"></typeparam>
-public abstract class NumberLiteralBase<T> : Parser<T>, ICompilable, ISeekable
+public abstract class NumberLiteralBase<T> : Parser<T>, ISeekable, ISourceable
 {
-    private static readonly MethodInfo _defaultTryParseMethodInfo = typeof(T).GetMethod("TryParse", [typeof(string), typeof(NumberStyles), typeof(IFormatProvider), typeof(T).MakeByRefType()])!;
-
     private readonly char _decimalSeparator;
     private readonly char _groupSeparator;
     private readonly MethodInfo _tryParseMethodInfo;
     private readonly NumberStyles _numberStyles;
+
+    // Kept as a CultureInfo since it is handed to the public TryParseNumber overrides and to the
+    // caller supplied tryParseMethodInfo, which can both expect that exact type.
     private readonly CultureInfo _culture = CultureInfo.InvariantCulture;
     private readonly bool _allowLeadingSign;
     private readonly bool _allowDecimalSeparator;
@@ -107,62 +108,82 @@ public abstract class NumberLiteralBase<T> : Parser<T>, ICompilable, ISeekable
         return false;
     }
 
-    public CompilationResult Compile(CompilationContext context)
+
+    public SourceResult GenerateSource(SourceGenerationContext context)
     {
-        var result = context.CreateCompilationResult<T>();
+        ThrowHelper.ThrowIfNull(context, nameof(context));
 
-        // var reset = context.Scanner.Cursor.Position;
+        var cursorName = context.CursorName;
+        var scannerName = context.ScannerName;
+        var valueTypeName = SourceGenerationContext.GetTypeName(typeof(T));
 
-        var reset = context.DeclarePositionVariable(result);
+        var resetName = $"reset{context.NextNumber()}";
+        var numberSpanName = $"numberSpan{context.NextNumber()}";
+        var parsedValueName = $"parsedValue{context.NextNumber()}";
 
-        var numberStyles = result.DeclareVariable<NumberStyles>($"numberStyles{context.NextNumber}", Expression.Constant(_numberStyles));
-        var culture = result.DeclareVariable<CultureInfo>($"culture{context.NextNumber}", Expression.Constant(_culture));
-        var numberSpan = result.DeclareVariable($"number{context.NextNumber}", typeof(ReadOnlySpan<char>));
-        var end = result.DeclareVariable<int>($"end{context.NextNumber}");
+        // Use direct SourceResult construction for early return optimization
+        var result = new SourceResult(
+            successVariable: "success",  // Not used with early returns
+            valueVariable: "value",
+            valueTypeName: valueTypeName);
 
-        // if (context.Scanner.ReadDecimal(_numberOptions, out var numberSpan, _decimalSeparator, _groupSeparator))
-        // {
-        //    var end = context.Scanner.Cursor.Offset;
-        //    success = T.TryParse(numberSpan.ToString(), numberStyles, culture, out var value));
-        //    // or when possible T.TryParse(numberSpan, numberStyles, culture, out var value));
-        // }
-        //
-        // if (!success)
-        // {
-        //    context.Scanner.Cursor.ResetPosition(begin);
-        // }
-        //
+        result.Body.Add($"var {resetName} = {cursorName}.Position;");
+        result.Body.Add($"global::System.ReadOnlySpan<char> {numberSpanName} = default;");
+        result.Body.Add($"{valueTypeName} {parsedValueName} = default;");
 
-        var block =
-            Expression.IfThen(
-                context.ReadDecimal(Expression.Constant(_allowLeadingSign),
-                    Expression.Constant(_allowDecimalSeparator),
-                    Expression.Constant(_allowGroupSeparator),
-                    Expression.Constant(_allowExponent),
-                    Expression.Constant(_allowUnderscore),
-                    numberSpan, Expression.Constant(_decimalSeparator), Expression.Constant(_groupSeparator)),
-                Expression.Block(
-                    Expression.Assign(end, context.Offset()),
-                    Expression.Assign(result.Success,
-                        Expression.Call(
-                            _tryParseMethodInfo,
-                            // This class is only used before NET7.0, when there is no overload for TryParse that takes a ReadOnlySpan<char>
-                            Expression.Call(numberSpan, ExpressionHelper.ReadOnlySpan_ToString),
-                            numberStyles,
-                            culture,
-                            result.Value)
-                        )
-                )
-            );
+        var allowLeadingSign = _allowLeadingSign ? "true" : "false";
+        var allowDecimalSeparator = _allowDecimalSeparator ? "true" : "false";
+        var allowGroupSeparator = _allowGroupSeparator ? "true" : "false";
+        var allowExponent = _allowExponent ? "true" : "false";
 
-        result.Body.Add(block);
+        // Emit NumberStyles as a static readonly field
+        var numberStylesFieldName = context.RegisterStaticField(
+            $"private static readonly global::System.Globalization.NumberStyles",
+            $"(global::System.Globalization.NumberStyles){(int)_numberStyles}");
+        
+        // Emit CultureInfo - use InvariantCulture if it's the default, otherwise create a static field
+        string cultureExpr;
+        if (_culture == CultureInfo.InvariantCulture)
+        {
+            cultureExpr = "global::System.Globalization.CultureInfo.InvariantCulture";
+        }
+        else
+        {
+            var decimalSeparator = $"((char){(int)_decimalSeparator}).ToString()";
+            var groupSeparator = $"((char){(int)_groupSeparator}).ToString()";
+            cultureExpr = context.RegisterStaticField(
+                "private static readonly global::System.Globalization.CultureInfo",
+                $"new global::System.Func<global::System.Globalization.CultureInfo>(() => {{ var c = (global::System.Globalization.CultureInfo)global::System.Globalization.CultureInfo.InvariantCulture.Clone(); c.NumberFormat.NumberDecimalSeparator = {decimalSeparator}; c.NumberFormat.NumberGroupSeparator = {groupSeparator}; return c; }})()");
+        }
 
-        result.Body.Add(
-            Expression.IfThen(
-                Expression.Not(result.Success),
-                context.ResetPosition(reset)
-                )
-            );
+        var decimalSeparatorLiteral = $"(char){(int)_decimalSeparator}";
+        var groupSeparatorLiteral = $"(char){(int)_groupSeparator}";
+        result.Body.Add($"if ({scannerName}.ReadDecimal({allowLeadingSign}, {allowDecimalSeparator}, {allowGroupSeparator}, {allowExponent}, out {numberSpanName}, {decimalSeparatorLiteral}, {groupSeparatorLiteral}))");
+        result.Body.Add("{");
+        if (context.DiscardResult)
+        {
+            result.Body.Add("    return true;");
+        }
+        else
+        {
+            // The helper is available in Parlot's net8.0+ assets. A net7.0 consumer selects
+            // the netstandard2.0 asset, which cannot expose generic-math APIs.
+            var supportsFastNumberParsing =
+                context.TargetFramework.Identifier == TargetFrameworkIdentifier.NetCoreApp &&
+                context.TargetFramework.Version >= new Version(8, 0);
+            var tryParseMethod = supportsFastNumberParsing
+                ? $"global::Parlot.Numbers.TryParseNumber<{valueTypeName}>"
+                : "global::Parlot.Numbers.TryParse";
+            result.Body.Add($"    if ({tryParseMethod}({numberSpanName}, {numberStylesFieldName}, {cultureExpr}, out {parsedValueName}))");
+            result.Body.Add("    {");
+            result.Body.Add($"        {result.ValueVariable} = {parsedValueName};");
+            result.Body.Add("        return true;");
+            result.Body.Add("    }");
+        }
+        result.Body.Add("}");
+        result.Body.Add($"{cursorName}.ResetPosition({resetName});");
+        result.Body.Add($"{result.ValueVariable} = default;");
+        result.Body.Add("return false;");
 
         return result;
     }
@@ -178,11 +199,7 @@ internal sealed class ByteNumberLiteral : NumberLiteralBase<byte>
 
     public override bool TryParseNumber(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider provider, out byte value)
     {
-#if NET6_0_OR_GREATER
-        return byte.TryParse(s, style, provider, out value);
-#else
-        return byte.TryParse(s.ToString(), style, provider, out value);
-#endif
+        return Numbers.TryParse(s, style, provider, out value);
     }
 }
 
@@ -196,11 +213,7 @@ internal sealed class SByteNumberLiteral : NumberLiteralBase<sbyte>
 
     public override bool TryParseNumber(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider provider, out sbyte value)
     {
-#if NET6_0_OR_GREATER
-        return sbyte.TryParse(s, style, provider, out value);
-#else
-        return sbyte.TryParse(s.ToString(), style, provider, out value);
-#endif
+        return Numbers.TryParse(s, style, provider, out value);
     }
 }
 
@@ -214,11 +227,7 @@ internal sealed class IntNumberLiteral : NumberLiteralBase<int>
 
     public override bool TryParseNumber(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider provider, out int value)
     {
-#if NET6_0_OR_GREATER
-        return int.TryParse(s, style, provider, out value);
-#else
-        return int.TryParse(s.ToString(), style, provider, out value);
-#endif
+        return Numbers.TryParse(s, style, provider, out value);
     }
 }
 
@@ -232,11 +241,7 @@ internal sealed class UIntNumberLiteral : NumberLiteralBase<uint>
 
     public override bool TryParseNumber(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider provider, out uint value)
     {
-#if NET6_0_OR_GREATER
-        return uint.TryParse(s, style, provider, out value);
-#else
-        return uint.TryParse(s.ToString(), style, provider, out value);
-#endif
+        return Numbers.TryParse(s, style, provider, out value);
     }
 }
 
@@ -250,11 +255,7 @@ internal sealed class LongNumberLiteral : NumberLiteralBase<long>
 
     public override bool TryParseNumber(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider provider, out long value)
     {
-#if NET6_0_OR_GREATER
-        return long.TryParse(s, style, provider, out value);
-#else
-        return long.TryParse(s.ToString(), style, provider, out value);
-#endif
+        return Numbers.TryParse(s, style, provider, out value);
     }
 }
 
@@ -268,11 +269,7 @@ internal sealed class ULongNumberLiteral : NumberLiteralBase<ulong>
 
     public override bool TryParseNumber(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider provider, out ulong value)
     {
-#if NET6_0_OR_GREATER
-        return ulong.TryParse(s, style, provider, out value);
-#else
-        return ulong.TryParse(s.ToString(), style, provider, out value);
-#endif
+        return Numbers.TryParse(s, style, provider, out value);
     }
 }
 
@@ -286,11 +283,7 @@ internal sealed class ShortNumberLiteral : NumberLiteralBase<short>
 
     public override bool TryParseNumber(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider provider, out short value)
     {
-#if NET6_0_OR_GREATER
-        return short.TryParse(s, style, provider, out value);
-#else
-        return short.TryParse(s.ToString(), style, provider, out value);
-#endif
+        return Numbers.TryParse(s, style, provider, out value);
     }
 }
 
@@ -304,11 +297,7 @@ internal sealed class UShortNumberLiteral : NumberLiteralBase<ushort>
 
     public override bool TryParseNumber(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider provider, out ushort value)
     {
-#if NET6_0_OR_GREATER
-        return ushort.TryParse(s, style, provider, out value);
-#else
-        return ushort.TryParse(s.ToString(), style, provider, out value);
-#endif
+        return Numbers.TryParse(s, style, provider, out value);
     }
 }
 
@@ -322,11 +311,7 @@ internal sealed class DecimalNumberLiteral : NumberLiteralBase<decimal>
 
     public override bool TryParseNumber(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider provider, out decimal value)
     {
-#if NET6_0_OR_GREATER
-        return decimal.TryParse(s, style, provider, out value);
-#else
-        return decimal.TryParse(s.ToString(), style, provider, out value);
-#endif
+        return Numbers.TryParse(s, style, provider, out value);
     }
 }
 
@@ -340,11 +325,7 @@ internal sealed class DoubleNumberLiteral : NumberLiteralBase<double>
 
     public override bool TryParseNumber(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider provider, out double value)
     {
-#if NET6_0_OR_GREATER
-        return double.TryParse(s, style, provider, out value);
-#else
-        return double.TryParse(s.ToString(), style, provider, out value);
-#endif
+        return Numbers.TryParse(s, style, provider, out value);
     }
 }
 
@@ -358,11 +339,7 @@ internal sealed class FloatNumberLiteral : NumberLiteralBase<float>
 
     public override bool TryParseNumber(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider provider, out float value)
     {
-#if NET6_0_OR_GREATER
-        return float.TryParse(s, style, provider, out value);
-#else
-        return float.TryParse(s.ToString(), style, provider, out value);
-#endif
+        return Numbers.TryParse(s, style, provider, out value);
     }
 }
 
@@ -377,7 +354,7 @@ internal sealed class HalfNumberLiteral : NumberLiteralBase<Half>
 
     public override bool TryParseNumber(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider provider, out Half value)
     {
-        return Half.TryParse(s, style, provider, out value);
+        return Numbers.TryParse(s, style, provider, out value);
     }
 }
 #endif
@@ -392,10 +369,6 @@ internal sealed class BigIntegerNumberLiteral : NumberLiteralBase<BigInteger>
 
     public override bool TryParseNumber(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider provider, out BigInteger value)
     {
-#if NET6_0_OR_GREATER
-        return BigInteger.TryParse(s, style, provider, out value);
-#else
-        return BigInteger.TryParse(s.ToString(), style, provider, out value);
-#endif
+        return Numbers.TryParse(s, style, provider, out value);
     }
 }
