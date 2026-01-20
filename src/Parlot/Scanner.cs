@@ -64,12 +64,12 @@ public class Scanner
         {
             return false;
         }
-        
+
         // Splitting such that not all code is inlined
         SkipRemainingWhiteSpace();
         return true;
     }
-    
+
     private void SkipRemainingWhiteSpace()
     {
         var span = Cursor.Span;
@@ -304,7 +304,7 @@ public class Scanner
         var next = 0;
         while (allowUnderscore && Character.IsDecimalDigitOrUnderscore(Cursor.PeekNext(next)) || (!allowUnderscore && Character.IsDecimalDigit(Cursor.PeekNext(next))))
         {
-            next += 1;
+            next++;
         }
 
         // Not digit was read
