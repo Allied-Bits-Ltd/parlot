@@ -34,7 +34,7 @@ public sealed class Identifier : Parser<TextSpan>
 
         var first = context.Scanner.Cursor.Current;
 
-        if (Character.IsIdentifierStart(first) || _extraStart != null && _extraStart(first))
+        if (Character.IsIdentifierStart(first) || (_extraStart != null && _extraStart(first)))
         {
             var start = context.Scanner.Cursor.Offset;
 

@@ -86,8 +86,6 @@ public sealed class WhenFollowedBy<T> : Parser<T>,
 #if !AOT_COMPILATION
     public CompilationResult Compile(CompilationContext context)
     {
-        var result = context.CreateCompilationResult<T>();
-
         var mainParserCompileResult = _parser.Build(context, requireResult: true);
 
         // For now, don't attempt to compile the lookahead check. Just compile the main parser.
@@ -97,10 +95,7 @@ public sealed class WhenFollowedBy<T> : Parser<T>,
         var parserResult = context.CreateCompilationResult<T>();
 
         // Just add the compiled main parser
-        foreach (var variable in mainParserCompileResult.Variables)
-        {
-            parserResult.Variables.Add(variable);
-        }
+        parserResult.Variables.AddRange(mainParserCompileResult.Variables);
 
         parserResult.Body.AddRange(mainParserCompileResult.Body);
 

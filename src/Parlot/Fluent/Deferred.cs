@@ -20,6 +20,8 @@ public sealed class Deferred<T> : Parser<T>,
 #endif
     ISeekable
 {
+
+    private readonly object _lockObject = new();
     private Parser<T>? _parser;
 
     public Parser<T>? Parser
@@ -185,7 +187,7 @@ public sealed class Deferred<T> : Parser<T>,
     {
         // Handle recursion
 
-        lock (this)
+        lock (_lockObject)
         {
             if (!_toString)
             {

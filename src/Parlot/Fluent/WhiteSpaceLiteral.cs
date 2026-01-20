@@ -27,7 +27,7 @@ public sealed class WhiteSpaceLiteral : Parser<TextSpan>
 
     public bool CanSeek { get; } = true;
 
-    public char[] ExpectedChars {get; private set;}
+    public char[] ExpectedChars { get; }
 
     public bool SkipWhitespace { get; }
 
