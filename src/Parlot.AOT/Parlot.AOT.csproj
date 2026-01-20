@@ -62,7 +62,6 @@
     <Compile Include="..\Parlot\Fluent\Parser.Compile.cs" Link="Fluent\Parser.Compile.cs" />
     <Compile Include="..\Parlot\Fluent\Parser.cs" Link="Fluent\Parser.cs" />
     <Compile Include="..\Parlot\Fluent\Parser.TryParse.cs" Link="Fluent\Parser.TryParse.cs" />
-    <Compile Include="..\Parlot\Fluent\ParseResult.cs" Link="Fluent\ParseResult.cs" />
     <Compile Include="..\Parlot\Fluent\ParserExtensions.Cardinality.cs" Link="Fluent\ParserExtensions.Cardinality.cs" />
     <Compile Include="..\Parlot\Fluent\ParserExtensions.WhiteSpace.cs" Link="Fluent\ParserExtensions.WhiteSpace.cs" />
     <Compile Include="..\Parlot\Fluent\Parsers.And.cs" Link="Fluent\Parsers.And.cs" />
@@ -102,6 +101,7 @@
     <Compile Include="..\Parlot\ParseError.cs" Link="ParseError.cs" />
     <Compile Include="..\Parlot\ParseException.cs" Link="ParseException.cs" />
     <Compile Include="..\Parlot\ParserOperatorExtensions.cs" />
+    <Compile Include="..\Parlot\ParseResult.cs" Link="ParseResult.cs" />
     <Compile Include="..\Parlot\Polyfill.cs" Link="Polyfill.cs" />
     <Compile Include="..\Parlot\Rewriting\IRewritable.cs" Link="Rewriting\IRewritable.cs" />
     <Compile Include="..\Parlot\Rewriting\ISeekable.cs" Link="Rewriting\ISeekable.cs" />
