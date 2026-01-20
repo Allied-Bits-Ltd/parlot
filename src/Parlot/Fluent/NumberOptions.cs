@@ -59,19 +59,7 @@ public enum NumberOptions
     /// When not set (default), a number "1." will be recognized as "1" and the separator will be consumed, making it unavailable for the next token.
     /// </summary>
     RequireFractionalPartForDecimals = 32,
-
-    /// <summary>
-    /// Indicates that the <see cref="AllowLeadingSign"/>
-    /// style is used. This is a composite number style.
-    /// </summary>
-    Integer = AllowLeadingSign,
-
-    /// <summary>
-    /// Indicates that the <see cref="AllowLeadingSign"/>, <see cref="AllowDecimalSeparator"/>, <see cref="AllowGroupSeparators"/>
-    /// styles are used. This is a composite number style.
-    /// </summary>
-    Number = AllowLeadingSign | AllowDecimalSeparator | AllowGroupSeparators,
-
+        
     /// <summary>
     /// Indicates that the <see cref="AllowLeadingSign"/>, <see cref="AllowDecimalSeparator"/>, <see cref="AllowExponent"/>
     /// styles are used. This is a composite number style.
