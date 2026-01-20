@@ -51,7 +51,7 @@ public abstract partial class Parser<T> : IParser<T>
     {
         // Check if U implements IConvertible at construction time for performance
         var targetImplementsIConvertible = typeof(IConvertible).IsAssignableFrom(typeof(U));
-        
+
         if (targetImplementsIConvertible)
         {
             return new Then<T, U?>(this, x =>
@@ -66,12 +66,12 @@ public abstract partial class Parser<T> : IParser<T>
                     catch
                     {
                         // Fall back to default if conversion fails
-                        return default(U);
+                        return default;
                     }
                 }
-                
+
                 // For non-convertible types, return default
-                return default(U);
+                return default;
             });
         }
         else
@@ -142,9 +142,9 @@ public abstract partial class Parser<T> : IParser<T>
     public Parser<T> WhenNotFollowedBy<U>(Parser<U> lookahead) => new WhenNotFollowedBy<T>(this, lookahead.Then<object>(_ => new object()));
 
     /// <summary>
-    /// Builds a parser what returns another one based on the previous result.
+    /// Builds a parser that selects a target parser based on the previous result.
     /// </summary>
-    public Parser<U> Switch<U>(Func<ParseContext, T, Parser<U>> action) => new Switch<T, U>(this, action);
+    public Parser<U> Switch<U>(Func<ParseContext, T, int> selector, params Parser<U>[] parsers) => new Switch<T, U>(this, selector, parsers);
 
     /// <summary>
     /// Builds a parser that ensures the cursor is at the end of the input.

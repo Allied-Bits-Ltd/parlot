@@ -1,15 +1,9 @@
-#if !AOT_COMPILATION
-using Parlot.Compilation;
-using System.Linq.Expressions;
-#endif
+using Parlot.SourceGeneration;
 using System;
 
 namespace Parlot.Fluent;
 
-public sealed class Not<T> : Parser<T>
-#if !AOT_COMPILATION
-    , ICompilable
-#endif
+public sealed class Not<T> : Parser<T>, ISourceable
 {
     private readonly Parser<T> _parser;
 
@@ -36,45 +30,49 @@ public sealed class Not<T> : Parser<T>
         return false;
     }
 
-#if !AOT_COMPILATION
-    public CompilationResult Compile(CompilationContext context)
+
+    public SourceResult GenerateSource(SourceGenerationContext context)
     {
-        var result = context.CreateCompilationResult<T>();
+        ThrowHelper.ThrowIfNull(context, nameof(context));
 
-        // var start = context.Scanner.Cursor.Position;
+        if (_parser is not ISourceable sourceable)
+        {
+            throw new NotSupportedException("Not requires a source-generatable parser.");
+        }
 
-        var start = context.DeclarePositionVariable(result);
+        var result = context.CreateResult(typeof(T));
+        var cursorName = context.CursorName;
+        var innerValueTypeName = SourceGenerationContext.GetTypeName(typeof(T));
+        
+        var startName = $"start{context.NextNumber()}";
+        result.Body.Add($"var {startName} = {cursorName}.Position;");
 
-        var parserCompileResult = _parser.Build(context);
+        // Use helper instead of inlining
+        var helperName = context.Helpers
+            .GetOrCreate(sourceable, $"{context.MethodNamePrefix}_Not", innerValueTypeName, () => sourceable.GenerateSource(context))
+            .MethodName;
 
-        // success = false;
-        //
-        // parser instructions
-        //
-        // if (parser.succcess)
+        // if (Helper(context, out _))
         // {
-        //     context.Scanner.Cursor.ResetPosition(start);
+        //     cursor.ResetPosition(start);
+        //     success = false;
         // }
         // else
         // {
         //     success = true;
         // }
-        //
-
-        result.Body.Add(
-            Expression.Block(
-                parserCompileResult.Variables,
-                Expression.Block(parserCompileResult.Body),
-                Expression.IfThenElse(
-                    parserCompileResult.Success,
-                    context.ResetPosition(start),
-                    Expression.Assign(result.Success, Expression.Constant(true, typeof(bool)))
-                    )
-                )
-            );
+        result.Body.Add($"if ({helperName}({context.ParseContextName}, out _))");
+        result.Body.Add("{");
+        result.Body.Add($"    {cursorName}.ResetPosition({startName});");
+        result.Body.Add($"    {result.SuccessVariable} = false;");
+        result.Body.Add("}");
+        result.Body.Add("else");
+        result.Body.Add("{");
+        result.Body.Add($"    {result.SuccessVariable} = true;");
+        result.Body.Add("}");
 
         return result;
     }
-#endif
+
     public override string ToString() => $"Not ({_parser})";
 }

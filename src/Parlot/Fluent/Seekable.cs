@@ -1,20 +1,14 @@
-#if !AOT_COMPILATION
-using Parlot.Compilation;
-using System.Linq.Expressions;
-#endif
-using System.Linq;
-using System;
 using Parlot.Rewriting;
+using Parlot.SourceGeneration;
+using System;
+using System.Linq;
 
 namespace Parlot.Fluent;
 
 /// <summary>
 /// Wraps an existing parser as an <see cref="ISeekable"/> implementation by provide the seekable properties.
 /// </summary>
-internal sealed class Seekable<T> : Parser<T>, ISeekable
-#if !AOT_COMPILATION
-    , ICompilable
-#endif
+internal sealed class Seekable<T> : Parser<T>, ISeekable, ISourceable
 {
     public bool CanSeek { get; set; }
 
@@ -42,25 +36,19 @@ internal sealed class Seekable<T> : Parser<T>, ISeekable
         return success;
     }
 
-#if !AOT_COMPILATION
-    public CompilationResult Compile(CompilationContext context)
+
+    public SourceResult GenerateSource(SourceGenerationContext context)
     {
-        // Passthrough implementation.
+        ThrowHelper.ThrowIfNull(context, nameof(context));
 
-        var result = context.CreateCompilationResult<T>(true);
+        if (Parser is not ISourceable sourceable)
+        {
+            throw new NotSupportedException("Seekable requires a source-generatable parser.");
+        }
 
-        var parserCompileResult = Parser.Build(context, requireResult: true);
-
-        var block = Expression.Block(
-            parserCompileResult.Variables,
-            parserCompileResult.Body
-        );
-
-        result.Body.Add(block);
-
-        return result;
+        // Passthrough - just delegate to the inner parser
+        return sourceable.GenerateSource(context);
     }
-#endif
 
     public override string ToString() => $"{Parser} (Seekable)";
 }

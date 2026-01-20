@@ -1,13 +1,8 @@
-#if !AOT_COMPILATION
-using Parlot.Compilation;
-#endif
 using Parlot.Rewriting;
+using Parlot.SourceGeneration;
 using System;
-#if !AOT_COMPILATION
 #if NET
 using System.Linq;
-#endif
-using System.Linq.Expressions;
 #endif
 
 namespace Parlot.Fluent;
@@ -16,11 +11,7 @@ namespace Parlot.Fluent;
 /// Ensure the given parser is valid based on a condition, and backtracks if not.
 /// </summary>
 /// <typeparam name="T">The output parser type.</typeparam>
-public sealed class When<T> : Parser<T>,
-#if !AOT_COMPILATION
-    ICompilable,
-#endif
-    ISeekable
+public sealed class When<T> : Parser<T>, ISeekable, ISourceable
 {
     private readonly Func<ParseContext, T, bool> _action;
     private readonly Parser<T> _parser;
@@ -73,56 +64,59 @@ public sealed class When<T> : Parser<T>,
         return valid;
     }
 
-#if !AOT_COMPILATION
-    public CompilationResult Compile(CompilationContext context)
+
+    public SourceResult GenerateSource(SourceGenerationContext context)
     {
-        var result = context.CreateCompilationResult<T>();
+        ThrowHelper.ThrowIfNull(context, nameof(context));
 
-        var parserCompileResult = _parser.Build(context, requireResult: true);
+        if (_parser is not ISourceable sourceable)
+        {
+            throw new NotSupportedException("When requires a source-generatable parser.");
+        }
 
-        // success = false;
-        // value = default;
-        // start = context.Scanner.Cursor.Position;
-        // parser instructions
-        //
-        // if (parser.Success && _action(value))
+        var result = context.CreateResult(typeof(T));
+        var cursorName = context.CursorName;
+        var valueTypeName = SourceGenerationContext.GetTypeName(typeof(T));
+        
+        var startName = $"start{context.NextNumber()}";
+        result.Body.Add($"var {startName} = {cursorName}.Position;");
+
+        // Use helper instead of inlining
+        var helperName = context.Helpers
+            .GetOrCreate(sourceable, $"{context.MethodNamePrefix}_When", valueTypeName, () => sourceable.GenerateSource(context))
+            .MethodName;
+
+        // Register the action lambda
+        var lambdaId = context.RegisterLambda(_action);
+
+        // if (Helper(context, out var innerValue) && _action(context, innerValue))
         // {
-        //   success = true;
-        //   value = parser.Value;
+        //     success = true;
+        //     value = innerValue;
         // }
         // else
         // {
-        //    context.Scanner.Cursor.ResetPosition(start);
+        //     cursor.ResetPosition(start);
+        //     success = false;
         // }
-        //
-
-        var start = context.DeclarePositionVariable(result);
-
-        var block = Expression.Block(
-                parserCompileResult.Variables,
-                parserCompileResult.Body
-                .Append(
-                    Expression.IfThenElse(
-                        Expression.AndAlso(
-                            parserCompileResult.Success,
-                            Expression.Invoke(Expression.Constant(_action), [context.ParseContext, parserCompileResult.Value])
-                            ),
-                        Expression.Block(
-                            Expression.Assign(result.Success, Expression.Constant(true, typeof(bool))),
-                            context.DiscardResult
-                                ? Expression.Empty()
-                                : Expression.Assign(result.Value, parserCompileResult.Value)
-                            ),
-                        context.ResetPosition(start)
-                        )
-                    )
-                );
-
-
-        result.Body.Add(block);
+        
+        var innerValueName = $"innerValue{context.NextNumber()}";
+        result.Body.Add($"if ({helperName}({context.ParseContextName}, out var {innerValueName}) && {lambdaId}({context.ParseContextName}, {innerValueName}))");
+        result.Body.Add("{");
+        result.Body.Add($"    {result.SuccessVariable} = true;");
+        if (!context.DiscardResult)
+        {
+            result.Body.Add($"    {result.ValueVariable} = {innerValueName};");
+        }
+        result.Body.Add("}");
+        result.Body.Add("else");
+        result.Body.Add("{");
+        result.Body.Add($"    {cursorName}.ResetPosition({startName});");
+        result.Body.Add($"    {result.SuccessVariable} = false;");
+        result.Body.Add("}");
 
         return result;
     }
-#endif
+
     public override string ToString() => $"{_parser} (When)";
 }

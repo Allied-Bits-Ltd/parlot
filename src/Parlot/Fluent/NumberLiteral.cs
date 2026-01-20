@@ -1,38 +1,32 @@
 #if NET8_0_OR_GREATER
-#if !AOT_COMPILATION
-using Parlot.Compilation;
-#endif
 using Parlot.Rewriting;
+using Parlot.SourceGeneration;
 using System;
 using System.Globalization;
-#if !AOT_COMPILATION
-using System.Linq.Expressions;
-using System.Reflection;
-#endif
 using System.Numerics;
+using System.Reflection;
 
 namespace Parlot.Fluent;
 
-public sealed class NumberLiteral<T> : Parser<T>,
-#if !AOT_COMPILATION
-    ICompilable,
-#endif
-    ISeekable
+public sealed class NumberLiteral<T> : Parser<T>, ISeekable, ISourceable
     where T : INumber<T>
 {
     private const char DefaultDecimalSeparator = '.';
     private const char DefaultGroupSeparator = ',';
 
-#if !AOT_COMPILATION
-    private static readonly MethodInfo _tryParseMethodInfo = typeof(T).GetMethod(nameof(INumber<T>.TryParse), [typeof(ReadOnlySpan<char>), typeof(NumberStyles), typeof(IFormatProvider), typeof(T).MakeByRefType()])!;
-#endif
+    private static readonly MethodInfo _tryParseMethodInfo = typeof(Numbers)
+        .GetMethod(nameof(Numbers.TryParseNumber), BindingFlags.Static | BindingFlags.Public)!
+        .MakeGenericMethod(typeof(T));
 
     private readonly char _decimalSeparator;
     private readonly char _secondDecimalSeparator;
     private readonly char _groupSeparator;
     private readonly NumberStyles _numberStyles;
-    private readonly CultureInfo _culture = CultureInfo.InvariantCulture;
-    private readonly CultureInfo? _culture2;
+
+    // A NumberFormatInfo is stored instead of a CultureInfo since NumberFormatInfo.GetInstance()
+    // returns it directly, while a CultureInfo needs to be resolved on every call.
+    private readonly NumberFormatInfo _culture = CultureInfo.InvariantCulture.NumberFormat;
+    private readonly NumberFormatInfo? _culture2;
     private readonly bool _allowLeadingSign;
     private readonly bool _allowDecimalSeparator;
     private readonly bool _allowGroupSeparator;
@@ -57,21 +51,21 @@ public sealed class NumberLiteral<T> : Parser<T>,
         if (decimalSeparator != NumberLiterals.DefaultDecimalSeparator ||
             groupSeparator != NumberLiterals.DefaultGroupSeparator)
         {
-            _culture = (CultureInfo)CultureInfo.InvariantCulture.Clone();
-            _culture.NumberFormat.NumberDecimalSeparator = decimalSeparator.ToString();
+            _culture = (NumberFormatInfo)CultureInfo.InvariantCulture.NumberFormat.Clone();
+            _culture.NumberDecimalSeparator = decimalSeparator.ToString();
             if (secondDecimalSeparator == '\0' || secondDecimalSeparator != groupSeparator)
-                _culture.NumberFormat.NumberGroupSeparator = groupSeparator.ToString();
+                _culture.NumberGroupSeparator = groupSeparator.ToString();
             else
-                _culture.NumberFormat.NumberGroupSeparator = string.Empty;
+                _culture.NumberGroupSeparator = string.Empty;
         }
         if (secondDecimalSeparator != '\0')
         {
-            _culture2 = (CultureInfo)CultureInfo.InvariantCulture.Clone();
-            _culture2.NumberFormat.NumberDecimalSeparator = secondDecimalSeparator.ToString();
+            _culture2 = (NumberFormatInfo)CultureInfo.InvariantCulture.NumberFormat.Clone();
+            _culture2.NumberDecimalSeparator = secondDecimalSeparator.ToString();
             if (secondDecimalSeparator != groupSeparator)
-                _culture2.NumberFormat.NumberGroupSeparator = groupSeparator.ToString();
+                _culture2.NumberGroupSeparator = groupSeparator.ToString();
             else
-                _culture2.NumberFormat.NumberGroupSeparator = string.Empty;
+                _culture2.NumberGroupSeparator = string.Empty;
         }
 
         _allowLeadingSign = (numberOptions & NumberOptions.AllowLeadingSign) != 0;
@@ -118,21 +112,21 @@ public sealed class NumberLiteral<T> : Parser<T>,
         {
             var end = context.Scanner.Cursor.Offset;
 
-            if (T.TryParse(number, _numberStyles, _culture, out var value))
+            if (Numbers.TryParseNumber<T>(number, _numberStyles, _culture, out var value))
             {
                 result.Set(start, end, value);
 
                 context.ExitParser(this);
                 return true;
             }
-            else
-            if (_culture2 != null && (T.TryParse(number, _numberStyles, _culture2, out var value2)))
-            {
-                result.Set(start, end, value2);
+			else
+			if (culture2 != null && (Numbers.TryParseNumber<T>(number, _numberStyles, _culture2, out var value2)))
+			{
+			    result.Set(start, end, value2);
 
                 context.ExitParser(this);
                 return true;
-            }
+			}
         }
 
         context.Scanner.Cursor.ResetPosition(reset);
@@ -141,72 +135,73 @@ public sealed class NumberLiteral<T> : Parser<T>,
         return false;
     }
 
-#if !AOT_COMPILATION
-    public CompilationResult Compile(CompilationContext context)
+
+    public SourceResult GenerateSource(SourceGenerationContext context)
     {
-        var result = context.CreateCompilationResult<T>();
+        ThrowHelper.ThrowIfNull(context, nameof(context));
 
-        // var reset = context.Scanner.Cursor.Position;
+        var result = context.CreateResult(typeof(T));
+        var cursorName = context.CursorName;
+        var scannerName = context.ScannerName;
+        var valueTypeName = SourceGenerationContext.GetTypeName(typeof(T));
 
-        var reset = context.DeclarePositionVariable(result);
+        var resetName = $"reset{context.NextNumber()}";
+        var startName = $"start{context.NextNumber()}";
+        var numberSpanName = $"numberSpan{context.NextNumber()}";
+        var endName = $"end{context.NextNumber()}";
+        var parsedValueName = $"parsedValue{context.NextNumber()}";
 
-        var numberStyles = result.DeclareVariable<NumberStyles>($"numberStyles{context.NextNumber}", Expression.Constant(_numberStyles));
-        var culture = result.DeclareVariable<CultureInfo>($"culture{context.NextNumber}", Expression.Constant(_culture));
-        var numberSpan = result.DeclareVariable($"number{context.NextNumber}", typeof(ReadOnlySpan<char>));
-        var end = result.DeclareVariable<int>($"end{context.NextNumber}");
+        result.Body.Add($"var {resetName} = default(global::Parlot.TextPosition);");
+        result.Body.Add($"var {startName} = 0;");
+        result.Body.Add($"global::System.ReadOnlySpan<char> {numberSpanName} = default;");
+        result.Body.Add($"{valueTypeName} {parsedValueName} = default;");
 
-        // if (context.Scanner.ReadDecimal(_numberOptions, out var numberSpan, _decimalSeparator, _groupSeparator))
-        // {
-        //    var end = context.Scanner.Cursor.Offset;
-        //    success = T.TryParse(numberSpan, numberStyles, culture, out var value));
-        // }
-        //
-        // if (!success)
-        // {
-        //    context.Scanner.Cursor.ResetPosition(begin);
-        // }
-        //
+        result.Body.Add($"{result.SuccessVariable} = false;");
+        result.Body.Add($"{resetName} = {cursorName}.Position;");
+        result.Body.Add($"{startName} = {resetName}.Offset;");
 
-        //var sourceToParse = Expression.Variable(typeof(ReadOnlySpan<char>), $"sourceToParse{context.NextNumber}");
-        //var sliceExpression = Expression.Assign(sourceToParse, Expression.Call(typeof(MemoryExtensions).GetMethod("AsSpan", new[] { typeof(string), typeof(int), typeof(int) }), context.Buffer(), start, Expression.Subtract(end, start)));
+        var allowLeadingSign = _allowLeadingSign ? "true" : "false";
+        var allowDecimalSeparator = _allowDecimalSeparator ? "true" : "false";
+        var allowGroupSeparator = _allowGroupSeparator ? "true" : "false";
+        var allowExponent = _allowExponent ? "true" : "false";
 
-        var block =
-            Expression.IfThen(
-                context.ReadDecimal(
-                    Expression.Constant(_allowLeadingSign),
-                    Expression.Constant(_allowDecimalSeparator),
-                    Expression.Constant(_allowGroupSeparator),
-                    Expression.Constant(_allowExponent),
-                    Expression.Constant(_allowUnderscore),
-                    Expression.Constant(_requireFractionalPartForDecimals),
-                    numberSpan,
-                    Expression.Constant(_decimalSeparator),
-                    Expression.Constant(_groupSeparator),
-                    Expression.Constant(_secondDecimalSeparator)),
-                Expression.Block(
-                    Expression.Assign(end, context.Offset()),
-                    Expression.Assign(result.Success,
-                        Expression.Call(
-                            _tryParseMethodInfo,
-                            numberSpan,
-                            numberStyles,
-                            culture,
-                            result.Value)
-                        )
-                )
-            );
+        // Emit NumberStyles as a literal cast
+        var numberStylesExpr = $"(global::System.Globalization.NumberStyles){(int)_numberStyles}";
+        
+        var cultureExpr = "global::System.Globalization.CultureInfo.InvariantCulture.NumberFormat";
+        if (!ReferenceEquals(_culture, CultureInfo.InvariantCulture.NumberFormat))
+        {
+            var decimalSeparator = $"((char){(int)_decimalSeparator}).ToString()";
+            var groupSeparator = $"((char){(int)_groupSeparator}).ToString()";
+            cultureExpr = context.RegisterStaticField(
+                "private static readonly global::System.Globalization.NumberFormatInfo",
+                $"new global::System.Func<global::System.Globalization.NumberFormatInfo>(() => {{ var c = (global::System.Globalization.NumberFormatInfo)global::System.Globalization.CultureInfo.InvariantCulture.NumberFormat.Clone(); c.NumberDecimalSeparator = {decimalSeparator}; c.NumberGroupSeparator = {groupSeparator}; return c; }})()");
+        }
 
-        result.Body.Add(block);
+        var decimalSeparatorLiteral = $"(char){(int)_decimalSeparator}";
+        var groupSeparatorLiteral = $"(char){(int)_groupSeparator}";
+        result.Body.Add($"if ({scannerName}.ReadDecimal({allowLeadingSign}, {allowDecimalSeparator}, {allowGroupSeparator}, {allowExponent}, out {numberSpanName}, {decimalSeparatorLiteral}, {groupSeparatorLiteral}))");
+        result.Body.Add("{");
+        if (context.DiscardResult)
+        {
+            result.Body.Add($"    {result.SuccessVariable} = true;");
+        }
+        else
+        {
+            result.Body.Add($"    if (global::Parlot.Numbers.TryParseNumber<{valueTypeName}>({numberSpanName}, {numberStylesExpr}, {cultureExpr}, out {parsedValueName}))");
+            result.Body.Add("    {");
+            result.Body.Add($"        {result.SuccessVariable} = true;");
+            result.Body.Add($"        {result.ValueVariable} = {parsedValueName};");
+            result.Body.Add("    }");
+        }
+        result.Body.Add("}");
 
-        result.Body.Add(
-            Expression.IfThen(
-                Expression.Not(result.Success),
-                context.ResetPosition(reset)
-                )
-            );
+        result.Body.Add($"if (!{result.SuccessVariable})");
+        result.Body.Add("{");
+        result.Body.Add($"    {cursorName}.ResetPosition({resetName});");
+        result.Body.Add("}");
 
         return result;
     }
-#endif
 }
 #endif

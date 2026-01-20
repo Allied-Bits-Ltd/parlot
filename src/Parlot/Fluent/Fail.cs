@@ -1,17 +1,12 @@
-#if !AOT_COMPILATION
-using Parlot.Compilation;
-using System.Linq.Expressions;
-#endif
+using Parlot.SourceGeneration;
+using System;
 
 namespace Parlot.Fluent;
 
 /// <summary>
 /// Doesn't parse anything and fails parsing.
 /// </summary>
-public sealed class Fail<T> : Parser<T>
-#if !AOT_COMPILATION
-    , ICompilable
-#endif
+public sealed class Fail<T> : Parser<T>, ISourceable
 {
     public Fail()
     {
@@ -26,10 +21,16 @@ public sealed class Fail<T> : Parser<T>
         return false;
     }
 
-#if !AOT_COMPILATION
-    public CompilationResult Compile(CompilationContext context)
+
+    public SourceResult GenerateSource(SourceGenerationContext context)
     {
-        return context.CreateCompilationResult<T>(false, Expression.Constant(default(T), typeof(T)));
+        ThrowHelper.ThrowIfNull(context, nameof(context));
+
+        var result = context.CreateResult(typeof(T), defaultSuccess: false);
+        
+        // success = false; (already set by CreateResult)
+        // value = default; (already set by CreateResult)
+        
+        return result;
     }
-#endif
 }

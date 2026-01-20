@@ -1,27 +1,18 @@
-#if !AOT_COMPILATION
-using Parlot.Compilation;
-#endif
 using Parlot.Rewriting;
+using Parlot.SourceGeneration;
 using System;
 using System.Collections.Generic;
-
-#if !AOT_COMPILATION
 #if NET
 using System.Linq;
 #endif
-using System.Linq.Expressions;
-#endif
+
 namespace Parlot.Fluent;
 
 /// <summary>
 /// Ensure the given parser matches at the current position without consuming input (positive lookahead).
 /// </summary>
 /// <typeparam name="T">The output parser type.</typeparam>
-public sealed class WhenFollowedBy<T> : Parser<T>,
-#if !AOT_COMPILATION
-    ICompilable,
-#endif
-    ISeekable
+public sealed class WhenFollowedBy<T> : Parser<T>, ISeekable, ISourceable
 {
     private readonly Parser<T> _parser;
     private readonly Parser<object> _lookahead;
@@ -83,29 +74,69 @@ public sealed class WhenFollowedBy<T> : Parser<T>,
         return true;
     }
 
-#if !AOT_COMPILATION
-    public CompilationResult Compile(CompilationContext context)
+
+    public SourceResult GenerateSource(SourceGenerationContext context)
     {
-        var result = context.CreateCompilationResult<T>();
+        ThrowHelper.ThrowIfNull(context, nameof(context));
 
-        var mainParserCompileResult = _parser.Build(context, requireResult: true);
-
-        // For now, don't attempt to compile the lookahead check. Just compile the main parser.
-        // Compilation support for lookahead can be added later if needed.
-        // This ensures the parser still benefits from compilation of the main parser.
-
-        var parserResult = context.CreateCompilationResult<T>();
-
-        // Just add the compiled main parser
-        foreach (var variable in mainParserCompileResult.Variables)
+        if (_parser is not ISourceable parserSourceable)
         {
-            parserResult.Variables.Add(variable);
+            throw new NotSupportedException("WhenFollowedBy requires a source-generatable parser.");
         }
 
-        parserResult.Body.AddRange(mainParserCompileResult.Body);
+        if (_lookahead is not ISourceable lookaheadSourceable)
+        {
+            throw new NotSupportedException("WhenFollowedBy requires a source-generatable lookahead parser.");
+        }
 
-        return parserResult;
+        var result = context.CreateResult(typeof(T));
+        var cursorName = context.CursorName;
+
+        var startName = $"start{context.NextNumber()}";
+        var beforeLookaheadName = $"beforeLookahead{context.NextNumber()}";
+
+        result.Body.Add($"var {startName} = {cursorName}.Position;");
+
+        var mainValueTypeName = SourceGenerationContext.GetTypeName(typeof(T));
+        var lookaheadValueTypeName = SourceGenerationContext.GetTypeName(typeof(object));
+
+        // Use helpers instead of inlining
+        var mainHelperName = context.Helpers
+            .GetOrCreate(parserSourceable, $"{context.MethodNamePrefix}_WhenFollowedBy_Main", mainValueTypeName, () => parserSourceable.GenerateSource(context))
+            .MethodName;
+
+        var lookaheadHelperName = context.Helpers
+            .GetOrCreate(lookaheadSourceable, $"{context.MethodNamePrefix}_WhenFollowedBy_Lookahead", lookaheadValueTypeName, () => lookaheadSourceable.GenerateSource(context))
+            .MethodName;
+
+        if (context.DiscardResult)
+        {
+            result.Body.Add($"if (!{mainHelperName}({context.ParseContextName}, out _))");
+        }
+        else
+        {
+            result.Body.Add($"if (!{mainHelperName}({context.ParseContextName}, out {result.ValueVariable}))");
+        }
+        result.Body.Add("{");
+        result.Body.Add($"    {result.SuccessVariable} = false;");
+        result.Body.Add("}");
+        result.Body.Add("else");
+        result.Body.Add("{");
+        result.Body.Add($"    var {beforeLookaheadName} = {cursorName}.Position;");
+        result.Body.Add($"    if (!{lookaheadHelperName}({context.ParseContextName}, out _))");
+        result.Body.Add("    {");
+        result.Body.Add($"        {cursorName}.ResetPosition({startName});");
+        result.Body.Add($"        {result.SuccessVariable} = false;");
+        result.Body.Add("    }");
+        result.Body.Add("    else");
+        result.Body.Add("    {");
+        result.Body.Add($"        {cursorName}.ResetPosition({beforeLookaheadName});");
+        result.Body.Add($"        {result.SuccessVariable} = true;");
+        result.Body.Add("    }");
+        result.Body.Add("}");
+
+        return result;
     }
-#endif
+
     public override string ToString() => $"{_parser} (WhenFollowedBy {_lookahead})";
 }

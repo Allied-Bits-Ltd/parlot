@@ -1,16 +1,9 @@
-#if !AOT_COMPILATION
-using Parlot.Compilation;
-using System.Linq.Expressions;
-#endif
 using Parlot.Rewriting;
+using Parlot.SourceGeneration;
 
 namespace Parlot.Fluent;
 
-public sealed class CharLiteral : Parser<char>,
-#if !AOT_COMPILATION
-    ICompilable,
-#endif
-    ISeekable
+public sealed class CharLiteral : Parser<char>, ISeekable, ISourceable
 {
     public CharLiteral(char c)
     {
@@ -46,26 +39,37 @@ public sealed class CharLiteral : Parser<char>,
         return false;
     }
 
-#if !AOT_COMPILATION
-    public CompilationResult Compile(CompilationContext context)
-    {
-        var result = context.CreateCompilationResult<char>();
 
-        result.Body.Add(
-            Expression.IfThen(
-                context.ReadChar(Char),
-                Expression.Block(
-                    Expression.Assign(result.Success, Expression.Constant(true, typeof(bool))),
-                    context.DiscardResult
-                    ? Expression.Empty()
-                    : Expression.Assign(result.Value, Expression.Constant(Char, typeof(char)))
-                    )
-                )
-        );
+    public override string ToString() => $"Char('{Char}')";
+
+    public SourceResult GenerateSource(SourceGenerationContext context)
+    {
+        ThrowHelper.ThrowIfNull(context, nameof(context));
+
+        var cursorName = context.CursorName;
+        var valueTypeName = SourceGenerationContext.GetTypeName(typeof(char));
+        
+        // Precalculate line tracking values for the character
+        var newLines = Character.IsNewLine(Char) ? 1 : 0;
+        var trailingSegmentLength = Character.IsNewLine(Char) ? 0 : 1;
+        
+        // Use direct SourceResult construction for early return optimization
+        var result = new SourceResult(
+            successVariable: "success",  // Not used with early returns
+            valueVariable: "value",
+            valueTypeName: valueTypeName);
+
+        var charExpression = $"(char){(int)Char}";
+
+        result.Body.Add($"if ({cursorName}.Match({charExpression}))");
+        result.Body.Add("{");
+        result.Body.Add($"    {cursorName}.AdvanceBy(1, {newLines}, {trailingSegmentLength});");
+        result.Body.Add($"    {result.ValueVariable} = {charExpression};");
+        result.Body.Add("    return true;");
+        result.Body.Add("}");
+        result.Body.Add($"{result.ValueVariable} = default;");
+        result.Body.Add("return false;");
 
         return result;
     }
-#endif
-
-    public override string ToString() => $"Char('{Char}')";
 }

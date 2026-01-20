@@ -1,7 +1,4 @@
-#if !AOT_COMPILATION
-using Parlot.Compilation;
-using System.Linq.Expressions;
-#endif
+using Parlot.SourceGeneration;
 using System;
 
 namespace Parlot.Fluent;
@@ -9,10 +6,7 @@ namespace Parlot.Fluent;
 /// <summary>
 /// Returns a default value if the previous parser failed.
 /// </summary>
-public sealed class Else<T> : Parser<T>
-#if !AOT_COMPILATION
-    , ICompilable
-#endif
+public sealed class Else<T> : Parser<T>, ISourceable
 {
     private readonly Parser<T> _parser;
     private readonly T? _value;
@@ -51,57 +45,71 @@ public sealed class Else<T> : Parser<T>
         return true;
     }
 
-#if !AOT_COMPILATION
-    public CompilationResult Compile(CompilationContext context)
+
+    public SourceResult GenerateSource(SourceGenerationContext context)
     {
-        var result = context.CreateCompilationResult<T>(true);
+        ThrowHelper.ThrowIfNull(context, nameof(context));
 
-        var parserCompileResult = _parser.Build(context);
+        if (_parser is not ISourceable sourceable)
+        {
+            throw new NotSupportedException("Else requires a source-generatable parser.");
+        }
 
-        // success = true;
-        //
-        // parser instructions
-        //
-        // if (parser.success)
+        var result = context.CreateResult(typeof(T), defaultSuccess: true);
+        var valueTypeName = SourceGenerationContext.GetTypeName(typeof(T));
+
+        // Use helper instead of inlining
+        var helperName = context.Helpers
+            .GetOrCreate(sourceable, $"{context.MethodNamePrefix}_Else", valueTypeName, () => sourceable.GenerateSource(context))
+            .MethodName;
+
+        // if (Helper(context, out value))
         // {
-        //    value = parser.Value
+        //     // value already assigned
         // }
         // else
         // {
-        //   value = _func != null ? _func(context) : _value
+        //     value = _func != null ? _func(context) : _value;
         // }
-
-        Expression elseExpression;
+        // success = true; (always succeeds)
+        
+        result.Body.Add($"if (!{helperName}({context.ParseContextName}, out {result.ValueVariable}))");
+        result.Body.Add("{");
+        
         if (_func != null)
         {
-            var invokeFuncExpression = Expression.Invoke(Expression.Constant(_func), [context.ParseContext]);
-            elseExpression = context.DiscardResult
-                ? invokeFuncExpression
-                : Expression.Assign(result.Value, invokeFuncExpression);
+            var lambdaId = context.RegisterLambda(_func);
+            if (context.DiscardResult)
+            {
+                result.Body.Add($"    {lambdaId}({context.ParseContextName});");
+            }
+            else
+            {
+                result.Body.Add($"    {result.ValueVariable} = {lambdaId}({context.ParseContextName});");
+            }
         }
         else
         {
-            elseExpression = context.DiscardResult
-                ? Expression.Empty()
-                : Expression.Assign(result.Value, Expression.Constant(_value, typeof(T)));
+            // Value-based: try to use LiteralHelper for supported types
+            var valueExpr = LiteralHelper.ToLiteral(_value);
+            if (valueExpr == null)
+            {
+                throw new NotSupportedException(
+                    $"Else<{typeof(T).Name}> with a value of type '{typeof(T).Name}' cannot be source-generated. " +
+                    $"Use a lambda instead, e.g., .Else(static _ => yourValue)");
+            }
+            
+            if (!context.DiscardResult)
+            {
+                result.Body.Add($"    {result.ValueVariable} = {valueExpr};");
+            }
         }
-
-        result.Body.Add(
-            Expression.Block(
-                parserCompileResult.Variables,
-                Expression.Block(parserCompileResult.Body),
-                context.DiscardResult
-                ? Expression.Empty()
-                : Expression.IfThenElse(
-                    parserCompileResult.Success,
-                    Expression.Assign(result.Value, parserCompileResult.Value),
-                    elseExpression
-                )
-            )
-        );
+        
+        result.Body.Add("}");
+        result.Body.Add($"{result.SuccessVariable} = true;");
 
         return result;
     }
-#endif
+
     public override string ToString() => $"{_parser} (Else)";
 }

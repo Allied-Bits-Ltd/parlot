@@ -3,9 +3,7 @@ using Parlot.Rewriting;
 using System;
 using System.Collections.Generic;
 using System.Globalization;
-using System.Linq;
 using System.Numerics;
-using System.Runtime.InteropServices;
 using Xunit;
 
 using static Parlot.Fluent.Parsers;
@@ -226,7 +224,6 @@ public class FluentTests
     [Fact]
     public void ThenShouldProvideStartAndEndOffsets()
     {
-        // Use Literals for consistent behavior between compiled and non-compiled modes
         var parser = Literals.Identifier().Then((context, start, end, value) =>
         {
             return $"{value}:{start}-{end}";
@@ -234,11 +231,6 @@ public class FluentTests
 
         Assert.True(parser.TryParse("hello", out var result));
         Assert.Equal("hello:0-5", result);
-
-        // Test with compiled parser - should have the same behavior
-        var compiled = parser.Compile();
-        Assert.True(compiled.TryParse("world", out var result2));
-        Assert.Equal("world:0-5", result2);
     }
 
     [Fact]
@@ -465,16 +457,21 @@ public class FluentTests
         var i = Literals.Text("i:");
         var s = Literals.Text("s:");
 
-        var parser = d.Or(i).Or(s).Switch((context, result) =>
+        var parsers = new Parser<object>[]
         {
-            switch (result)
+            Literals.Decimal().Then<object>(x => x),
+            Literals.Integer().Then<object>(x => x),
+            Literals.String().Then<object>(x => x),
+        };
+
+        var parser = d.Or(i).Or(s)
+            .Switch((context, result) => result switch
             {
-                case "d:": return Literals.Decimal().Then<object>(x => x);
-                case "i:": return Literals.Integer().Then<object>(x => x);
-                case "s:": return Literals.String().Then<object>(x => x);
-            }
-            return null;
-        });
+                "d:" => 0,
+                "i:" => 1,
+                "s:" => 2,
+                _ => -1
+            }, parsers);
 
         Assert.True(parser.TryParse("d:123.456", out var resultD));
         Assert.Equal((decimal)123.456, resultD);
@@ -493,16 +490,21 @@ public class FluentTests
         var i = Literals.Text("i:");
         var s = Literals.Text("s:");
 
-        var parser = d.Or(i).Or(s).Switch((context, result) =>
+        var parsers = new Parser<string>[]
         {
-            switch (result)
+            Literals.Decimal().Then(x => x.ToString(CultureInfo.InvariantCulture)),
+            Literals.Integer().Then(x => x.ToString()),
+            Literals.String().Then(x => x.ToString()),
+        };
+
+        var parser = d.Or(i).Or(s)
+            .Switch((context, result) => result switch
             {
-                case "d:": return Literals.Decimal().Then(x => x.ToString(CultureInfo.InvariantCulture));
-                case "i:": return Literals.Integer().Then(x => x.ToString());
-                case "s:": return Literals.String().Then(x => x.ToString());
-            }
-            return null;
-        });
+                "d:" => 0,
+                "i:" => 1,
+                "s:" => 2,
+                _ => -1
+            }, parsers);
 
         Assert.True(parser.TryParse("d:123.456", out var resultD));
         Assert.Equal("123.456", resultD);
@@ -518,7 +520,10 @@ public class FluentTests
     public void SelectShouldPickParserUsingRuntimeLogic()
     {
         var allowWhiteSpace = true;
-        var parser = Select<long>(_ => allowWhiteSpace ? Terms.Integer() : Literals.Integer());
+        var terms = Terms.Integer();
+        var literals = Literals.Integer();
+
+        var parser = Select<long>(_ => allowWhiteSpace ? 0 : 1, terms, literals);
 
         Assert.True(parser.TryParse(" 42", out var result1));
         Assert.Equal(42, result1);
@@ -534,7 +539,7 @@ public class FluentTests
     [Fact]
     public void SelectShouldFailWhenSelectorReturnsNull()
     {
-        var parser = Select<long>(_ => null!);
+        var parser = Select<long>(_ => -1, Terms.Integer());
 
         Assert.False(parser.TryParse("123", out _));
     }
@@ -542,7 +547,10 @@ public class FluentTests
     [Fact]
     public void SelectShouldHonorConcreteParseContext()
     {
-        var parser = Select<CustomParseContext, string>(context => context.PreferYes ? Literals.Text("yes") : Literals.Text("no"));
+        var yesParser = Literals.Text("yes");
+        var noParser = Literals.Text("no");
+
+        var parser = Select<CustomParseContext, string>(context => context.PreferYes ? 0 : 1, yesParser, noParser);
 
         var yesContext = new CustomParseContext(new Scanner("yes")) { PreferYes = true };
         Assert.True(parser.TryParse(yesContext, out var yes, out _));
@@ -1070,14 +1078,18 @@ public class FluentTests
         var parser1 = Literals.Text("not", caseInsensitive: true);
 
         Assert.Equal("not", parser1.Parse("not"));
-        Assert.Equal("nOt", parser1.Parse("nOt"));
-        Assert.Equal("NOT", parser1.Parse("NOT"));
+        Assert.Equal("not", parser1.Parse("nOt"));
+        Assert.Equal("not", parser1.Parse("NOT"));
 
         var parser2 = Terms.Text("not", caseInsensitive: true);
 
         Assert.Equal("not", parser2.Parse("not"));
-        Assert.Equal("nOt", parser2.Parse("nOt"));
-        Assert.Equal("NOT", parser2.Parse("NOT"));
+        Assert.Equal("not", parser2.Parse("nOt"));
+        Assert.Equal("not", parser2.Parse("NOT"));
+
+        // Opt-in to return the matched text
+        var parser3 = Terms.Text("not", caseInsensitive: true, returnMatchedText: true);
+        Assert.Equal("nOt", parser3.Parse("nOt"));
     }
 
     [Fact]
@@ -1090,7 +1102,7 @@ public class FluentTests
             );
 
         Assert.Equal("not", parser.Parse("not"));
-        Assert.Equal("nOt", parser.Parse("nOt"));
+        Assert.Equal("not", parser.Parse("nOt"));
         Assert.Equal("abc", parser.Parse("abc"));
         Assert.Equal("aBC", parser.Parse("aBC"));
         Assert.Null(parser.Parse("ABC"));
@@ -1145,6 +1157,22 @@ public class FluentTests
         Assert.Equal(1, context.Scanner.Cursor.Offset);
     }
 
+    [Fact]
+    public void LeftAssociativeWithContextShouldRestoreCursorWhenRightOperandMissing()
+    {
+        var parser = Terms.Decimal().LeftAssociative((Terms.Char('+'), static (ParseContext _, decimal a, decimal b) => a + b));
+
+        var context = new ParseContext(new Scanner("1+"));
+        var result = new ParseResult<decimal>();
+
+        Assert.True(parser.Parse(context, ref result));
+        Assert.Equal(1m, result.Value);
+        Assert.Equal(0, result.Start);
+        Assert.Equal(1, result.End);
+
+        Assert.Equal(1, context.Scanner.Cursor.Offset);
+    }
+
     [Theory]
     [InlineData("2", 2)]
     [InlineData("-2", -2)]
@@ -1164,6 +1192,18 @@ public class FluentTests
     public void UnaryShouldRestoreCursorWhenOperandMissing()
     {
         var parser = Terms.Decimal().Unary((Terms.Char('-'), static d => -d));
+
+        var context = new ParseContext(new Scanner("-"));
+        var result = new ParseResult<decimal>();
+
+        Assert.False(parser.Parse(context, ref result));
+        Assert.Equal(0, context.Scanner.Cursor.Offset);
+    }
+
+    [Fact]
+    public void UnaryWithContextShouldRestoreCursorWhenOperandMissing()
+    {
+        var parser = Terms.Decimal().Unary((Terms.Char('-'), static (ParseContext _, decimal d) => -d));
 
         var context = new ParseContext(new Scanner("-"));
         var result = new ParseResult<decimal>();
@@ -1579,23 +1619,17 @@ public class FluentTests
     }
 
     [Fact]
-    public void WithWhiteSpaceParserShouldWorkWithCompilation()
+    public void WithWhiteSpaceParserShouldParseCustomWhiteSpace()
     {
-        // Test that compilation works correctly with WithWhiteSpaceParser
         var hello = Terms.Text("hello");
         var world = Terms.Text("world");
         var parser = hello.And(world).WithWhiteSpaceParser(Capture(ZeroOrMany(Literals.Char('.'))));
 
-        // Compile the parser
-        var compiled = parser.Compile();
-
-        // Should work the same as non-compiled version
-        Assert.True(compiled.TryParse("..hello.world", out var result));
+        Assert.True(parser.TryParse("..hello.world", out var result));
         Assert.Equal("hello", result.Item1.ToString());
         Assert.Equal("world", result.Item2.ToString());
 
-        // Should not skip regular whitespace
-        Assert.False(compiled.TryParse("hello world", out _));
+        Assert.False(parser.TryParse("hello world", out _));
     }
 
     [Fact]
@@ -1633,6 +1667,64 @@ public class FluentTests
         // Should fail gracefully instead of causing stack overflow
         Assert.False(loop.TryParse("hello parlot", out var result2));
         Assert.Null(result2);
+    }
+
+    /// <summary>
+    /// Rewinds the cursor to the beginning of the buffer before invoking the next parser, such that a parser
+    /// can be re-entered at a position it is already active at, with other positions recorded in between.
+    /// </summary>
+    private sealed class RewindParser : Parser<string>
+    {
+        private readonly Parser<string> _parser;
+
+        public RewindParser(Parser<string> parser) => _parser = parser;
+
+        public override bool Parse(ParseContext context, ref ParseResult<string> result)
+        {
+            context.Scanner.Cursor.ResetPosition(TextPosition.Start);
+
+            return _parser.Parse(context, ref result);
+        }
+    }
+
+    [Fact]
+    public void ShouldDetectInfiniteRecursionWhenOtherPositionsAreRecordedInBetween()
+    {
+        // 'a' is entered at offset 0, consumes a char, then enters 'b' at offset 1 which rewinds and
+        // enters 'a' at offset 0 again. The cycle is only detectable by looking at every active parser,
+        // and not only at the ones recorded at the current position.
+
+        var a = Deferred<string>();
+        var b = Deferred<string>();
+
+        a.Parser = Literals.Char('x').SkipAnd(b);
+        b.Parser = new RewindParser(a);
+
+        // Should fail gracefully instead of causing a stack overflow
+        Assert.False(a.TryParse("xy", out var result));
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public void ShouldDetectInfiniteRecursionWhenDeeplyNested()
+    {
+        // Exercises the growth of the active parser tracking beyond its initial capacity
+
+        var list = Deferred<string>();
+
+        list.Parser = Between(Literals.Char('['), list, Literals.Char(']')).Then(x => "list")
+            .Or(Literals.Text("item"));
+
+        // Deep enough to grow the tracking arrays several times, but not so deep that a smaller
+        // stack turns a failure into a StackOverflowException that takes the test host down
+        var depth = 128;
+        var source = new string('[', depth) + "item" + new string(']', depth);
+
+        Assert.True(list.TryParse(source, out var result));
+        Assert.Equal("list", result);
+
+        // The same grammar without a terminating item must not recurse forever
+        Assert.False(list.TryParse(new string('[', depth), out _));
     }
 
     [Fact]
@@ -1783,13 +1875,18 @@ public class FluentTests
         Assert.Equal("if", result);
 
         Assert.True(parser.TryParse("IF", out result));
-        Assert.Equal("IF", result);
+        Assert.Equal("if", result);
 
         Assert.True(parser.TryParse("If", out result));
-        Assert.Equal("If", result);
+        Assert.Equal("if", result);
 
         Assert.False(parser.TryParse("ifoo", out result));
         Assert.False(parser.TryParse("IFoo", out result));
+
+        // Opt-in to return the matched text
+        var parser2 = Literals.Keyword("if", caseInsensitive: true, returnMatchedText: true);
+        Assert.True(parser2.TryParse("IF", out var result2));
+        Assert.Equal("IF", result2);
     }
 
     [Fact]

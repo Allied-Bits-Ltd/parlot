@@ -1,17 +1,12 @@
-#if !AOT_COMPILATION
-using Parlot.Compilation;
-using System.Linq.Expressions;
-#endif
+using Parlot.SourceGeneration;
+using System;
 
 namespace Parlot.Fluent;
 
 /// <summary>
 /// Doesn't parse anything and return the default value.
 /// </summary>
-public sealed class Always<T> : Parser<T>
-#if !AOT_COMPILATION
-    , ICompilable
-#endif
+public sealed class Always<T> : Parser<T>, ISourceable
 {
     private readonly T _value;
 
@@ -31,10 +26,26 @@ public sealed class Always<T> : Parser<T>
         return true;
     }
 
-#if !AOT_COMPILATION
-    public CompilationResult Compile(CompilationContext context)
+
+    public SourceResult GenerateSource(SourceGenerationContext context)
     {
-        return context.CreateCompilationResult<T>(true, Expression.Constant(_value, typeof(T)));
+        ThrowHelper.ThrowIfNull(context, nameof(context));
+
+        var result = context.CreateResult(typeof(T), defaultSuccess: true);
+        
+        // Try to get a string representation of the value for inlining
+        var valueExpr = LiteralHelper.ToLiteral(_value);
+        
+        if (valueExpr == null)
+        {
+            throw new NotSupportedException(
+                $"Always<{typeof(T).Name}> with value '{_value}' cannot be source-generated. " +
+                $"Use a lambda that returns the value instead, e.g., SomeParser.Then(static _ => yourValue)");
+        }
+
+        result.Body.Add($"{result.SuccessVariable} = true;");
+        result.Body.Add($"{result.ValueVariable} = {valueExpr};");
+
+        return result;
     }
-#endif
 }

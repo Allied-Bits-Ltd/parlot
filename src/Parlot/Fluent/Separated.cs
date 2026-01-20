@@ -1,25 +1,15 @@
-#if !AOT_COMPILATION
-using Parlot.Compilation;
-#endif
 using Parlot.Rewriting;
+using Parlot.SourceGeneration;
 using System;
 using System.Collections.Generic;
-#if !AOT_COMPILATION
-using System.Linq.Expressions;
 using System.Reflection;
-#endif
 
 namespace Parlot.Fluent;
 
-public sealed class Separated<U, T> : Parser<IReadOnlyList<T>>,
-#if !AOT_COMPILATION
-    ICompilable,
-#endif
-    ISeekable
+public sealed class Separated<U, T> : Parser<IReadOnlyList<T>>, ISeekable, ISourceable
 {
-#if !AOT_COMPILATION
     private static readonly MethodInfo _listAddMethodInfo = typeof(List<T>).GetMethod("Add")!;
-#endif
+
     private readonly Parser<U> _separator;
     private readonly Parser<T> _parser;
 
@@ -93,111 +83,128 @@ public sealed class Separated<U, T> : Parser<IReadOnlyList<T>>,
             results!.Add(parsed.Value);
         }
 
-        result.Set(start, end.Offset, results ?? (IReadOnlyList<T>)[]);
+        result.Set(start, end.Offset, results?.AsReadOnlyList() ?? (IReadOnlyList<T>)[]);
 
         context.ExitParser(this);
         return true;
     }
 
-#if !AOT_COMPILATION
-    public CompilationResult Compile(CompilationContext context)
+
+    public SourceResult GenerateSource(SourceGenerationContext context)
     {
-        var result = context.CreateCompilationResult<IReadOnlyList<T>>(false, ExpressionHelper.ArrayEmpty<T>());
-        var first = result.DeclareVariable<bool>($"first{context.NextNumber}", Expression.Constant(true));
-        var results = result.DeclareVariable<List<T>>($"results{context.NextNumber}");
+        ThrowHelper.ThrowIfNull(context, nameof(context));
 
-        var end = context.DeclarePositionVariable(result);
+        if (_parser is not ISourceable parserSourceable || _separator is not ISourceable separatorSourceable)
+        {
+            throw new NotSupportedException("Separated requires source-generatable parsers.");
+        }
 
-        // success = false;
-        //
-        // IReadonlyList<T> value = Array.Empty<T>();
-        // List<T> results = null;
-        //
-        // while (true)
-        // {
-        //   parse1 instructions
-        //
-        //   if (parser1.Success)
-        //   {
-        //      success = true;
-        //      if (first)
-        //      {
-        //          results = new List<T>();
-        //          first = false;
-        //          value = results;
-        //      }
-        //      results.Add(parse1.Value);
-        //      end = currenPosition;
-        //   }
-        //   else
-        //   {
-        //      break;
-        //   }
-        //
-        //   parseSeparatorExpression with conditional break
-        //
-        //   if (context.Scanner.Cursor.Eof)
-        //   {
-        //      break;
-        //   }
-        // }
-        //
-        // resetPosition(end);
-        //
+        var elementTypeName = SourceGenerationContext.GetTypeName(typeof(T));
+        var result = context.CreateResult(typeof(IReadOnlyList<T>), defaultSuccess: false, defaultValueExpression: $"global::System.Array.Empty<{elementTypeName}>()");
+        var cursorName = context.CursorName;
 
-        var parserCompileResult = _parser.Build(context);
-        var breakLabel = Expression.Label($"break{context.NextNumber}");
+        var listName = $"list{context.NextNumber()}";
+        var firstName = $"first{context.NextNumber()}";
+        var endName = $"end{context.NextNumber()}";
+        var startName = $"start{context.NextNumber()}";
 
-        var separatorCompileResult = _separator.Build(context);
+        if (!context.DiscardResult)
+        {
+            result.Body.Add($"System.Collections.Generic.List<{elementTypeName}>? {listName} = null;");
+        }
+        result.Body.Add($"bool {firstName} = true;");
+        result.Body.Add($"var {endName} = {cursorName}.Position;");
+        if (!context.DiscardResult)
+        {
+            result.Body.Add($"int {startName} = 0;");
+        }
 
-        var block = Expression.Block(
-            parserCompileResult.Variables,
-            Expression.Loop(
-                Expression.Block(
-                    Expression.Block(parserCompileResult.Body),
-                    Expression.IfThenElse(
-                        parserCompileResult.Success,
-                        Expression.Block(
-                            context.DiscardResult
-                            ? Expression.Empty()
-                            : Expression.Block(
-                                Expression.IfThen(
-                                    Expression.IsTrue(first),
-                                    Expression.Block(
-                                        Expression.Assign(first, Expression.Constant(false)),
-                                        Expression.Assign(results, ExpressionHelper.New<List<T>>()),
-                                        Expression.Assign(result.Value, results)
-                                        )
-                                    ),
-                                Expression.Call(results, _listAddMethodInfo, parserCompileResult.Value)
-                                ),
-                            Expression.Assign(result.Success, Expression.Constant(true)),
-                            Expression.Assign(end, context.Position())
-                            ),
-                        Expression.Break(breakLabel)
-                        ),
-                    Expression.Block(
-                        separatorCompileResult.Variables,
-                        Expression.Block(separatorCompileResult.Body),
-                        Expression.IfThen(
-                            Expression.Not(separatorCompileResult.Success),
-                            Expression.Break(breakLabel)
-                            )
-                        ),
-                    Expression.IfThen(
-                        context.Eof(),
-                        Expression.Break(breakLabel)
-                        )
-                    ),
-                breakLabel),
-            context.ResetPosition(end)
-            );
+        var parserValueTypeName = SourceGenerationContext.GetTypeName(typeof(T));
+        var separatorValueTypeName = SourceGenerationContext.GetTypeName(typeof(U));
 
-        result.Body.Add(block);
+        // Use helpers instead of inlining
+        var parserHelperName = context.Helpers
+            .GetOrCreate(parserSourceable, $"{context.MethodNamePrefix}_Separated_Parser", parserValueTypeName, () => parserSourceable.GenerateSource(context))
+            .MethodName;
+
+        var separatorHelperName = context.Helpers
+            .GetOrCreate(separatorSourceable, $"{context.MethodNamePrefix}_Separated_Separator", separatorValueTypeName, () => separatorSourceable.GenerateSource(context))
+            .MethodName;
+
+        result.Body.Add("while (true)");
+        result.Body.Add("{");
+        
+        // If not first, try to parse separator
+        result.Body.Add($"    if (!{firstName})");
+        result.Body.Add("    {");
+        result.Body.Add($"        if (!{separatorHelperName}({context.ParseContextName}, out _))");
+        result.Body.Add("        {");
+        result.Body.Add("            break;");
+        result.Body.Add("        }");
+        result.Body.Add("    }");
+
+        // Try to parse element
+        result.Body.Add($"    if (!{parserHelperName}({context.ParseContextName}, out var item{context.NextNumber()}))");
+        result.Body.Add("    {");
+        result.Body.Add($"        if (!{firstName})");
+        result.Body.Add("        {");
+        result.Body.Add($"            {cursorName}.ResetPosition({endName});");
+        result.Body.Add("            break;");
+        result.Body.Add("        }");
+        result.Body.Add($"        {result.SuccessVariable} = false;");
+        result.Body.Add("        break;");
+        result.Body.Add("    }");
+        result.Body.Add("    else");
+        result.Body.Add("    {");
+        result.Body.Add($"        {endName} = {cursorName}.Position;");
+        result.Body.Add("    }");
+
+        result.Body.Add($"    if ({firstName})");
+        result.Body.Add("    {");
+        if (!context.DiscardResult)
+        {
+            result.Body.Add($"        {listName} = new System.Collections.Generic.List<{elementTypeName}>();");
+            result.Body.Add($"        {startName} = {endName}.Offset;");
+        }
+        result.Body.Add($"        {firstName} = false;");
+        result.Body.Add("    }");
+
+        if (!context.DiscardResult)
+        {
+            result.Body.Add($"    {listName}!.Add(item{context.NextNumber() - 1});");
+        }
+        result.Body.Add("}");
+
+        if (!context.DiscardResult)
+        {
+            result.Body.Add($"if ({listName} != null)");
+            result.Body.Add("{");
+            result.Body.Add($"    {result.ValueVariable} = {listName};");
+            result.Body.Add($"    {result.SuccessVariable} = true;");
+            result.Body.Add("}");
+            result.Body.Add("else");
+            result.Body.Add("{");
+            result.Body.Add($"    {result.ValueVariable} = global::System.Array.Empty<{elementTypeName}>();");
+            // No items parsed - Separated requires at least one element
+            result.Body.Add($"    {result.SuccessVariable} = false;");
+            result.Body.Add("}");
+        }
+        else
+        {
+            // When discarding result, success depends on whether we parsed at least one item
+            result.Body.Add($"if (!{firstName})");
+            result.Body.Add("{");
+            result.Body.Add($"    {result.SuccessVariable} = true;");
+            result.Body.Add("}");
+            result.Body.Add("else");
+            result.Body.Add("{");
+            // No items parsed - Separated requires at least one element
+            result.Body.Add($"    {result.SuccessVariable} = false;");
+            result.Body.Add("}");
+        }
 
         return result;
     }
-#endif
 
     public override string ToString() => $"Separated({_separator}, {_parser})";
 }

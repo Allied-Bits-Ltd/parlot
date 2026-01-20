@@ -10,7 +10,7 @@ namespace Parlot.Benchmarks;
 public class ExprBench
 {
     private readonly Parser<Expression> _parser = FluentParser.Expression;
-    private readonly Parser<Expression> _compiled = FluentParser.Expression.Compile();
+    private readonly Parser<Expression> _generated = GeneratedParsers.ExpressionParser();
     private readonly Parser _rawParser = new();
 
     private const string _expression1 = "3 - 1 / 2 + 1";
@@ -23,15 +23,16 @@ public class ExprBench
     }
 
     [Benchmark(Baseline = true), BenchmarkCategory("Expression1")]
-    public Expression ParlotCompiledSmall()
-    {
-        return _compiled.Parse(_expression1);
-    }
-
-    [Benchmark, BenchmarkCategory("Expression1")]
     public Expression ParlotFluentSmall()
     {
         _ = _parser.TryParse(_expression1, out var result);
+        return result;
+    }
+
+    [Benchmark, BenchmarkCategory("Expression1")]
+    public Expression ParlotGeneratedSmall()
+    {
+        _ = _generated.TryParse(_expression1, out var result);
         return result;
     }
 
@@ -48,15 +49,16 @@ public class ExprBench
     }
 
     [Benchmark(Baseline = true), BenchmarkCategory("Expression2")]
-    public Expression ParlotCompiledBig()
-    {
-        return _compiled.Parse(_expression2);
-    }
-
-    [Benchmark, BenchmarkCategory("Expression2")]
     public Expression ParlotFluentBig()
     {
         _ = FluentParser.Expression.TryParse(_expression2, out var result);
+        return result;
+    }
+
+    [Benchmark, BenchmarkCategory("Expression2")]
+    public Expression ParlotGeneratedBig()
+    {
+        _ = _generated.TryParse(_expression2, out var result);
         return result;
     }
 

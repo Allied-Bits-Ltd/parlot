@@ -1,7 +1,4 @@
-#if !AOT_COMPILATION
-using Parlot.Compilation;
-using System.Linq.Expressions;
-#endif
+using Parlot.SourceGeneration;
 using System;
 
 namespace Parlot.Fluent;
@@ -10,10 +7,7 @@ namespace Parlot.Fluent;
 /// Doesn't parse anything and return the default value.
 /// </summary>
 [Obsolete("Use the Then parser instead.")]
-public sealed class Discard<T, U> : Parser<U>
-#if !AOT_COMPILATION
-    , ICompilable
-#endif
+public sealed class Discard<T, U> : Parser<U>, ISourceable
 {
     private readonly Parser<T> _parser;
     private readonly U _value;
@@ -42,30 +36,21 @@ public sealed class Discard<T, U> : Parser<U>
         return false;
     }
 
-#if !AOT_COMPILATION
-    public CompilationResult Compile(CompilationContext context)
+
+    public SourceResult GenerateSource(SourceGenerationContext context)
     {
-        var result = context.CreateCompilationResult<U>(false, Expression.Constant(_value, typeof(U)));
+        ThrowHelper.ThrowIfNull(context, nameof(context));
 
-        var parserCompileResult = _parser.Build(context);
+        if (_parser is not ISourceable sourceable)
+        {
+            throw new NotSupportedException("Discard requires a source-generatable parser.");
+        }
 
-        // success = false;
-        // value = _value;
-        //
-        // parser instructions
-        //
-        // success = parser.success;
-
-        result.Body.Add(
-            Expression.Block(
-                parserCompileResult.Variables,
-                Expression.Block(parserCompileResult.Body),
-                Expression.Assign(result.Success, parserCompileResult.Success)
-                )
-            );
-
-        return result;
+        // Discard with a value cannot be source-generated
+        throw new NotSupportedException(
+            $"Discard<{typeof(T).Name}, {typeof(U).Name}> cannot be source-generated. " +
+            $"Use .Then(static _ => yourValue) instead of .Discard(value).");
     }
-#endif
+
     public override string ToString() => $"{_parser} (Discard)";
 }

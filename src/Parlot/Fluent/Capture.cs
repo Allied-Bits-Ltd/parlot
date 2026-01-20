@@ -1,16 +1,10 @@
-#if !AOT_COMPILATION
-using Parlot.Compilation;
-#endif
 using Parlot.Rewriting;
-using System.Linq.Expressions;
+using Parlot.SourceGeneration;
+using System;
 
 namespace Parlot.Fluent;
 
-public sealed class Capture<T> : Parser<TextSpan>,
-#if !AOT_COMPILATION
-    ICompilable,
-#endif
-    ISeekable
+public sealed class Capture<T> : Parser<TextSpan>, ISeekable, ISourceable
 {
     private readonly Parser<T> _parser;
 
@@ -57,58 +51,55 @@ public sealed class Capture<T> : Parser<TextSpan>,
         return false;
     }
 
-#if !AOT_COMPILATION
-    public CompilationResult Compile(CompilationContext context)
+
+    public SourceResult GenerateSource(SourceGenerationContext context)
     {
-        var result = context.CreateCompilationResult<TextSpan>();
+        ThrowHelper.ThrowIfNull(context, nameof(context));
 
-        // var start = context.Scanner.Cursor.Position;
-        var start = context.DeclarePositionVariable(result);
+        if (_parser is not ISourceable sourceable)
+        {
+            throw new NotSupportedException("Capture requires a source-generatable parser.");
+        }
 
+        var result = context.CreateResult(typeof(TextSpan));
+        var cursorName = context.CursorName;
+        var scannerName = context.ScannerName;
+        var innerValueTypeName = SourceGenerationContext.GetTypeName(typeof(T));
+        
+        var startName = $"start{context.NextNumber()}";
+        var endName = $"end{context.NextNumber()}";
+        var lengthName = $"length{context.NextNumber()}";
+        
+        result.Body.Add($"var {startName} = {cursorName}.Position;");
+
+        // Set DiscardResult to true for the inner parser, as we only care about whether it succeeds
         var ignoreResults = context.DiscardResult;
         context.DiscardResult = true;
 
-        var parserCompileResult = _parser.Build(context);
+        // Use helper instead of inlining
+        var helperName = context.Helpers
+            .GetOrCreate(sourceable, $"{context.MethodNamePrefix}_Capture", innerValueTypeName, () => sourceable.GenerateSource(context))
+            .MethodName;
 
         context.DiscardResult = ignoreResults;
 
-        // parse1 instructions
-        //
-        // if (parser1.Success)
+        // if (Helper(context, out _))
         // {
-        //     var end = context.Scanner.Cursor.Offset;
+        //     var end = cursor.Offset;
         //     var length = end - start.Offset;
-        //
-        //     value = new TextSpan(context.Scanner.Buffer, start.Offset, length);
-        //
+        //     value = new TextSpan(scanner.Buffer, start.Offset, length);
         //     success = true;
         // }
-
-        var startOffset = result.DeclareVariable<int>($"startOffset{context.NextNumber}", context.Offset(start));
-
-        result.Body.Add(
-            Expression.Block(
-                parserCompileResult.Variables,
-                Expression.Block(parserCompileResult.Body),
-                Expression.IfThen(
-                    test: parserCompileResult.Success,
-                    ifTrue: Expression.Block(
-                        // Never discard result here, that would nullify this parser
-                        Expression.Assign(result.Value,
-                            context.NewTextSpan(
-                                context.Buffer(),
-                                startOffset,
-                                Expression.Subtract(context.Offset(), startOffset)
-                                )),
-                        Expression.Assign(result.Success, Expression.Constant(true, typeof(bool)))
-                        )
-                )
-            )
-        );
+        result.Body.Add($"if ({helperName}({context.ParseContextName}, out _))");
+        result.Body.Add("{");
+        result.Body.Add($"    var {endName} = {cursorName}.Offset;");
+        result.Body.Add($"    var {lengthName} = {endName} - {startName}.Offset;");
+        result.Body.Add($"    {result.ValueVariable} = new global::Parlot.TextSpan({scannerName}.Buffer, {startName}.Offset, {lengthName});");
+        result.Body.Add($"    {result.SuccessVariable} = true;");
+        result.Body.Add("}");
 
         return result;
     }
-#endif
 
     public override string ToString() => $"{_parser} (Capture)";
 }

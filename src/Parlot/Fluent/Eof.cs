@@ -1,17 +1,12 @@
-#if !AOT_COMPILATION
-using Parlot.Compilation;
-using System.Linq.Expressions;
-#endif
+using Parlot.SourceGeneration;
+using System;
 
 namespace Parlot.Fluent;
 
 /// <summary>
 /// Successful when the cursor is at the end of the string.
 /// </summary>
-public sealed class Eof<T> : Parser<T>
-#if !AOT_COMPILATION
-    , ICompilable
-#endif
+public sealed class Eof<T> : Parser<T>, ISourceable
 {
     private readonly Parser<T> _parser;
 
@@ -34,39 +29,43 @@ public sealed class Eof<T> : Parser<T>
         return false;
     }
 
-#if !AOT_COMPILATION
-    public CompilationResult Compile(CompilationContext context)
+
+    public SourceResult GenerateSource(SourceGenerationContext context)
     {
-        var result = context.CreateCompilationResult<T>();
+        ThrowHelper.ThrowIfNull(context, nameof(context));
 
-        // parse1 instructions
-        //
-        // if (parser1.Success && context.Scanner.Cursor.Eof)
+        if (_parser is not ISourceable sourceable)
+        {
+            throw new NotSupportedException("Eof requires a source-generatable parser.");
+        }
+
+        var result = context.CreateResult(typeof(T));
+        var valueTypeName = SourceGenerationContext.GetTypeName(typeof(T));
+
+        // Use helper instead of inlining
+        var helperName = context.Helpers
+            .GetOrCreate(sourceable, $"{context.MethodNamePrefix}_Eof", valueTypeName, () => sourceable.GenerateSource(context))
+            .MethodName;
+
+        // if (Helper(context, out var innerValue) && cursor.Eof)
         // {
-        //    value = parse1.Value;
-        //    success = true;
+        //     success = true;
+        //     value = innerValue;
         // }
-
-        var parserCompileResult = _parser.Build(context);
-
-        result.Body.Add(
-            Expression.Block(
-                parserCompileResult.Variables,
-                Expression.Block(parserCompileResult.Body),
-                Expression.IfThen(
-                    Expression.AndAlso(parserCompileResult.Success, context.Eof()),
-                    Expression.Block(
-                        context.DiscardResult
-                            ? Expression.Empty()
-                            : Expression.Assign(result.Value, parserCompileResult.Value),
-                        Expression.Assign(result.Success, Expression.Constant(true, typeof(bool)))
-                        )
-                    )
-                )
-            );
+        if (context.DiscardResult)
+        {
+            result.Body.Add($"if ({helperName}({context.ParseContextName}, out _) && {context.CursorName}.Eof)");
+        }
+        else
+        {
+            result.Body.Add($"if ({helperName}({context.ParseContextName}, out {result.ValueVariable}) && {context.CursorName}.Eof)");
+        }
+        result.Body.Add("{");
+        result.Body.Add($"    {result.SuccessVariable} = true;");
+        result.Body.Add("}");
 
         return result;
     }
-#endif
+
     public override string ToString() => $"{_parser} (Eof)";
 }

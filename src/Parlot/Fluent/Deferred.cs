@@ -1,25 +1,13 @@
-#if !AOT_COMPILATION
-using FastExpressionCompiler;
-using Parlot.Compilation;
-#endif
 using Parlot.Rewriting;
+using Parlot.SourceGeneration;
 using System;
-
-#if !AOT_COMPILATION
-#if NET
-using System.Linq;
-#endif
-using System.Linq.Expressions;
-#endif
 
 namespace Parlot.Fluent;
 
-public sealed class Deferred<T> : Parser<T>,
-#if !AOT_COMPILATION
-    ICompilable,
-#endif
-    ISeekable
+public sealed class Deferred<T> : Parser<T>, ISeekable, ISourceable
 {
+
+    private readonly object _lockObject = new();
     private Parser<T>? _parser;
 
     public Parser<T>? Parser
@@ -55,137 +43,99 @@ public sealed class Deferred<T> : Parser<T>,
 
     public override bool Parse(ParseContext context, ref ParseResult<T> result)
     {
-        if (Parser is null)
+        var parser = Parser;
+
+        if (parser is null)
         {
             throw new InvalidOperationException("Parser has not been initialized");
         }
 
-        // Check for infinite recursion at the same position (unless disabled)
-        if (!context.DisableLoopDetection && context.IsParserActiveAtPosition(this))
-        {
-            // Cycle detected at this position - fail gracefully instead of stack overflow
-            return false;
-        }
+        var trackPosition = !context.DisableLoopDetection;
 
         // Remember the position where we entered this parser
-        var entryPosition = context.Scanner.Cursor.Position.Offset;
+        var entryPosition = 0;
 
-        // Mark this parser as active at the current position (unless loop detection is disabled)
-        var trackPosition = !context.DisableLoopDetection && context.PushParserAtPosition(this);
-
-        context.EnterParser(this);
-
-        var outcome = Parser.Parse(context, ref result);
-
-        context.ExitParser(this);
-
-        // Mark this parser as inactive at the entry position (only if we tracked it)
         if (trackPosition)
         {
-            context.PopParserAtPosition(this, entryPosition);
+            entryPosition = context.Scanner.Cursor.Offset;
+
+            // Marking the parser as active also detects a cycle at this position, which saves a lookup
+            // compared to checking for the cycle first.
+            if (!context.PushParserAtPosition(this))
+            {
+                // Cycle detected at this position - fail gracefully instead of stack overflow
+                return false;
+            }
         }
 
-        return outcome;
+        try
+        {
+            context.EnterParser(this);
+
+            var outcome = parser.Parse(context, ref result);
+
+            context.ExitParser(this);
+
+            return outcome;
+        }
+        finally
+        {
+            // Marked as inactive even when a parser throws, otherwise a context that is reused
+            // after the exception was handled would report a cycle for this position
+            if (trackPosition)
+            {
+                context.PopParserAtPosition(this, entryPosition);
+            }
+        }
     }
 
-#if !AOT_COMPILATION
-    private bool _initialized;
-    private readonly Closure _closure = new();
+    private bool _toString;
 
-    private sealed class Closure
+    public SourceResult GenerateSource(SourceGenerationContext context)
     {
-        public object? Func;
-    }
+        ThrowHelper.ThrowIfNull(context, nameof(context));
 
-    public CompilationResult Compile(CompilationContext context)
-    {
-        if (Parser == null)
+        if (Parser is null)
         {
-            throw new InvalidOperationException("Can't compile a Deferred Parser until it is fully initialized");
+            throw new InvalidOperationException("Can't generate source for a Deferred parser until it is fully initialized");
         }
 
-        var result = context.CreateCompilationResult<T>();
+        // Check if this deferred parser is already being generated (recursion)
+        var methodName = context.Deferred.GetOrCreateMethodName(this, Name ?? "Deferred");
 
-        // Create the body of this parser only once
-        if (!_initialized)
+        var result = context.CreateResult(typeof(T));
+        var ctx = context.ParseContextName;
+        var cursorName = context.CursorName;
+        var valueTypeName = SourceGenerationContext.GetTypeName(typeof(T));
+
+        // Track position for backtracking on failure
+        var startName = $"start{context.NextNumber()}";
+        result.Body.Add($"var {startName} = {cursorName}.Position;");
+
+        // Generate a call to the helper method
+        if (context.DiscardResult)
         {
-            _initialized = true;
-
-            // lambda (ParserContext)
-            // {
-            //   parse1 instructions
-            //
-            //   var result = new ValueTuple<bool, T>(parser1.Success, parse1.Value);
-            //   return result;
-            // }
-
-            var parserCompileResult = Parser.Build(context);
-
-            var resultExpression = Expression.Variable(typeof(ValueTuple<bool, T>), $"result{context.NextNumber}");
-            var returnTarget = Expression.Label(typeof(ValueTuple<bool, T>));
-            var returnExpression = Expression.Return(returnTarget, resultExpression, typeof(ValueTuple<bool, T>));
-            var returnLabel = Expression.Label(returnTarget, defaultValue: Expression.New(typeof(ValueTuple<bool, T>)));
-
-            var lambda =
-                Expression.Lambda<Func<ParseContext, ValueTuple<bool, T>>>(
-                    Expression.Block(
-                        type: typeof(ValueTuple<bool, T>),
-                        variables: parserCompileResult.Variables.Append(resultExpression),
-                        Expression.Block(parserCompileResult.Body),
-                        Expression.Assign(resultExpression, Expression.New(
-                            typeof(ValueTuple<bool, T>).GetConstructor([typeof(bool), typeof(T)])!,
-                            parserCompileResult.Success,
-                            context.DiscardResult ? Expression.Default(parserCompileResult.Value.Type) : parserCompileResult.Value)),
-                        returnExpression,
-                        returnLabel),
-                    true,
-                    context.ParseContext
-                    );
-
-            // Store the source lambda for debugging
-#if DEBUG
-            context.Lambdas.Add(lambda);
-#endif
-
-            _closure.Func = lambda.CompileFast(ifFastFailedReturnNull: false, ExpressionHelper.CompilerFlags);
+            result.Body.Add($"{result.SuccessVariable} = {methodName}({ctx}, out _);");
+        }
+        else
+        {
+            result.Body.Add($"{result.SuccessVariable} = {methodName}({ctx}, out {result.ValueVariable});");
         }
 
-        // ValueTuple<bool, T> def;
-
-        var deferred = Expression.Variable(typeof(ValueTuple<bool, T>), $"def{context.NextNumber}");
-        result.Variables.Add(deferred);
-
-        // def = ((Func<ParserContext, ValueTuple<bool, T>>)_closure.Func).Invoke(parseContext);
-
-        var contextScope = Expression.Constant(_closure);
-        var getFuncs = typeof(Closure).GetMember(nameof(Closure.Func))[0];
-        var funcReturnType = typeof(Func<ParseContext, ValueTuple<bool, T>>);
-        var funcsAccess = Expression.MakeMemberAccess(contextScope, getFuncs);
-
-        var castFunc = Expression.Convert(funcsAccess, funcReturnType);
-        result.Body.Add(Expression.Assign(deferred, Expression.Invoke(castFunc, context.ParseContext)));
-
-        // success = def.Item1;
-        // value = def.Item2;
-
-        result.Body.Add(Expression.Assign(result.Success, Expression.Field(deferred, "Item1")));
-        result.Body.Add(
-            context.DiscardResult
-                        ? Expression.Empty()
-                        : Expression.Assign(result.Value, Expression.Field(deferred, "Item2"))
-        );
+        // Reset position if the deferred parser failed
+        result.Body.Add($"if (!{result.SuccessVariable})");
+        result.Body.Add("{");
+        result.Body.Add($"    {cursorName}.ResetPosition({startName});");
+        result.Body.Add("}");
 
         return result;
     }
-#endif
-
-    private bool _toString;
 
     public override string ToString()
     {
         // Handle recursion
 
-        lock (this)
+        lock (_lockObject)
         {
             if (!_toString)
             {

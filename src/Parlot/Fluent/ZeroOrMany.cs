@@ -1,23 +1,13 @@
-#if !AOT_COMPILATION
-using Parlot.Compilation;
-#endif
+using Parlot.SourceGeneration;
 using System;
 using System.Collections.Generic;
-#if !AOT_COMPILATION
-using System.Linq.Expressions;
 using System.Reflection;
-#endif
 
 namespace Parlot.Fluent;
 
-public sealed class ZeroOrMany<T> : Parser<IReadOnlyList<T>>
-#if !AOT_COMPILATION
-    , ICompilable
-#endif
+public sealed class ZeroOrMany<T> : Parser<IReadOnlyList<T>>, ISourceable
 {
-#if !AOT_COMPILATION
     private static readonly MethodInfo _listAdd = typeof(List<T>).GetMethod("Add")!;
-#endif
 
     private readonly Parser<T> _parser;
 
@@ -55,89 +45,81 @@ public sealed class ZeroOrMany<T> : Parser<IReadOnlyList<T>>
             results!.Add(parsed.Value);
         }
 
-        result.Set(start, end, results ?? (IReadOnlyList<T>)[]);
+        result.Set(start, end, results?.AsReadOnlyList() ?? (IReadOnlyList<T>)[]);
 
         context.ExitParser(this);
         return true;
     }
 
-#if !AOT_COMPILATION
-    public CompilationResult Compile(CompilationContext context)
+
+    public override string ToString() => $"{_parser}*";
+
+    public SourceResult GenerateSource(SourceGenerationContext context)
     {
-        var result = context.CreateCompilationResult<IReadOnlyList<T>>(true, ExpressionHelper.ArrayEmpty<T>());
+        ThrowHelper.ThrowIfNull(context, nameof(context));
 
-        var results = result.DeclareVariable<List<T>>($"results{context.NextNumber}");
-        var first = result.DeclareVariable<bool>($"first{context.NextNumber}", Expression.Constant(true));
+        if (_parser is not ISourceable sourceable)
+        {
+            throw new NotSupportedException("ZeroOrMany requires a source-generatable parser.");
+        }
 
-        // success = true;
-        //
-        // IReadonlyList<T> value = Array.Empty<T>();
-        // List<T> results = null;
-        //
-        // while (true)
-        // {
-        //
-        //   parse1 instructions
-        //
-        //   if (parser1.Success)
-        //   {
-        //      if (results == null)
-        //      {
-        //          results = new List<T>();
-        //          value = results;
-        //      }
-        //
-        //      results.Add(parse1.Value);
-        //   }
-        //   else
-        //   {
-        //      break;
-        //   }
-        //
-        //   if (context.Scanner.Cursor.Eof)
-        //   {
-        //      break;
-        //   }
-        // }
+        var elementTypeName = SourceGenerationContext.GetTypeName(typeof(T));
+        var result = context.CreateResult(typeof(IReadOnlyList<T>), defaultSuccess: true, defaultValueExpression: $"global::System.Array.Empty<{elementTypeName}>()");
+        var ctx = context.ParseContextName;
 
-        var parserCompileResult = _parser.Build(context);
+        var listName = $"list{context.NextNumber()}";
+        var firstName = $"first{context.NextNumber()}";
 
-        var breakLabel = Expression.Label($"break{context.NextNumber}");
+        if (!context.DiscardResult)
+        {
+            result.Body.Add($"System.Collections.Generic.List<{elementTypeName}>? {listName} = null;");
+            result.Body.Add($"bool {firstName} = true;");
+        }
 
-        var block =
-            Expression.Loop(
-                Expression.Block(
-                    parserCompileResult.Variables,
-                    Expression.Block(parserCompileResult.Body),
-                    Expression.IfThenElse(
-                        parserCompileResult.Success,
-                        context.DiscardResult
-                        ? Expression.Empty()
-                        : Expression.Block(
-                            Expression.IfThen(
-                                Expression.IsTrue(first),
-                                Expression.Block(
-                                    Expression.Assign(first, Expression.Constant(false)),
-                                    Expression.Assign(results, ExpressionHelper.New<List<T>>()),
-                                    Expression.Assign(result.Value, results)
-                                    )
-                                ),
-                            Expression.Call(results, _listAdd, parserCompileResult.Value)
-                            ),
-                        Expression.Break(breakLabel)
-                        ),
-                    Expression.IfThen(
-                        context.Eof(),
-                        Expression.Break(breakLabel)
-                        )),
-                breakLabel
-                );
+        static Type GetParserValueType(object parser)
+        {
+            var type = parser.GetType();
+            while (type != null)
+            {
+                if (type.IsGenericType && type.GetGenericTypeDefinition().FullName == "Parlot.Fluent.Parser`1")
+                {
+                    return type.GetGenericArguments()[0];
+                }
+                type = type.BaseType!;
+            }
+            throw new InvalidOperationException("Unable to determine parser value type.");
+        }
 
-        result.Body.Add(block);
+        var valueTypeName = SourceGenerationContext.GetTypeName(GetParserValueType(sourceable));
+        var helperName = context.Helpers
+            .GetOrCreate(sourceable, $"{context.MethodNamePrefix}_ZeroOrMany_Parser", valueTypeName, () => sourceable.GenerateSource(context))
+            .MethodName;
+
+        result.Body.Add("while (true)");
+        result.Body.Add("{");
+        result.Body.Add($"    if (!{helperName}({ctx}, out var itemValue{context.NextNumber()}))");
+        result.Body.Add("    {");
+        result.Body.Add("        break;");
+        result.Body.Add("    }");
+        if (!context.DiscardResult)
+        {
+            result.Body.Add($"    if ({firstName})");
+            result.Body.Add("    {");
+            result.Body.Add($"        {listName} = new System.Collections.Generic.List<{elementTypeName}>();");
+            result.Body.Add($"        {result.ValueVariable} = {listName};");
+            result.Body.Add($"        {firstName} = false;");
+            result.Body.Add("    }");
+            result.Body.Add($"    {listName}!.Add(itemValue{context.NextNumber() - 1});");
+        }
+        result.Body.Add("}");
+        if (!context.DiscardResult)
+        {
+            result.Body.Add($"if ({listName} is null)");
+            result.Body.Add("{");
+            result.Body.Add($"    {result.ValueVariable} = global::System.Array.Empty<{elementTypeName}>();");
+            result.Body.Add("}");
+        }
 
         return result;
     }
-#endif
-
-    public override string ToString() => $"{_parser}*";
 }

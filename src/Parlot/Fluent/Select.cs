@@ -1,11 +1,6 @@
-#if !AOT_COMPILATION
-using Parlot.Compilation;
-#endif
+using Parlot.SourceGeneration;
 using System;
-#if !AOT_COMPILATION
-using System.Linq.Expressions;
-using System.Reflection;
-#endif
+using System.Linq;
 
 namespace Parlot.Fluent;
 
@@ -14,33 +9,38 @@ namespace Parlot.Fluent;
 /// </summary>
 /// <typeparam name="C">The concrete <see cref="ParseContext" /> type to use.</typeparam>
 /// <typeparam name="T">The output parser type.</typeparam>
-public sealed class Select<C, T> : Parser<T>
-#if !AOT_COMPILATION
-    , ICompilable
-#endif
-    where C : ParseContext
+public sealed class Select<C, T> : Parser<T>, ISourceable where C : ParseContext
 {
-#if !AOT_COMPILATION
-    private static readonly MethodInfo _parse = typeof(Parser<T>).GetMethod(nameof(Parse), [typeof(ParseContext), typeof(ParseResult<T>).MakeByRefType()])!;
-#endif
-    private readonly Func<C, Parser<T>> _selector;
+    private readonly Parser<T>[] _parsers;
+    private readonly Func<C, int> _selector;
 
-    public Select(Func<C, Parser<T>> selector)
+    public Select(Func<C, int> selector, params Parser<T>[] parsers)
     {
         _selector = selector ?? throw new ArgumentNullException(nameof(selector));
+
+        ThrowHelper.ThrowIfNull(parsers, nameof(parsers));
+
+        _parsers = parsers;
+
+        for (var i = 0; i < _parsers.Length; i++)
+        {
+            _parsers[i] = _parsers[i] ?? throw new ArgumentException("Parsers array must not contain null elements.", nameof(parsers));
+        }
     }
 
     public override bool Parse(ParseContext context, ref ParseResult<T> result)
     {
         context.EnterParser(this);
 
-        var nextParser = _selector((C)context);
+        var index = _selector((C)context);
 
-        if (nextParser == null)
+        if ((uint)index >= (uint)_parsers.Length)
         {
             context.ExitParser(this);
             return false;
         }
+
+        var nextParser = _parsers[index];
 
         var parsed = new ParseResult<T>();
 
@@ -56,37 +56,55 @@ public sealed class Select<C, T> : Parser<T>
         return false;
     }
 
-#if !AOT_COMPILATION
-    public CompilationResult Compile(CompilationContext context)
+
+    public SourceResult GenerateSource(SourceGenerationContext context)
     {
-        var result = context.CreateCompilationResult<T>();
-        var parserVariable = Expression.Variable(typeof(Parser<T>), $"select{context.NextNumber}");
-        var parseResult = Expression.Variable(typeof(ParseResult<T>), $"value{context.NextNumber}");
+        ThrowHelper.ThrowIfNull(context, nameof(context));
 
-        var selectorInvoke = Expression.Invoke(
-            Expression.Constant(_selector),
-            Expression.Convert(context.ParseContext, typeof(C)));
+        for (var i = 0; i < _parsers.Length; i++)
+        {
+            if (_parsers[i] is not ISourceable)
+            {
+                throw new NotSupportedException("Select requires all target parsers to be source-generatable.");
+            }
+        }
 
-        var body = Expression.Block(
-            [parserVariable, parseResult],
-            Expression.Assign(parserVariable, selectorInvoke),
-            Expression.IfThen(
-                Expression.NotEqual(parserVariable, Expression.Constant(null, typeof(Parser<T>))),
-                Expression.Block(
-                    Expression.Assign(
-                        result.Success,
-                        Expression.Call(parserVariable, _parse, context.ParseContext, parseResult)),
-                    context.DiscardResult
-                        ? Expression.Empty()
-                        : Expression.IfThen(
-                            result.Success,
-                            Expression.Assign(result.Value, Expression.Field(parseResult, nameof(ParseResult<T>.Value))))
-                )));
+        var result = context.CreateResult(typeof(T));
+        var ctx = context.ParseContextName;
+        var valueTypeName = SourceGenerationContext.GetTypeName(typeof(T));
 
-        result.Body.Add(body);
+        // Register the selector lambda
+        var selectorLambda = context.RegisterLambda(_selector);
+
+        var indexName = $"index{context.NextNumber()}";
+        result.Body.Add($"var {indexName} = {selectorLambda}(({SourceGenerationContext.GetTypeName(typeof(C))}){ctx});");
+        result.Body.Add($"switch ({indexName})");
+        result.Body.Add("{");
+
+        for (var i = 0; i < _parsers.Length; i++)
+        {
+            var parser = _parsers[i];
+            var parserSourceable = (ISourceable)parser;
+
+            var helperName = context.Helpers
+                .GetOrCreate(parser, $"{context.MethodNamePrefix}_Select_{i}", valueTypeName, () => parserSourceable.GenerateSource(context))
+                .MethodName;
+
+            result.Body.Add($"    case {i}:");
+            result.Body.Add("    {");
+            var outTarget = context.DiscardResult ? "_" : result.ValueVariable;
+            result.Body.Add($"        if ({helperName}({ctx}, out {outTarget}))");
+            result.Body.Add("        {");
+            result.Body.Add($"            {result.SuccessVariable} = true;");
+            result.Body.Add("        }");
+            result.Body.Add("        break;");
+            result.Body.Add("    }");
+        }
+
+        result.Body.Add("}");
 
         return result;
     }
-#endif
+
     public override string ToString() => "(Select)";
 }
