@@ -38,13 +38,15 @@ public abstract class NumberLiteralBase<T> : Parser<T>, ISeekable, ISourceable
 
     public abstract bool TryParseNumber(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider provider, out T value);
 
-    public NumberLiteralBase(NumberOptions numberOptions = NumberOptions.Number, char decimalSeparator = NumberLiterals.DefaultDecimalSeparator, char groupSeparator = NumberLiterals.DefaultGroupSeparator, MethodInfo? tryParseMethodInfo = null)
+    public NumberLiteralBase(NumberOptions numberOptions = NumberOptions.Number, char decimalSeparator = NumberLiterals.DefaultDecimalSeparator, char groupSeparator = NumberLiterals.DefaultGroupSeparator, char secondDecimalSeparator = '0', MethodInfo? tryParseMethodInfo = null)
     {
         _decimalSeparator = decimalSeparator;
         _secondDecimalSeparator = secondDecimalSeparator;
         if (secondDecimalSeparator == '\0' || secondDecimalSeparator != groupSeparator)
             _groupSeparator = groupSeparator;
+#if !AOT_COMPILATION
         _tryParseMethodInfo = tryParseMethodInfo ?? _defaultTryParseMethodInfo;
+#endif
         _numberStyles = numberOptions.ToNumberStyles();
 
         if (decimalSeparator != NumberLiterals.DefaultDecimalSeparator ||
