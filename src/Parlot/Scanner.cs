@@ -244,30 +244,31 @@ public class Scanner
         number = Cursor.Buffer.AsSpan(start.Offset, Cursor.Offset - start.Offset);
         if (allowUnderscore)
             number = StripUnderscores(number);
+
         return true;
     }
 
     private static ReadOnlySpan<char> StripUnderscores(ReadOnlySpan<char> number)
+    {
+        int idx = 0;
+        int cnt = 0;
+        for (idx =0; idx < number.Length; idx++)
         {
-            int idx = 0;
-            int cnt = 0;
-            for (idx =0; idx < number.Length; idx++)
+            if (number[idx] == '_')
+                cnt++;
+        }
+        if (cnt == 0)
+        return number;
+        char[] buf = new char[number.Length - cnt];
+        int idxInBuf = 0;
+        for (idx = 0; idx < number.Length; idx++)
+        {
+            if (number[idx] != '_')
             {
-                if (number[idx] == '_')
-                    cnt++;
+                buf[idxInBuf] = number[idx];
+                idxInBuf++;
             }
-            if (cnt == 0)
-            return number;
-            char[] buf = new char[number.Length - cnt];
-            int idxInBuf = 0;
-            for (idx = 0; idx < number.Length; idx++)
-            {
-                if (number[idx] != '_')
-                {
-                    buf[idxInBuf] = number[idx];
-                    idxInBuf++;
-                }
-            }
+        }
         return buf.AsSpan();
     }
 
@@ -306,9 +307,19 @@ public class Scanner
     public bool ReadInteger(out ReadOnlySpan<char> result, bool allowUnderscore = false)
     {
         var next = 0;
-        while (allowUnderscore && Character.IsDecimalDigitOrUnderscore(Cursor.PeekNext(next)) || (!allowUnderscore && Character.IsDecimalDigit(Cursor.PeekNext(next))))
+        if (allowUnderscore)
         {
-            next++;
+            while (Character.IsDecimalDigitOrUnderscore(Cursor.PeekNext(next)))
+            {
+                next++;
+            }
+        }
+        else
+        {
+            while (Character.IsDecimalDigit(Cursor.PeekNext(next)))
+            {
+                next++;
+            }
         }
 
         // Not digit was read

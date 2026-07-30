@@ -1,7 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+    <TargetFrameworks>net9.0;net10.0</TargetFrameworks>
     <IsPackable>false</IsPackable>
     <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
 		<CompilerGeneratedFilesOutputPath>obj\$(Configuration)\$(TargetFramework)</CompilerGeneratedFilesOutputPath>
@@ -15,8 +15,8 @@
 
   <ItemGroup>
     <!-- Reference the source generator as an analyzer -->
-    <ProjectReference Include="..\..\src\Parlot.SourceGenerator\Parlot.SourceGenerator.csproj" 
-                      OutputItemType="Analyzer" 
+    <ProjectReference Include="..\..\src\Parlot.SourceGenerator\Parlot.SourceGenerator.csproj"
+                      OutputItemType="Analyzer"
                       ReferenceOutputAssembly="false" />
 
 

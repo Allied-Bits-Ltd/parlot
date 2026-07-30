@@ -763,7 +763,7 @@ public class FluentTests
         Assert.True(Terms.Decimal().Discard<bool>(true).TryParse("123", out var r2) && r2 == true);
         Assert.False(Terms.Decimal().Discard<bool>(true).TryParse("abc", out _));
 #pragma warning restore CS0618 // Type or member is obsolete
-    
+
         Assert.True(Terms.Decimal().Then<int>().TryParse("123", out var t1) && t1 == 123);
         Assert.True(Terms.Decimal().Then(true).TryParse("123", out var t2) && t2 == true);
         Assert.False(Terms.Decimal().Then(true).TryParse("abc", out _));
@@ -1239,7 +1239,7 @@ public class FluentTests
 
         var oneOf = OneOf(ZeroOrOne(a), b);
 
-        // This should succeed, the ZeroOrOne(a) should always return true 
+        // This should succeed, the ZeroOrOne(a) should always return true
         Assert.True(oneOf.TryParse("c", out _));
     }
 
@@ -1252,7 +1252,7 @@ public class FluentTests
 
         var oneOf = OneOf(ZeroOrMany(a).Then('a'), b);
 
-        // This should succeed, the ZeroOrMany(a) should always return true 
+        // This should succeed, the ZeroOrMany(a) should always return true
         Assert.True(oneOf.TryParse("c", out _));
     }
 
@@ -1737,7 +1737,7 @@ public class FluentTests
         var comma = Literals.Char(',');
         var openBracket = Literals.Char('[');
         var closeBracket = Literals.Char(']');
-        
+
         // A list can contain items or nested lists
         var element = item.Or(list);
         var elements = ZeroOrMany(element.And(ZeroOrOne(comma)));
@@ -1758,7 +1758,7 @@ public class FluentTests
         // Test with loop detection enabled (default)
         var contextWithDetection = new ParseContext(new Scanner("test"), disableLoopDetection: false);
         Assert.False(loop.TryParse(contextWithDetection, out var _, out var _));
-        
+
         // We can't safely test the DisableLoopDetection = true case to completion without stack overflow,
         // but the implementation is verified by the fact that the flag is properly checked in the code
     }
@@ -1776,7 +1776,7 @@ public class FluentTests
         Assert.Equal("..", result.Item1.ToString());
         Assert.Equal("hello", result.Item2.ToString());
         Assert.Equal("....", result.Item3.ToString());
-        Assert.Equal("world", result.Item4.ToString()); 
+        Assert.Equal("world", result.Item4.ToString());
     }
 
     [Fact]

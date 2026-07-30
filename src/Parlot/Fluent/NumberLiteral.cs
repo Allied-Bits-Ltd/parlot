@@ -119,14 +119,14 @@ public sealed class NumberLiteral<T> : Parser<T>, ISeekable, ISourceable
                 context.ExitParser(this);
                 return true;
             }
-			else
-			if (culture2 != null && (Numbers.TryParseNumber<T>(number, _numberStyles, _culture2, out var value2)))
-			{
-			    result.Set(start, end, value2);
+            else
+            if (_culture2 != null && (Numbers.TryParseNumber<T>(number, _numberStyles, _culture2, out var value2)))
+            {
+                result.Set(start, end, value2);
 
                 context.ExitParser(this);
                 return true;
-			}
+            }
         }
 
         context.Scanner.Cursor.ResetPosition(reset);
@@ -164,10 +164,12 @@ public sealed class NumberLiteral<T> : Parser<T>, ISeekable, ISourceable
         var allowDecimalSeparator = _allowDecimalSeparator ? "true" : "false";
         var allowGroupSeparator = _allowGroupSeparator ? "true" : "false";
         var allowExponent = _allowExponent ? "true" : "false";
+        var allowUnderscore = _allowUnderscore ? "true" : "false";
+        var requireFractionalPartForDecimals = _requireFractionalPartForDecimals ? "true" : "false";
 
         // Emit NumberStyles as a literal cast
         var numberStylesExpr = $"(global::System.Globalization.NumberStyles){(int)_numberStyles}";
-        
+
         var cultureExpr = "global::System.Globalization.CultureInfo.InvariantCulture.NumberFormat";
         if (!ReferenceEquals(_culture, CultureInfo.InvariantCulture.NumberFormat))
         {
@@ -180,7 +182,8 @@ public sealed class NumberLiteral<T> : Parser<T>, ISeekable, ISourceable
 
         var decimalSeparatorLiteral = $"(char){(int)_decimalSeparator}";
         var groupSeparatorLiteral = $"(char){(int)_groupSeparator}";
-        result.Body.Add($"if ({scannerName}.ReadDecimal({allowLeadingSign}, {allowDecimalSeparator}, {allowGroupSeparator}, {allowExponent}, out {numberSpanName}, {decimalSeparatorLiteral}, {groupSeparatorLiteral}))");
+        var secondDecimalSeparatorLiteral = $"(char){(int)_decimalSeparator}";
+        result.Body.Add($"if ({scannerName}.ReadDecimal({allowLeadingSign}, {allowDecimalSeparator}, {allowGroupSeparator}, {allowExponent}, {allowUnderscore}, {requireFractionalPartForDecimals}, out {numberSpanName}, {decimalSeparatorLiteral}, {groupSeparatorLiteral}, {secondDecimalSeparatorLiteral}))");
         result.Body.Add("{");
         if (context.DiscardResult)
         {

@@ -1,7 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFrameworks>net472;netstandard2.0;net8.0;net9.0;net10.0</TargetFrameworks>
+    <TargetFrameworks>net472;netstandard2.0;net9.0;net10.0</TargetFrameworks>
     <Title>Parser combinator for .NET</Title>
     <Description>Parlot is a fast, lightweight and simple to use .NET parser combinator.</Description>
     <PackageTags>parser;interpreter;</PackageTags>
@@ -26,14 +26,14 @@
   <!-- Pack the source generator into the analyzers folder for NuGet package -->
   <!-- The source generator must be built before packing Parlot -->
   <ItemGroup>
-    <None Include="../Parlot.SourceGenerator/bin/$(Configuration)/netstandard2.0/Parlot.SourceGenerator.dll" 
-          Pack="true" 
-          PackagePath="analyzers/dotnet/cs" 
+    <None Include="../Parlot.SourceGenerator/bin/$(Configuration)/netstandard2.0/Parlot.SourceGenerator.dll"
+          Pack="true"
+          PackagePath="analyzers/dotnet/cs"
           Visible="false" />
     <!-- Also include Parlot.dll itself as a dependency for the source generator at runtime -->
-    <None Include="bin/$(Configuration)/netstandard2.0/Parlot.dll" 
-          Pack="true" 
-          PackagePath="analyzers/dotnet/cs" 
+    <None Include="bin/$(Configuration)/netstandard2.0/Parlot.dll"
+          Pack="true"
+          PackagePath="analyzers/dotnet/cs"
           Visible="false" />
   </ItemGroup>
 

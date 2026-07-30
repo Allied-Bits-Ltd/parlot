@@ -88,6 +88,5 @@ public sealed class ZeroOrOne<T> : Parser<T>, ISourceable
 
         return result;
     }
-#endif
     public override string ToString() => $"{_parser}?";
 }

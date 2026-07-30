@@ -88,7 +88,7 @@ public partial class SqlParser
         // Without the keywords check "FROM a WHERE" would interpret "WHERE" as an alias since "AS" is optional
         var identifierNoKeywords = Separated(DOT, simpleIdentifier).When(static (ctx, parts) => parts.Count > 0 && !Keywords.Contains(parts[0])).Named("IdentiferNoKeywords")
             .Then(static parts => new Identifier(parts));
-            
+
         // Deferred parsers
         var expression = Deferred<Expression>();
         var selectStatement = Deferred<SelectStatement>();
