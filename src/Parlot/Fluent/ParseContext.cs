@@ -17,6 +17,11 @@ public class ParseContext
     public bool DisableLoopDetection { get; }
 
     /// <summary>
+    /// The maximum number of nested recursive parser invocations, or <c>0</c> for no limit.
+    /// </summary>
+    public int MaxRecursionDepth { get; }
+
+    /// <summary>
     /// Whether new lines are treated as normal chars or white spaces. Default is <c>false</c>.
     /// </summary>
     /// <remarks>
@@ -49,6 +54,7 @@ public class ParseContext
     public readonly CancellationToken CancellationToken;
 
     private int _cancellationCheckCount;
+    private int _recursionDepth;
 
     // TODO: For backward compatibility only, remove in future versions
     public ParseContext(Scanner scanner, bool useNewLines)
@@ -63,11 +69,31 @@ public class ParseContext
     }
 
     public ParseContext(Scanner scanner, bool useNewLines = false, bool disableLoopDetection = false, CancellationToken cancellationToken = default)
+        : this(scanner, 0, useNewLines, disableLoopDetection, cancellationToken)
     {
+    }
+
+    public ParseContext(
+        Scanner scanner,
+        int maxRecursionDepth,
+        bool useNewLines = false,
+        bool disableLoopDetection = false,
+        CancellationToken cancellationToken = default)
+    {
+#if NET8_0_OR_GREATER
+        ArgumentOutOfRangeException.ThrowIfNegative(maxRecursionDepth);
+#else
+        if (maxRecursionDepth < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(maxRecursionDepth));
+        }
+#endif
+
         Scanner = scanner ?? throw new ArgumentNullException(nameof(scanner));
         UseNewLines = useNewLines;
         CancellationToken = cancellationToken;
         DisableLoopDetection = disableLoopDetection;
+        MaxRecursionDepth = maxRecursionDepth;
     }
 
     /// <summary>
@@ -83,7 +109,22 @@ public class ParseContext
     /// <summary>
     /// The parser that is used to parse whitespaces and comments.
     /// </summary>
-    public Parser<TextSpan>? WhiteSpaceParser { get; set; }
+    public Parser<TextSpan>? WhiteSpaceParser
+    {
+        get => _whiteSpaceParser;
+        set
+        {
+            if (!ReferenceEquals(_whiteSpaceParser, value))
+            {
+                _whiteSpaceParser = value;
+
+                // The white spaces skipped by the previous parser are not the ones this one skips
+                _cacheOffset = -1;
+            }
+        }
+    }
+
+    private Parser<TextSpan>? _whiteSpaceParser;
 
     private int _cacheOffset = -1;
     private TextPosition _cachePosition;
@@ -162,6 +203,41 @@ public class ParseContext
     public void ExitParser<T>(Parser<T> parser)
     {
         OnExitParser?.Invoke(parser, this);
+    }
+
+    /// <summary>
+    /// Records entry into a recursive parser and throws when <see cref="MaxRecursionDepth"/> is exceeded.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public void EnterRecursion()
+    {
+        var maxRecursionDepth = MaxRecursionDepth;
+
+        if (maxRecursionDepth == 0)
+        {
+            return;
+        }
+
+        if (_recursionDepth >= maxRecursionDepth)
+        {
+            throw new ParseException(
+                $"The maximum parser recursion depth of {maxRecursionDepth} was exceeded.",
+                Scanner.Cursor.Position);
+        }
+
+        _recursionDepth++;
+    }
+
+    /// <summary>
+    /// Records exit from a recursive parser.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public void ExitRecursion()
+    {
+        if (_recursionDepth > 0)
+        {
+            _recursionDepth--;
+        }
     }
 
     /// <summary>

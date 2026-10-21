@@ -15,6 +15,7 @@ public sealed class LeftAssociative<T, TInput> : Parser<T>, ISourceable
 {
     private readonly Parser<T> _parser;
     private readonly (Parser<TInput> Op, Func<T, T, T> Factory)[] _operators;
+    private readonly OneOf<int> _choice;
 
     public LeftAssociative(Parser<T> parser, (Parser<TInput> op, Func<T, T, T> factory)[] operators)
     {
@@ -25,6 +26,17 @@ public sealed class LeftAssociative<T, TInput> : Parser<T>, ISourceable
         {
             throw new ArgumentException("At least one operator must be provided.", nameof(operators));
         }
+
+        // The operators are tried through a choice, which only tries the ones that can start with the next
+        // char and skips white space once when they all do
+        var choices = new Parser<int>[_operators.Length];
+
+        for (var i = 0; i < _operators.Length; i++)
+        {
+            choices[i] = new OperatorIndex<TInput>(_operators[i].Op ?? throw new ArgumentException("Operators must not contain null parsers.", nameof(operators)), i);
+        }
+
+        _choice = new OneOf<int>(choices);
     }
 
     public override bool Parse(ParseContext context, ref ParseResult<T> result)
@@ -45,24 +57,16 @@ public sealed class LeftAssociative<T, TInput> : Parser<T>, ISourceable
         while (true)
         {
             var operatorPosition = context.Scanner.Cursor.Position;
-            var operatorResult = new ParseResult<TInput>();
-            Func<T, T, T>? matchedFactory = null;
+            var operatorResult = new ParseResult<int>();
 
-            // Try each operator
-            foreach (var (op, factory) in _operators)
-            {
-                if (op.Parse(context, ref operatorResult))
-                {
-                    matchedFactory = factory;
-                    break;
-                }
-            }
-
-            if (matchedFactory == null)
+            // The choice returns the index of the operator it matched
+            if (!_choice.Parse(context, ref operatorResult))
             {
                 // No operator matched, we're done
                 break;
             }
+
+            var matchedFactory = _operators[operatorResult.Value].Factory;
 
             // Parse the right operand
             var rightResult = new ParseResult<T>();
@@ -70,6 +74,12 @@ public sealed class LeftAssociative<T, TInput> : Parser<T>, ISourceable
             {
                 // Operator matched but no right operand - rollback operator consumption.
                 context.Scanner.Cursor.ResetPosition(operatorPosition);
+                break;
+            }
+
+            // Neither the operator nor the operand read anything, so they would match forever
+            if (context.Scanner.Cursor.Offset == operatorPosition.Offset)
+            {
                 break;
             }
 
@@ -181,6 +191,11 @@ public sealed class LeftAssociative<T, TInput> : Parser<T>, ISourceable
             // Parse right operand using helper
             result.Body.Add($"{innerIndent}    if ({baseHelperName}({ctx}, out var {opResultName}RightValue))");
             result.Body.Add($"{innerIndent}    {{");
+            // Neither the operator nor the operand read anything, so they would match forever
+            result.Body.Add($"{innerIndent}        if ({cursorName}.Offset == {operatorPositionName}.Offset)");
+            result.Body.Add($"{innerIndent}        {{");
+            result.Body.Add($"{innerIndent}            break;");
+            result.Body.Add($"{innerIndent}        }}");
             result.Body.Add($"{innerIndent}        {operatorMatchedName} = true;");
             if (!context.DiscardResult)
             {
@@ -220,6 +235,7 @@ public sealed class LeftAssociativeWithContext<T, TInput> : Parser<T>, ISourceab
 {
     private readonly Parser<T> _parser;
     private readonly (Parser<TInput> Op, Func<ParseContext, T, T, T> Factory)[] _operators;
+    private readonly OneOf<int> _choice;
 
     public LeftAssociativeWithContext(Parser<T> parser, (Parser<TInput> op, Func<ParseContext, T, T, T> factory)[] operators)
     {
@@ -230,6 +246,17 @@ public sealed class LeftAssociativeWithContext<T, TInput> : Parser<T>, ISourceab
         {
             throw new ArgumentException("At least one operator must be provided.", nameof(operators));
         }
+
+        // The operators are tried through a choice, which only tries the ones that can start with the next
+        // char and skips white space once when they all do
+        var choices = new Parser<int>[_operators.Length];
+
+        for (var i = 0; i < _operators.Length; i++)
+        {
+            choices[i] = new OperatorIndex<TInput>(_operators[i].Op ?? throw new ArgumentException("Operators must not contain null parsers.", nameof(operators)), i);
+        }
+
+        _choice = new OneOf<int>(choices);
     }
 
     public override bool Parse(ParseContext context, ref ParseResult<T> result)
@@ -248,27 +275,26 @@ public sealed class LeftAssociativeWithContext<T, TInput> : Parser<T>, ISourceab
         while (true)
         {
             var operatorPosition = context.Scanner.Cursor.Position;
-            var operatorResult = new ParseResult<TInput>();
-            Func<ParseContext, T, T, T>? matchedFactory = null;
+            var operatorResult = new ParseResult<int>();
 
-            foreach (var (op, factory) in _operators)
-            {
-                if (op.Parse(context, ref operatorResult))
-                {
-                    matchedFactory = factory;
-                    break;
-                }
-            }
-
-            if (matchedFactory == null)
+            // The choice returns the index of the operator it matched
+            if (!_choice.Parse(context, ref operatorResult))
             {
                 break;
             }
+
+            var matchedFactory = _operators[operatorResult.Value].Factory;
 
             var rightResult = new ParseResult<T>();
             if (!_parser.Parse(context, ref rightResult))
             {
                 context.Scanner.Cursor.ResetPosition(operatorPosition);
+                break;
+            }
+
+            // Neither the operator nor the operand read anything, so they would match forever
+            if (context.Scanner.Cursor.Offset == operatorPosition.Offset)
+            {
                 break;
             }
 
@@ -371,6 +397,11 @@ public sealed class LeftAssociativeWithContext<T, TInput> : Parser<T>, ISourceab
             result.Body.Add($"{innerIndent}{{");
             result.Body.Add($"{innerIndent}    if ({baseHelperName}({ctx}, out var {opResultName}RightValue))");
             result.Body.Add($"{innerIndent}    {{");
+            // Neither the operator nor the operand read anything, so they would match forever
+            result.Body.Add($"{innerIndent}        if ({cursorName}.Offset == {operatorPositionName}.Offset)");
+            result.Body.Add($"{innerIndent}        {{");
+            result.Body.Add($"{innerIndent}            break;");
+            result.Body.Add($"{innerIndent}        }}");
             result.Body.Add($"{innerIndent}        {operatorMatchedName} = true;");
 
             if (!context.DiscardResult)

@@ -22,6 +22,20 @@ public class CharacterTests
         Assert.Equal(expected, Character.DecodeString(text).ToString());
     }
 
+    [Theory]
+    [InlineData("\\", "\\")]
+    [InlineData("abc\\", "abc\\")]
+    [InlineData("a\\nb\\", "a\nb\\")]
+    [InlineData("abc\\\\", "abc\\")]
+    [InlineData("abc\\u", "abc\0")]
+    [InlineData("abcdefghijklmnopqrstuvwxyz\\", "abcdefghijklmnopqrstuvwxyz\\")]
+    public void ShouldDecodeStringEndingWithABackslash(string text, string expected)
+    {
+        Assert.Equal(expected, Character.DecodeString(new TextSpan(text)).ToString());
+        Assert.Equal(expected, Character.DecodeString(text).ToString());
+        Assert.Equal(expected, Character.DecodeString("'" + text + "'", 1, text.Length).ToString());
+    }
+
     [Fact]
     public void ShouldDecodeStringWithOffset()
     {
@@ -64,5 +78,23 @@ public class CharacterTests
     public void ShouldDetectWhiteSpaceOrNewLines(char c, bool isWhiteSpace)
     {
         Assert.Equal(isWhiteSpace, Character.IsWhiteSpaceOrNewLine(c));
+    }
+
+    [Fact]
+    public void IsDecimalDigitShouldMatchDecimalDigitsSetForEveryChar()
+    {
+        for (var c = 0; c <= char.MaxValue; c++)
+        {
+            Assert.Equal(Character.DecimalDigits.IndexOf((char)c) >= 0, Character.IsDecimalDigit((char)c));
+        }
+    }
+
+    [Fact]
+    public void IsHexDigitShouldMatchHexDigitsSetForEveryChar()
+    {
+        for (var c = 0; c <= char.MaxValue; c++)
+        {
+            Assert.Equal(Character.HexDigits.IndexOf((char)c) >= 0, Character.IsHexDigit((char)c));
+        }
     }
 }

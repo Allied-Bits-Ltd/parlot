@@ -1,3 +1,4 @@
+using Parlot.Rewriting;
 using Parlot.SourceGeneration;
 using System;
 using System.Linq;
@@ -8,7 +9,7 @@ namespace Parlot.Fluent;
 /// <summary>
 /// Routes the parsing based on a custom delegate.
 /// </summary>
-public sealed class Switch<T, U> : Parser<U>, ISourceable
+public sealed class Switch<T, U> : Parser<U>, ISourceable, ISeekable
 {
     private readonly Parser<T> _previousParser;
     private readonly Parser<U>[] _parsers;
@@ -28,13 +29,31 @@ public sealed class Switch<T, U> : Parser<U>, ISourceable
         {
             _parsers[i] = _parsers[i] ?? throw new ArgumentException("Parsers array must not contain null elements.", nameof(parsers));
         }
+
+        // The previous parser always reads first
+        if (_previousParser is ISeekable seekable)
+        {
+            CanSeek = seekable.CanSeek;
+            ExpectedChars = seekable.ExpectedChars;
+            SkipWhitespace = seekable.SkipWhitespace;
+        }
     }
+
+    /// <inheritdoc />
+    public bool CanSeek { get; }
+
+    /// <inheritdoc />
+    public char[] ExpectedChars { get; } = [];
+
+    /// <inheritdoc />
+    public bool SkipWhitespace { get; }
 
     public override bool Parse(ParseContext context, ref ParseResult<U> result)
     {
         context.EnterParser(this);
 
         var previousResult = new ParseResult<T>();
+        var start = context.Scanner.Cursor.Position;
 
         if (!_previousParser.Parse(context, ref previousResult))
         {
@@ -46,6 +65,7 @@ public sealed class Switch<T, U> : Parser<U>, ISourceable
 
         if ((uint)index >= (uint)_parsers.Length)
         {
+            context.Scanner.Cursor.ResetPosition(start);
             context.ExitParser(this);
             return false;
         }
@@ -62,6 +82,7 @@ public sealed class Switch<T, U> : Parser<U>, ISourceable
             return true;
         }
 
+        context.Scanner.Cursor.ResetPosition(start);
         context.ExitParser(this);
         return false;
     }
@@ -97,9 +118,11 @@ public sealed class Switch<T, U> : Parser<U>, ISourceable
         // Register the selector lambda
         var selectorLambda = context.RegisterLambda(_selector);
 
+        var startName = $"start{context.NextNumber()}";
         var previousValueName = $"previousValue{context.NextNumber()}";
         var indexName = $"index{context.NextNumber()}";
 
+        result.Body.Add($"var {startName} = {context.CursorName}.Position;");
         result.Body.Add($"if ({helperName}({ctx}, out var {previousValueName}))");
         result.Body.Add("{");
         result.Body.Add($"    var {indexName} = {selectorLambda}({ctx}, {previousValueName});");
@@ -127,6 +150,12 @@ public sealed class Switch<T, U> : Parser<U>, ISourceable
         }
 
         result.Body.Add("    }");
+        result.Body.Add("}");
+
+        // The cursor is restored when the selection or the target parser fails
+        result.Body.Add($"if (!{result.SuccessVariable})");
+        result.Body.Add("{");
+        result.Body.Add($"    {context.CursorName}.ResetPosition({startName});");
         result.Body.Add("}");
 
         return result;

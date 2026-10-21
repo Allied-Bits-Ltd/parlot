@@ -22,17 +22,22 @@ public sealed class ZeroOrMany<T> : Parser<IReadOnlyList<T>>, ISourceable
 
         HybridList<T>? results = null;
 
-        var start = 0;
-        var end = 0;
+        // An empty result is at the current position
+        var start = context.Scanner.Cursor.Offset;
+        var end = start;
 
         var first = true;
         var parsed = new ParseResult<T>();
 
-        // TODO: it's not restoring an intermediate failed text position
-        // is the inner parser supposed to be clean?
-
-        while (_parser.Parse(context, ref parsed))
+        while (true)
         {
+            var previousOffset = context.Scanner.Cursor.Offset;
+            if (!_parser.Parse(context, ref parsed)
+                || context.Scanner.Cursor.Offset == previousOffset)
+            {
+                break;
+            }
+
             if (first)
             {
                 results = [];
@@ -95,9 +100,13 @@ public sealed class ZeroOrMany<T> : Parser<IReadOnlyList<T>>, ISourceable
             .GetOrCreate(sourceable, $"{context.MethodNamePrefix}_ZeroOrMany_Parser", valueTypeName, () => sourceable.GenerateSource(context))
             .MethodName;
 
+        var previousOffsetName = $"previousOffset{context.NextNumber()}";
+
         result.Body.Add("while (true)");
         result.Body.Add("{");
-        result.Body.Add($"    if (!{helperName}({ctx}, out var itemValue{context.NextNumber()}))");
+        // An item that doesn't move the cursor stops the repetition, as it would never end otherwise
+        result.Body.Add($"    var {previousOffsetName} = {context.CursorName}.Offset;");
+        result.Body.Add($"    if (!{helperName}({ctx}, out var itemValue{context.NextNumber()}) || {context.CursorName}.Offset == {previousOffsetName})");
         result.Body.Add("    {");
         result.Body.Add("        break;");
         result.Body.Add("    }");

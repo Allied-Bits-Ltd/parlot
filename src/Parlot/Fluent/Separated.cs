@@ -38,8 +38,10 @@ public sealed class Separated<U, T> : Parser<IReadOnlyList<T>>, ISeekable, ISour
 
         HybridList<T>? results = null;
 
-        var start = 0;
         var end = context.Scanner.Cursor.Position;
+
+        // An empty result is at the current position
+        var start = end.Offset;
 
         var first = true;
         var parsed = new ParseResult<T>();
@@ -47,6 +49,8 @@ public sealed class Separated<U, T> : Parser<IReadOnlyList<T>>, ISeekable, ISour
 
         while (true)
         {
+            var previousOffset = context.Scanner.Cursor.Offset;
+
             if (!first)
             {
                 if (!_separator.Parse(context, ref separatorResult))
@@ -71,6 +75,17 @@ public sealed class Separated<U, T> : Parser<IReadOnlyList<T>>, ISeekable, ISour
             else
             {
                 end = context.Scanner.Cursor.Position;
+            }
+
+            if (context.Scanner.Cursor.Offset == previousOffset)
+            {
+                if (first)
+                {
+                    context.ExitParser(this);
+                    return false;
+                }
+
+                break;
             }
 
             if (first)
@@ -107,6 +122,7 @@ public sealed class Separated<U, T> : Parser<IReadOnlyList<T>>, ISeekable, ISour
         var firstName = $"first{context.NextNumber()}";
         var endName = $"end{context.NextNumber()}";
         var startName = $"start{context.NextNumber()}";
+        var previousOffsetName = $"previousOffset{context.NextNumber()}";
 
         if (!context.DiscardResult)
         {
@@ -133,7 +149,8 @@ public sealed class Separated<U, T> : Parser<IReadOnlyList<T>>, ISeekable, ISour
 
         result.Body.Add("while (true)");
         result.Body.Add("{");
-        
+        result.Body.Add($"    var {previousOffsetName} = {cursorName}.Offset;");
+
         // If not first, try to parse separator
         result.Body.Add($"    if (!{firstName})");
         result.Body.Add("    {");
@@ -157,6 +174,12 @@ public sealed class Separated<U, T> : Parser<IReadOnlyList<T>>, ISeekable, ISour
         result.Body.Add("    else");
         result.Body.Add("    {");
         result.Body.Add($"        {endName} = {cursorName}.Position;");
+        result.Body.Add("    }");
+
+        // An element that doesn't move the cursor stops the repetition, as it would never end otherwise
+        result.Body.Add($"    if ({cursorName}.Offset == {previousOffsetName})");
+        result.Body.Add("    {");
+        result.Body.Add("        break;");
         result.Body.Add("    }");
 
         result.Body.Add($"    if ({firstName})");

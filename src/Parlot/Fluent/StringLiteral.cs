@@ -2,7 +2,7 @@ using Parlot.Rewriting;
 using Parlot.SourceGeneration;
 using System;
 using System.Linq;
-using System.Reflection;
+using System.Runtime.CompilerServices;
 
 namespace Parlot.Fluent;
 
@@ -17,8 +17,6 @@ public enum StringLiteralQuotes
 
 public sealed class StringLiteral : Parser<TextSpan>, ISeekable, ISourceable
 {
-    private static readonly MethodInfo _decodeStringMethodInfo = typeof(Character).GetMethod("DecodeString", [typeof(string), typeof(int), typeof(int)])!;
-
     static readonly char[] SingleQuotes = ['\''];
     static readonly char[] DoubleQuotes = ['\"'];
     static readonly char[] Backtick = ['`'];
@@ -56,6 +54,8 @@ public sealed class StringLiteral : Parser<TextSpan>, ISeekable, ISourceable
 
         ExpectedChars = [quote];
 
+        _returnDecoded = true;
+
         Name = "StringLiteral";
     }
 
@@ -69,39 +69,46 @@ public sealed class StringLiteral : Parser<TextSpan>, ISeekable, ISourceable
     {
         context.EnterParser(this);
 
-        var start = context.Scanner.Cursor.Offset;
+        var cursor = context.Scanner.Cursor;
+        var start = cursor.Offset;
 
-        var success = _quotes switch
+        // Any of the quotes can start the string, the other kinds have a single one
+        var quote = ExpectedChars[0];
+
+        if (_quotes == StringLiteralQuotes.SingleOrDouble && cursor.Current == '"')
         {
-            StringLiteralQuotes.Single => context.Scanner.ReadSingleQuotedString(),
-            StringLiteralQuotes.Double => context.Scanner.ReadDoubleQuotedString(),
-            StringLiteralQuotes.SingleOrDouble => context.Scanner.ReadQuotedString(),
-            StringLiteralQuotes.Backtick => context.Scanner.ReadBacktickString(),
-            StringLiteralQuotes.Custom => context.Scanner.ReadQuotedString(ExpectedChars),
-            _ => false
-        };
-
-        var end = context.Scanner.Cursor.Offset;
-
-        if (success)
-        {
-            TextSpan decoded;
-
-            if (_returnDecoded) // Remove quotes
-                decoded = Character.DecodeString(context.Scanner.Buffer, start + 1, end - start - 2);
-            else
-                decoded = new TextSpan(context.Scanner.Buffer, start + 1, end - start - 2);
-
-            result.Set(start, end, decoded);
-
-            context.ExitParser(this);
-            return true;
+            quote = '"';
         }
-        else
+
+        if (!context.Scanner.ReadQuotedString(quote, out _, out var hasEscape))
         {
             context.ExitParser(this);
             return false;
         }
+
+        var end = cursor.Offset;
+
+        result.Set(start, end, _returnDecoded
+            ? CreateResult(context.Scanner.Buffer, start, end, hasEscape)
+            : new TextSpan(context.Scanner.Buffer, start + 1, end - start - 2));
+
+        context.ExitParser(this);
+        return true;
+    }
+
+    /// <summary>
+    /// Builds the value of a string read by the scanner, without its quotes.
+    /// </summary>
+    /// <remarks>
+    /// The scanner knows whether the string has escape sequences, so a string without any isn't read again
+    /// and references the input buffer.
+    /// </remarks>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static TextSpan CreateResult(string buffer, int start, int end, bool hasEscape)
+    {
+        return hasEscape
+            ? new TextSpan(Character.DecodeStringInternal(buffer.AsSpan(start + 1, end - start - 2)))
+            : new TextSpan(buffer, start + 1, end - start - 2);
     }
 
 

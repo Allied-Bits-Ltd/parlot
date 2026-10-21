@@ -1,28 +1,94 @@
+using Parlot.Rewriting;
 using Parlot.SourceGeneration;
 using System;
 
 namespace Parlot.Fluent;
 
 /// <summary>
+/// Matches the end of the input without consuming text or skipping whitespace.
+/// </summary>
+public sealed class Eof : Parser<object?>, ISourceable
+{
+    /// <inheritdoc />
+    public override bool Parse(ParseContext context, ref ParseResult<object?> result)
+    {
+        context.EnterParser(this);
+
+        var cursor = context.Scanner.Cursor;
+
+        if (cursor.Eof)
+        {
+            result.Set(cursor.Offset, cursor.Offset, null);
+
+            context.ExitParser(this);
+            return true;
+        }
+
+        context.ExitParser(this);
+        return false;
+    }
+
+    /// <inheritdoc />
+    public SourceResult GenerateSource(SourceGenerationContext context)
+    {
+        ThrowHelper.ThrowIfNull(context, nameof(context));
+
+        var result = context.CreateResult(typeof(object));
+
+        result.Body.Add($"{result.SuccessVariable} = {context.CursorName}.Eof;");
+
+        return result;
+    }
+
+    /// <inheritdoc />
+    public override string ToString() => "Eof";
+}
+
+/// <summary>
 /// Successful when the cursor is at the end of the string.
 /// </summary>
-public sealed class Eof<T> : Parser<T>, ISourceable
+public sealed class Eof<T> : Parser<T>, ISourceable, ISeekable
 {
     private readonly Parser<T> _parser;
 
     public Eof(Parser<T> parser)
     {
         _parser = parser;
+
+        // The parser reads first, the end of the input is only checked after it
+        if (_parser is ISeekable seekable)
+        {
+            CanSeek = seekable.CanSeek;
+            ExpectedChars = seekable.ExpectedChars;
+            SkipWhitespace = seekable.SkipWhitespace;
+        }
     }
+
+    /// <inheritdoc />
+    public bool CanSeek { get; }
+
+    /// <inheritdoc />
+    public char[] ExpectedChars { get; } = [];
+
+    /// <inheritdoc />
+    public bool SkipWhitespace { get; }
 
     public override bool Parse(ParseContext context, ref ParseResult<T> result)
     {
         context.EnterParser(this);
 
-        if (_parser.Parse(context, ref result) && context.Scanner.Cursor.Eof)
+        var cursor = context.Scanner.Cursor;
+        var start = cursor.Position;
+
+        if (_parser.Parse(context, ref result))
         {
-            context.ExitParser(this);
-            return true;
+            if (cursor.Eof)
+            {
+                context.ExitParser(this);
+                return true;
+            }
+
+            cursor.ResetPosition(start);
         }
 
         context.ExitParser(this);
@@ -47,11 +113,19 @@ public sealed class Eof<T> : Parser<T>, ISourceable
             .GetOrCreate(sourceable, $"{context.MethodNamePrefix}_Eof", valueTypeName, () => sourceable.GenerateSource(context))
             .MethodName;
 
+        // var start = cursor.Position;
         // if (Helper(context, out var innerValue) && cursor.Eof)
         // {
         //     success = true;
         //     value = innerValue;
         // }
+        // else
+        // {
+        //     cursor.ResetPosition(start);
+        // }
+        var startName = $"start{context.NextNumber()}";
+        result.Body.Add($"var {startName} = {context.CursorName}.Position;");
+
         if (context.DiscardResult)
         {
             result.Body.Add($"if ({helperName}({context.ParseContextName}, out _) && {context.CursorName}.Eof)");
@@ -62,6 +136,10 @@ public sealed class Eof<T> : Parser<T>, ISourceable
         }
         result.Body.Add("{");
         result.Body.Add($"    {result.SuccessVariable} = true;");
+        result.Body.Add("}");
+        result.Body.Add("else");
+        result.Body.Add("{");
+        result.Body.Add($"    {context.CursorName}.ResetPosition({startName});");
         result.Body.Add("}");
 
         return result;

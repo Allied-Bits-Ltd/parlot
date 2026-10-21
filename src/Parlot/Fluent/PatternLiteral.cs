@@ -22,37 +22,72 @@ public sealed class PatternLiteral : Parser<TextSpan>, ISourceable
     {
         context.EnterParser(this);
 
-        if (context.Scanner.Cursor.Eof || !_predicate(context.Scanner.Cursor.Current))
+        if (ParseSpan(context.Scanner.Cursor, _predicate, _minSize, _maxSize, out var span))
         {
-            context.ExitParser(this);
-            return false;
-        }
-
-        var startPosition = context.Scanner.Cursor.Position;
-        var start = startPosition.Offset;
-
-        context.Scanner.Cursor.Advance();
-        var size = 1;
-
-        while (!context.Scanner.Cursor.Eof && (_maxSize <= 0 || size < _maxSize) && _predicate(context.Scanner.Cursor.Current))
-        {
-            context.Scanner.Cursor.Advance();
-            size++;
-        }
-
-        if (size >= _minSize)
-        {
-            var end = context.Scanner.Cursor.Offset;
-            result.Set(start, end, new TextSpan(context.Scanner.Buffer, start, end - start));
+            result.Set(span.Offset, span.Offset + span.Length, span);
 
             context.ExitParser(this);
             return true;
         }
 
-        // When the size constraint has not been met the parser may still have advanced the cursor.
-        context.Scanner.Cursor.ResetPosition(startPosition);
-
         context.ExitParser(this);
+        return false;
+    }
+
+    private static bool ParseSpan(Cursor cursor, Func<char, bool> predicate, int minSize, int maxSize, out TextSpan span)
+    {
+        if (cursor.Eof || !predicate(cursor.Current))
+        {
+            if (minSize > 0)
+            {
+                span = default;
+                return false;
+            }
+
+            // A pattern without a minimum size matches nothing, like AnyOf does, and leaves the cursor in place
+            span = new TextSpan(cursor.Buffer, cursor.Offset, 0);
+            return true;
+        }
+
+        // The chars are counted first such that the cursor only moves once, and not at all when the size constraint is not met.
+
+        var cursorSpan = cursor.Span;
+        var limit = maxSize > 0 && maxSize < cursorSpan.Length ? maxSize : cursorSpan.Length;
+        var size = 1;
+        var newLines = cursorSpan[0] == '\n';
+
+        while (size < limit)
+        {
+            var c = cursorSpan[size];
+
+            if (!predicate(c))
+            {
+                break;
+            }
+
+            newLines |= c == '\n';
+            size++;
+        }
+
+        if (size >= minSize)
+        {
+            var start = cursor.Offset;
+
+            // The line and column only need to be tracked char by char when there are new lines
+            if (newLines)
+            {
+                cursor.Advance(size);
+            }
+            else
+            {
+                cursor.AdvanceNoNewLines(size);
+            }
+
+            span = new TextSpan(cursor.Buffer, start, size);
+            return true;
+        }
+
+        span = default;
         return false;
     }
 

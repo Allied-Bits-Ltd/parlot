@@ -88,10 +88,7 @@ public abstract class NumberLiteralBase<T> : Parser<T>, ISeekable, ISourceable
             expectedChars += _decimalSeparator;
         }
 
-        if (_allowExponent)
-        {
-            expectedChars += "eE";
-        }
+        // A group separator or an exponent can't be a starting char
 
         if (_allowUnderscore)
         {

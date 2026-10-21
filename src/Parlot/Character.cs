@@ -61,11 +61,37 @@ public static partial class Character
 
             for (var i = 0; i < span.Length; i++)
             {
+#if NET8_0_OR_GREATER
+                if (span.Length - i >= 16)
+                {
+                    var remaining = span.Slice(i);
+                    var nextEscape = remaining.IndexOf('\\');
+                    var count = nextEscape < 0 ? remaining.Length : nextEscape;
+                    if (count > 0)
+                    {
+                        remaining.Slice(0, count).CopyTo(buffer.Slice(dataIndex));
+                        dataIndex += count;
+                        if (nextEscape < 0)
+                        {
+                            break;
+                        }
+                        i += count;
+                    }
+                }
+#endif
                 var c = span[i];
 
                 if (c == '\\')
                 {
                     i++;
+
+                    // A backslash at the end doesn't escape anything, it is kept as-is
+                    if (i == span.Length)
+                    {
+                        buffer[dataIndex++] = '\\';
+                        break;
+                    }
+
                     c = span[i];
 
                     switch (c)

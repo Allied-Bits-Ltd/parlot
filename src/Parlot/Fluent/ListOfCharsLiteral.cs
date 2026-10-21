@@ -27,38 +27,49 @@ internal sealed class ListOfChars : Parser<TextSpan>, ISeekable, ISourceable
         foreach (var c in values)
         {
             _map.Set(c, new object());
-
-            if (Character.IsNewLine(c))
-            {
-                _hasNewLine = true;
-            }
-        }
-
-        if (_minSize > 0 && !_negate)
-        {
-            ExpectedChars = _values.ToCharArray();
-            CanSeek = true;
         }
 
         _minSize = minSize;
         _maxSize = maxSize;
         _negate = negate;
+
+        // A negated set matches every char but its values, so it reads new lines unless '\n' is one of them
+        _hasNewLine = (values.IndexOf('\n') >= 0) != negate;
+
+        if (minSize > 0 && !negate)
+        {
+            ExpectedChars = _values.ToCharArray();
+            CanSeek = true;
+        }
     }
 
     public override bool Parse(ParseContext context, ref ParseResult<TextSpan> result)
     {
         context.EnterParser(this);
 
-        var cursor = context.Scanner.Cursor;
-        var span = cursor.Span;
+        if (ParseSpan(context.Scanner.Cursor, _map, _minSize, _maxSize, _negate, _hasNewLine, out var span))
+        {
+            result.Set(span.Offset, span.Offset + span.Length, span);
+
+            context.ExitParser(this);
+            return true;
+        }
+
+        context.ExitParser(this);
+        return false;
+    }
+
+    private static bool ParseSpan(Cursor cursor, CharMap<object> map, int minSize, int maxSize, bool negate, bool hasNewLine, out TextSpan span)
+    {
+        var cursorSpan = cursor.Span;
         var start = cursor.Offset;
 
         var size = 0;
-        var maxLength = _maxSize > 0 ? Math.Min(span.Length, _maxSize) : span.Length;
+        var maxLength = maxSize > 0 ? Math.Min(cursorSpan.Length, maxSize) : cursorSpan.Length;
 
         for (var i = 0; i < maxLength; i++)
         {
-            if (_map[span[i]] == null != _negate)
+            if (map[cursorSpan[i]] == null != negate)
             {
                 break;
             }
@@ -66,13 +77,13 @@ internal sealed class ListOfChars : Parser<TextSpan>, ISeekable, ISourceable
             size++;
         }
 
-        if (size < _minSize)
+        if (size < minSize)
         {
-            context.ExitParser(this);
+            span = default;
             return false;
         }
 
-        if (_hasNewLine)
+        if (hasNewLine)
         {
             cursor.Advance(size);
         }
@@ -81,9 +92,7 @@ internal sealed class ListOfChars : Parser<TextSpan>, ISeekable, ISourceable
             cursor.AdvanceNoNewLines(size);
         }
 
-        result.Set(start, start + size, new TextSpan(context.Scanner.Buffer, start, size));
-
-        context.ExitParser(this);
+        span = new TextSpan(cursor.Buffer, start, size);
         return true;
     }
 

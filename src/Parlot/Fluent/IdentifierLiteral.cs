@@ -1,21 +1,30 @@
 #if NET8_0_OR_GREATER
+using Parlot.Rewriting;
 using System;
 using System.Buffers;
+using System.Linq;
 
 namespace Parlot.Fluent;
 
-internal sealed class IdentifierLiteral : Parser<TextSpan>
+internal sealed class IdentifierLiteral : Parser<TextSpan>, ISeekable
 {
     private readonly SearchValues<char> _startSearchValues;
     private readonly SearchValues<char> _partSearchValues;
 
-    public IdentifierLiteral(SearchValues<char> startSearchValues, SearchValues<char> partSearchValues)
+    // The chars of the start search values can't be listed from them, so they are passed when they are known
+    public IdentifierLiteral(SearchValues<char> startSearchValues, SearchValues<char> partSearchValues, char[]? startChars = null)
     {
         _startSearchValues = startSearchValues;
         _partSearchValues = partSearchValues;
 
+        if (startChars is { Length: > 0 })
+        {
+            CanSeek = true;
+            ExpectedChars = startChars.Distinct().ToArray();
+        }
+
         // Since we assume these can't container new lines, we can check this here.
-        if (partSearchValues.Contains('\n') || startSearchValues.Contains('\r'))
+        if (startSearchValues.Contains('\n') || startSearchValues.Contains('\r') || partSearchValues.Contains('\n') || partSearchValues.Contains('\r'))
         {
             throw new InvalidOperationException("Identifiers cannot contain new lines.");
         }
@@ -23,28 +32,46 @@ internal sealed class IdentifierLiteral : Parser<TextSpan>
         Name = "IdentifierLiteral";
     }
 
+    public bool CanSeek { get; }
+
+    public char[] ExpectedChars { get; } = [];
+
+    public bool SkipWhitespace { get; }
+
     public override bool Parse(ParseContext context, ref ParseResult<TextSpan> result)
     {
         context.EnterParser(this);
 
-        var span = context.Scanner.Cursor.Span;
-
-        if (span.Length == 0 || !_startSearchValues.Contains(span[0]))
+        if (ParseSpan(context.Scanner.Cursor, _startSearchValues, _partSearchValues, out var span))
         {
+            result.Set(span.Offset, span.Offset + span.Length, span);
+
             context.ExitParser(this);
+            return true;
+        }
+
+        context.ExitParser(this);
+        return false;
+    }
+
+    private static bool ParseSpan(Cursor cursor, SearchValues<char> startSearchValues, SearchValues<char> partSearchValues, out TextSpan span)
+    {
+        var cursorSpan = cursor.Span;
+
+        if (cursorSpan.Length == 0 || !startSearchValues.Contains(cursorSpan[0]))
+        {
+            span = default;
             return false;
         }
 
-        var index = span.Slice(1).IndexOfAnyExcept(_partSearchValues);
+        var index = cursorSpan.Slice(1).IndexOfAnyExcept(partSearchValues);
 
         // If index == -1 the whole input is a match
-        var size = index == -1 ? span.Length : index + 1;
+        var size = index == -1 ? cursorSpan.Length : index + 1;
 
-        var start = context.Scanner.Cursor.Position.Offset;
-        context.Scanner.Cursor.AdvanceNoNewLines(size);
-        result.Set(start, start + size, new TextSpan(context.Scanner.Buffer, start, size));
-
-        context.ExitParser(this);
+        var start = cursor.Offset;
+        cursor.AdvanceNoNewLines(size);
+        span = new TextSpan(cursor.Buffer, start, size);
         return true;
     }
 }

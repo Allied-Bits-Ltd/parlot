@@ -11,6 +11,20 @@
 
 > Note: when samples use a local `input` variable representing the input text to parse, and a `parser` variable, the result is usually the outcome of calling `var result = parser.Parse(input)` or `var success = parser.TryParse(input, out var result)`.
 
+## Limiting parser recursion
+
+Recursive grammars can limit the nesting depth accepted from untrusted input by setting
+`maxRecursionDepth` on the `ParseContext`. The default value is `0`, which applies no limit.
+
+```c#
+var context = new ParseContext(new Scanner(input), maxRecursionDepth: 128);
+
+if (!parser.TryParse(context, out var result, out var error))
+{
+    // error reports when the configured recursion limit was exceeded
+}
+```
+
 ## Terms and Literals
 
 These are lowest level elements of a grammar, like a `'.'` (dot), predefined strings like `"hello"`, numbers, and more.
@@ -29,12 +43,13 @@ Matches blank spaces, optionally including new lines. Returns a `TextSpan` with 
 Parser<TextSpan> WhiteSpace(bool includeNewLines = false)
 ```
 
-Usage:
+Usage</summary>
 
 ```c#
 var input = "   \thello world  ";
 var parser = Literals.WhiteSpace();
 ```
+
 Result:
 
 ```
@@ -65,6 +80,29 @@ parser.Parse("helloworld"); // failure
 
 Matches any non-blank spaces, optionally including new lines. Returns a `TextSpan` with the matched characters.  
 
+### Select
+
+Selects the parser to execute at runtime. Use it when the next parser depends on mutable state or a custom `ParseContext` implementation.
+
+```c#
+Parser<T> Select<T>(Func<ParseContext, Parser<T>> selector)
+Parser<T> Select<C, T>(Func<C, Parser<T>> selector) where C : ParseContext
+```
+
+Usage:
+
+```c#
+var parser = Select<CustomContext, string>(context =>
+{
+    return context.PreferYes ? Literals.Text("yes") : Literals.Text("no");
+});
+
+var result = parser.Parse(new CustomContext(new Scanner("yes")) { PreferYes = true });
+```
+`CustomContext` is an application-defined type that derives from `ParseContext` and exposes additional configuration.
+
+
+If the selector returns `null`, the `Select` parser fails without consuming any input. Capture additional state through closures or custom `ParseContext` properties when needed.
 
 ```c#
 Parser<TextSpan> NonWhiteSpace(bool includeNewLines = false)
@@ -83,40 +121,15 @@ Result:
 "hello"
 ```
 
-### Select
-
-Selects the parser to execute at runtime. Use it when the next parser depends on mutable state or a custom `ParseContext` implementation.
-
-```c#
-Parser<T> Select<T>(Func<ParseContext, int> selector, params Parser<T>[] parsers)
-Parser<T> Select<C, T>(Func<C, int> selector, params Parser<T>[] parsers) where C : ParseContext
-```
-
-Usage:
-
-```c#
-var yes = Literals.Text("yes");
-var no = Literals.Text("no");
-
-var parser = Select<CustomContext, string>(context => context.PreferYes ? 0 : 1, yes, no);
-
-var result = parser.Parse(new CustomContext(new Scanner("yes")) { PreferYes = true });
-```
-`CustomContext` is an application-defined type that derives from `ParseContext` and exposes additional configuration.
-
-If the selector returns an out-of-range index, the `Select` parser fails without consuming any input. Capture additional state through closures or custom `ParseContext` properties when needed.
-
 ### Text
 
 Matches a given string, optionally in a case insensitive way.
 
 ```c#
-Parser<string> Text(string text, bool caseInsensitive = false, bool returnMatchedText = false)
+Parser<string> Text(string text, bool caseInsensitive = false)
 ```
 
-When `caseInsensitive` is `true`, the default behavior is to return the **requested** text (the canonical literal you passed in), not the input slice. This avoids allocating a new string for case-insensitive matches.
-
-If you need to preserve the original casing from the input, set `returnMatchedText: true`.
+The case-insensitive comparison is ordinal. It doesn't depend on the current culture, neither when the parser is built nor when it parses: `Text("id", caseInsensitive: true)` matches `ID` under a Turkish culture too.
 
 Usage:
 
@@ -129,22 +142,6 @@ Result:
 
 ```
 "hello"
-
-Case-insensitive example:
-
-```c#
-var parser = Terms.Text("hello", caseInsensitive: true);
-var result = parser.Parse(" HELLO world");
-// result == "hello" (no allocation)
-```
-
-Opt-in to return the matched input text:
-
-```c#
-var parser = Terms.Text("hello", caseInsensitive: true, returnMatchedText: true);
-var result = parser.Parse(" HELLO world");
-// result == "HELLO"
-```
 ```
 
 ### Char
@@ -173,10 +170,8 @@ Result:
 Matches a keyword string, ensuring the following character is not a letter. This prevents partial matches of identifiers that start with the keyword text.
 
 ```c#
-Parser<string> Keyword(string text, bool caseInsensitive = false, bool returnMatchedText = false)
+Parser<string> Keyword(string text, bool caseInsensitive = false)
 ```
-
-Like `Text`, when `caseInsensitive` is `true` the default behavior is to return the canonical keyword text you requested (e.g. passing "if" returns "if" even if the input is "IF"). Set `returnMatchedText: true` to return the matched input slice instead.
 
 This is useful when parsing programming language constructs like `if`, `while`, `return`, etc., where you want to match the exact keyword but not as part of a longer identifier.
 
@@ -272,6 +267,13 @@ Result:
 ### String
 
 Matches a quoted string literal with escape sequences. Use this parser to parse strings from a programming language.
+
+The opening quote character can be escaped, including backticks and custom quotes supplied to
+`new StringLiteral(quote)`. For example, `` `a\`b` `` produces `` a`b `` and `|a\|b|` produces `a|b`.
+An unterminated string or an unsupported escape still fails without consuming input.
+
+When decoding unquoted text directly, `Character.DecodeString` preserves a final lone backslash
+instead of throwing. This does not change the requirement for a closing quote when parsing string literals.
 
 ```c#
 Parser<TextSpan> String(StringLiteralQuotes quotes = StringLiteralQuotes.SingleOrDouble)
@@ -810,6 +812,8 @@ Result:
 1
 ```
 
+A `Deferred` declares the chars its parser can start with once `Parser` is set, and the declaration follows the parser when it is replaced. A `OneOf` built before the parser was set reads the declaration again the first time it parses, so the usual `var expression = Deferred<T>(); ... expression.Parser = ...;` grammar gets a complete lookup table. A parser that reaches itself through a choice, directly or through other deferred parsers, can start with any char there.
+
 ### Recursive
 
 Creates a parser that can reference itself.
@@ -817,6 +821,8 @@ Creates a parser that can reference itself.
 ```c#
 Deferred<T> Recursive<T>(Func<Deferred<T>, Parser<T>> parser)
 ```
+
+Like a `Deferred`, a `Recursive` parser is seekable: it declares the chars its parser can start with, so `OneOf` can skip it when they don't match. The declaration follows the parser when `Parser` is replaced.
 
 Usage:
 
@@ -925,7 +931,7 @@ Result:
 "Parsed 'hello' at offset 0, length 5"
 ```
 
-> **Note:** The start and end parameters are integer offsets (positions in the input buffer), not `TextPosition` objects.
+> **Note:** The start and end parameters are integer offsets (positions in the input buffer), not `TextPosition` objects. For `Literals` parsers, these offsets correspond exactly to where the parser matched. For `Terms` parsers (which skip whitespace), the behavior differs slightly between compiled and non-compiled modes due to how whitespace skipping is handled in the compilation process.
 
 ### Else
 
@@ -1037,6 +1043,9 @@ Result:
 failure: "Unexpected char c"
 ```
 
+`Error` declares the chars of the parser it is applied to, so a `OneOf` only tries it, and only raises the
+error, for one of them.
+
 ### When
 
 Adds some additional logic for a parser to succeed. The condition is executed when the previous parser succeeds. If the predicate returns `false`, the parser fails.
@@ -1102,31 +1111,55 @@ To evaluate a condition before a parser is executed use the `If` parser instead.
 Returns a parser using custom logic based on previous results.
 
 ```c#
-Parser<U> Switch<U>(Func<ParseContext, T, int> selector, params Parser<U>[] parsers)
+Parser<U> Switch<U>(Func<ParseContext, T, Parser<U>> action)
 ```
 
 Usage:
 
 ```c#
-var odd = Terms.Text("is odd");
-var even = Terms.Text("is even");
+var parser = Terms.Integer().Switch((context, i) =>
+        {
+            // Valid entries: "1 is odd", "2 is even"
+            // Invalid: "7 is even"
 
-var parser = Terms.Integer().Switch(
-    (context, i) => i % 2 == 0 ? 1 : 0,
-    odd,
-    even
-);
+            return i % 2 == 0
+            ? Terms.Text("is odd")
+            : Terms.Text("is even");
+        });
 ```
 
-This signature prevents allocating new parsers in the selector.
+For performance reasons it is recommended to return a singleton (or static) Parser instance. Otherwise each `Parse` execution will allocate a new Parser instance.
+
+`Switch` declares the chars of the parser it is applied to, so a `OneOf` only tries it for one of them.
 
 ### Eof
 
-Expects the end of the string.
+The extension `parser.Eof()` matches the parser followed by the end of the input, preserving its
+result. If trailing input remains, it restores the cursor to where the parser started so alternatives
+can retry. It declares the chars of the parser, so a `OneOf` only tries it for one of them.
 
 ```c#
 Parser<T> Eof()
 ```
+
+The standalone factory `Parsers.Eof()` checks only the current position. It returns `null` on success
+and never consumes input or skips whitespace.
+
+```c#
+Parser<object?> Parsers.Eof()
+```
+
+Attach an error to the standalone check to report the position of trailing input, rather than the
+start of the preceding parser:
+
+```c#
+var parser = Terms.Integer().AndSkip(Eof().ElseError("Unexpected trailing input"));
+parser.Parse("42a"); // Throws ParseException at (1:3).
+```
+
+In contrast, `Terms.Integer().Eof().ElseError("Unexpected trailing input")` reports (1:1) because
+the entire integer-and-EOF parser rolls back before `ElseError` reports the failure.
+Both forms support expression-tree compilation.
 
 ### Discard
 
@@ -1142,12 +1175,14 @@ Parser<U> Discard<U>(U value)
 
 ### Lookup
 
-Builds a parser that lists all possible matches to improve performance. Most parsers implement `ISeekable` parsers in order to provide `OneOf` a way to build a lookup table and identify the potential next parsers in the chain. Some parsers don't implement `ISeekable` because they are built too late, like `Deferred`. The `Lookup` parser circumvents that lack.
+Builds a parser that lists all possible matches to improve performance. Most parsers implement `ISeekable` parsers in order to provide `OneOf` a way to build a lookup table and identify the potential next parsers in the chain. Some parsers can't declare the chars they start with, like a custom parser or one built from a predicate. The `Lookup` parser circumvents that lack.
 
 ```c#
 Parser<T> Lookup<U>(params ReadOnlySpan<char> expectedChars)
 Parser<T> Lookup(params ISeekable[] parsers)
 ```
+
+The hints taken from other parsers are only used when every one of them can seek and they all skip white space the same way. Otherwise the resulting parser declares that it can start with any char, like the original one.
 
 ## Other parsers
 
@@ -1158,6 +1193,9 @@ Returns any characters until the specified parser is matched.
 ```c#
 Parser<TextSpan> AnyCharBefore<T>(Parser<T> parser, bool canBeEmpty = false, bool failOnEof = false, bool consumeDelimiter = false)
 ```
+
+With `consumeDelimiter: true` the cursor moves past the delimiter. The returned `TextSpan` never includes the delimiter,
+while the end position of the result (as seen by `Then((context, start, end, value) => ...)`) is the cursor position, after it.
 
 It is important to use `AnyCharBefore(a.Or(b))` instead of `AnyCharBefore(a).Or(AnyCharBefore(b))` for performance reasons. Otherwise the first parser will have to look ahead for the whole source if only the second parser can be matched. By using a single `AnyCharBefore`, it will check whatever is first in the source, and then jump to the next option.
 

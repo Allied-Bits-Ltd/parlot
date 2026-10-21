@@ -26,6 +26,11 @@ public class Cursor
     {
     }
 
+    /// <summary>
+    /// The current position. The offset is absolute, the line starts at 1 and increases after each <c>'\n'</c>, and the
+    /// column is one more than the number of chars between the previous <c>'\n'</c> (or the start of the text) and the
+    /// position: every char other than <c>'\n'</c>, <c>'\r'</c> included, occupies one column.
+    /// </summary>
     public TextPosition Position => new(Offset, _line, _column);
 
     /// <summary>
@@ -34,40 +39,47 @@ public class Cursor
     public ReadOnlySpan<char> Span => Buffer.AsSpan(Offset);
 
     /// <summary>
-    /// Advances the cursor by one character.
+    /// Advances the cursor by one character. Nothing happens when the cursor is already at the end of the text.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Advance()
     {
+        var previous = Current;
+
         Offset++;
 
         if (Offset >= _textLength)
         {
+            // Stays at the end of the text when already there, otherwise leaves the last char
+            Offset = _textLength;
+
+            if (Eof)
+            {
+                return;
+            }
+
             Eof = true;
-            _column++;
             Current = NullChar;
-            return;
+        }
+        else
+        {
+            Current = Buffer[Offset];
         }
 
-        var next = Buffer[Offset];
-
-        if (Current == '\n')
+        // The char that was left either ended its line or occupied a column
+        if (previous == '\n')
         {
             _line++;
             _column = 1;
         }
-        else if (next != '\r')
+        else
         {
             _column++;
         }
-
-        // if c == '\r', don't increase the column count
-
-        Current = next;
     }
 
     /// <summary>
-    /// Advances the cursor and tracks its current location (line and column).
+    /// Advances the cursor by <paramref name="count"/> characters, or to the end of the text, and tracks its current location (line and column).
     /// </summary>
     public void Advance(int count)
     {
@@ -76,46 +88,83 @@ public class Cursor
             return;
         }
 
-        var maxOffset = Offset + count;
+#if NET8_0_OR_GREATER
+        // Keep vector setup off the common short-token path.
+        if (count >= 64 && TryAdvanceWithoutNewLines(count))
+        {
+            return;
+        }
+#endif
+
+        var end = Offset + count;
 
         // Detect if the cursor will be over Eof
-        if (maxOffset > _textLength - 1)
+        if (end >= _textLength)
         {
             Eof = true;
-            maxOffset = _textLength - 1;
+            end = _textLength;
         }
 
-        while (Offset < maxOffset)
+        // Keep the loop state in locals and publish them once, as in Sep's block parsers.
+        var offset = Offset;
+        var line = _line;
+        var column = _column;
+        var buffer = Buffer;
+
+        // Each char that is left counts as a column, or starts a new line
+        while (offset < end)
         {
-            Offset++;
-
-            var next = Buffer[Offset];
-
-            if (Current == '\n')
+            if (buffer[offset] == '\n')
             {
-                _line++;
-                _column = 1;
+                line++;
+                column = 1;
             }
-            else if (next != '\r')
+            else
             {
-                _column++;
+                column++;
             }
 
-            // if c == '\r', don't increase the column count
-
-            Current = next;
+            offset++;
         }
 
-        if (Eof)
-        {
-            Current = NullChar;
-            Offset = _textLength;
-            _column++;
-        }
+        Offset = offset;
+        _line = line;
+        _column = column;
+        Current = Eof ? NullChar : buffer[offset];
     }
 
+#if NET8_0_OR_GREATER
+    private bool TryAdvanceWithoutNewLines(int count)
+    {
+        var offset = Offset;
+        var end = Math.Min(offset + count, _textLength);
+
+        // Only the chars that are left matter, not the one the cursor moves to. Guard overflow too.
+        if (end < offset || Buffer.AsSpan(offset, end - offset).Contains('\n'))
+        {
+            return false;
+        }
+
+        _column += end - offset;
+        Offset = end;
+
+        if (end == _textLength)
+        {
+            Eof = true;
+            Current = NullChar;
+        }
+        else
+        {
+            Current = Buffer[end];
+        }
+
+        return true;
+    }
+#endif
+
     /// <summary>
-    /// Advances the cursor and tracks its current location (line and column) with the knowledge there are no new lines (\r or \n).
+    /// Advances the cursor and tracks its current location (line and column) with the knowledge that the
+    /// <paramref name="offset"/> chars it leaves contain no <c>'\n'</c>.
     /// </summary>
     public void AdvanceNoNewLines(int offset)
     {
@@ -126,7 +175,8 @@ public class Cursor
         if (newOffset > length)
         {
             Eof = true;
-            _column += newOffset - length;
+            // Only the chars up to the end are counted, like Advance(int) does
+            _column += _textLength - Offset;
             Offset = _textLength;
             Current = NullChar;
             return;
@@ -236,8 +286,8 @@ public class Cursor
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool Match(char c)
     {
-        // Ordinal comparison
-        return Current == c;
+        // Ordinal comparison. Current is also the null char at the end of the text, where there is no char to match.
+        return Current == c && (c != NullChar || !Eof);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

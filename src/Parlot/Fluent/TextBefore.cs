@@ -14,8 +14,6 @@ namespace Parlot.Fluent;
 
 public sealed class TextBefore<T> : Parser<TextSpan>, ISourceable
 {
-    private static readonly MethodInfo _jumpToNextExpectedCharMethod = typeof(TextBefore<T>).GetMethod(nameof(JumpToNextExpectedChar), BindingFlags.NonPublic | BindingFlags.Static)!;
-
     private readonly Parser<T> _delimiter;
     private readonly bool _canBeEmpty;
     private readonly bool _failOnEof;
@@ -33,7 +31,13 @@ public sealed class TextBefore<T> : Parser<TextSpan>, ISourceable
         _failOnEof = failOnEof;
         _consumeDelimiter = consumeDelimiter;
 
-        if (_delimiter is ISeekable seekable && seekable.CanSeek)
+        // The text is searched for the chars the delimiter can start with, unless it can start somewhere else:
+        // - with a white space, which is skipped before the expected chars
+        // - with any char, which a OneOf with parsers that are not seekable declares with OtherSeekableChar
+        if (_delimiter is ISeekable seekable
+            && seekable.CanSeek
+            && !seekable.SkipWhitespace
+            && Array.IndexOf(seekable.ExpectedChars, OneOf<T>.OtherSeekableChar) < 0)
         {
 #if NET8_0_OR_GREATER
             _expectedSearchValues = SearchValues.Create(seekable.ExpectedChars);
@@ -102,11 +106,13 @@ public sealed class TextBefore<T> : Parser<TextSpan>, ISourceable
 
                 if (length == 0 && !_canBeEmpty)
                 {
+                    context.Scanner.Cursor.ResetPosition(start);
                     context.ExitParser(this);
                     return false;
                 }
 
-                result.Set(start.Offset, previous.Offset, new TextSpan(context.Scanner.Buffer, start.Offset, length));
+                // The result ends where the cursor is: after the delimiter when it is consumed
+                result.Set(start.Offset, context.Scanner.Cursor.Offset, new TextSpan(context.Scanner.Buffer, start.Offset, length));
 
                 context.ExitParser(this);
                 return true;
@@ -135,28 +141,40 @@ public sealed class TextBefore<T> : Parser<TextSpan>, ISourceable
 #else
     private static void JumpToNextExpectedChar(ParseContext context, char[] expectedChars)
     {
-        var indexOfAny = int.MaxValue;
         var span = context.Scanner.Cursor.Span;
 
-        foreach (var c in expectedChars)
+        // No expected char found, move to the end
+        var indexOfAny = span.Length;
+
+        if (expectedChars.Length == 1)
         {
-            var index = span.IndexOf(c);
+            var index = span.IndexOf(expectedChars[0]);
 
             if (index >= 0)
             {
-                indexOfAny = Math.Min(indexOfAny, index);
+                indexOfAny = index;
             }
-        }
-
-        if (indexOfAny < int.MaxValue)
-        {
-            context.Scanner.Cursor.Advance(indexOfAny);
         }
         else
         {
-            // No expected char found, move to the end
-            context.Scanner.Cursor.Advance(context.Scanner.Cursor.Span.Length);
+            // The text is read once and only up to the first expected char. Searching for each expected char
+            // in turn reads the whole text for the ones it doesn't contain, each time the delimiter doesn't match.
+            for (var i = 0; i < span.Length && indexOfAny == span.Length; i++)
+            {
+                var c = span[i];
+
+                foreach (var expected in expectedChars)
+                {
+                    if (c == expected)
+                    {
+                        indexOfAny = i;
+                        break;
+                    }
+                }
+            }
         }
+
+        context.Scanner.Cursor.Advance(indexOfAny);
     }
 #endif
 
@@ -234,6 +252,7 @@ public sealed class TextBefore<T> : Parser<TextSpan>, ISourceable
         {
             result.Body.Add($"        if ({lengthName} == 0)");
             result.Body.Add("        {");
+            result.Body.Add($"            {cursorName}.ResetPosition({startName});");
             result.Body.Add($"            {result.SuccessVariable} = false;");
             result.Body.Add("            break;");
             result.Body.Add("        }");
