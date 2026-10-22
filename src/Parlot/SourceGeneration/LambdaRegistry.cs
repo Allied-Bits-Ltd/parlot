@@ -157,6 +157,9 @@ public sealed class LambdaRegistry
     /// <summary>
     /// Gets a default value for the given type that can be used for lambda invocation.
     /// </summary>
+#if AOT_COMPILATION
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2067", Justification = "Only value types are instantiated, which always have a default value.")]
+#endif
     private static object? GetDefaultValue(Type type)
     {
         if (type.IsValueType)

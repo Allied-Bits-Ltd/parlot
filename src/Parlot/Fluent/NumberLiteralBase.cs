@@ -17,7 +17,9 @@ public abstract class NumberLiteralBase<T> : Parser<T>, ISeekable, ISourceable
     private readonly char _decimalSeparator;
     private readonly char _secondDecimalSeparator;
     private readonly char _groupSeparator;
+#if !AOT_COMPILATION
     private readonly MethodInfo _tryParseMethodInfo;
+#endif
     private readonly NumberStyles _numberStyles;
 
     // Kept as a CultureInfo since it is handed to the public TryParseNumber overrides and to the

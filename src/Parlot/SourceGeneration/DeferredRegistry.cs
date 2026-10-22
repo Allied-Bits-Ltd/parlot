@@ -10,6 +10,9 @@ public sealed class DeferredRegistry
 {
     private readonly Dictionary<object, (string MethodName, string? ParserName)> _methods = new();
 
+#if AOT_COMPILATION
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2075", Justification = "Only used to read the optional public Name property; null is used when it is trimmed.")]
+#endif
     public string GetOrCreateMethodName(object parser, string suggestedName)
     {
         if (!_methods.TryGetValue(parser, out var entry))

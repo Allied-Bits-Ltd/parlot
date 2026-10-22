@@ -12,6 +12,9 @@ public sealed class ParserHelperRegistry
     private readonly Dictionary<object, HelperEntry> _helpers = new();
     private int _nextId;
 
+#if AOT_COMPILATION
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2075", Justification = "Only used to read the optional public Name property; null is used when it is trimmed.")]
+#endif
     public (string MethodName, string ValueTypeName, SourceResult Result, string? ParserName) GetOrCreate(
         object parser,
         string suggestedName,

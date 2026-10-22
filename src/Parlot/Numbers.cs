@@ -203,6 +203,7 @@ public static class Numbers
         {
                 public static readonly TryParseSpanWithStyles<TNumber>? WithStyles = CreateWithStyles();
 
+                [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2090", Justification = "When the TryParse overload is trimmed away, the INumberBase<TNumber>.TryParse fallback is used.")]
                 private static TryParseSpanWithStyles<TNumber>? CreateWithStyles()
                 {
                         var method = typeof(TNumber).GetMethod(
@@ -219,6 +220,7 @@ public static class Numbers
         }
 #endif
 
+#if !AOT_COMPILATION
         /// <summary>
         /// Gets the Numbers.TryParse method for a specific numeric type.
         /// </summary>
@@ -251,5 +253,6 @@ public static class Numbers
 
         private static bool ImplementsINumber(Type type)
                 => type.GetInterfaces().Any(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(INumber<>));
+#endif
 #endif
 }
