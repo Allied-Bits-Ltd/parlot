@@ -1,18 +1,31 @@
 <Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
-  <Choose>
-    <When Condition="'$(UseAotMode)' == 'true'">
-      <ItemGroup>
-        <Reference Include="Parlot">
-          <HintPath>$(MSBuildThisFileDirectory)..\..\assemblies\net9.0\Parlot.AOT.dll</HintPath>
-        </Reference>
-      </ItemGroup>
-    </When>
-    <Otherwise>
-      <ItemGroup>
-        <Reference Include="Parlot">
-          <HintPath>$(MSBuildThisFileDirectory)..\..\assemblies\net9.0\Parlot.dll</HintPath>
-        </Reference>
-      </ItemGroup>
-    </Otherwise>
-  </Choose>
+  <!--
+    Parlot.dll is shipped in lib\net9.0 and reaches direct and transitive consumers through regular NuGet asset resolution.
+    The AOT-compatible build in assemblies\net9.0 has the same assembly identity. When UseAotMode is true, it replaces
+    the regular build both for compilation and in the output, so that libraries compiled against Parlot also run on it.
+  -->
+  <Target Name="_AlliedBitsParlotUseAotAssembly"
+          AfterTargets="ResolvePackageAssets"
+          Condition="'$(UseAotMode)' == 'true'">
+    <PropertyGroup>
+      <_AlliedBitsParlotAotDirectory>$([MSBuild]::NormalizeDirectory('$(MSBuildThisFileDirectory)', '..', '..', 'assemblies', 'net9.0'))</_AlliedBitsParlotAotDirectory>
+    </PropertyGroup>
+    <ItemGroup>
+      <_AlliedBitsParlotCompileItem Include="@(ResolvedCompileFileDefinitions)" Condition="'%(ResolvedCompileFileDefinitions.NuGetPackageId)' == 'AlliedBits.Parlot' and '%(Filename)%(Extension)' == 'Parlot.dll'" />
+      <ResolvedCompileFileDefinitions Remove="@(_AlliedBitsParlotCompileItem)" />
+      <_AlliedBitsParlotAotCompileItem Include="@(_AlliedBitsParlotCompileItem->'$(_AlliedBitsParlotAotDirectory)%(Filename)%(Extension)')" />
+      <_AlliedBitsParlotAotCompileItem>
+        <HintPath>%(FullPath)</HintPath>
+      </_AlliedBitsParlotAotCompileItem>
+      <ResolvedCompileFileDefinitions Include="@(_AlliedBitsParlotAotCompileItem)" />
+
+      <_AlliedBitsParlotRuntimeItem Include="@(RuntimeCopyLocalItems)" Condition="'%(RuntimeCopyLocalItems.NuGetPackageId)' == 'AlliedBits.Parlot' and '%(Filename)%(Extension)' == 'Parlot.dll'" />
+      <RuntimeCopyLocalItems Remove="@(_AlliedBitsParlotRuntimeItem)" />
+      <RuntimeCopyLocalItems Include="@(_AlliedBitsParlotRuntimeItem->'$(_AlliedBitsParlotAotDirectory)%(Filename)%(Extension)')" />
+
+      <_AlliedBitsParlotCompileItem Remove="@(_AlliedBitsParlotCompileItem)" />
+      <_AlliedBitsParlotAotCompileItem Remove="@(_AlliedBitsParlotAotCompileItem)" />
+      <_AlliedBitsParlotRuntimeItem Remove="@(_AlliedBitsParlotRuntimeItem)" />
+    </ItemGroup>
+  </Target>
 </Project>

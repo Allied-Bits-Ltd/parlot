@@ -6,7 +6,8 @@
     <Description>Parlot is a fast, lightweight and simple to use .NET parser combinator.</Description>
     <PackageTags>parser;interpreter;</PackageTags>
     <IsPackable>true</IsPackable>
-    <AssemblyName>Parlot.AOT</AssemblyName>
+    <!-- Same identity as the regular build, so that assemblies compiled against Parlot run on this build in AOT mode -->
+    <AssemblyName>Parlot</AssemblyName>
     <AssemblyOriginatorKeyFile>..\Parlot\Parlot.snk</AssemblyOriginatorKeyFile>
     <SignAssembly>true</SignAssembly>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
@@ -122,6 +123,10 @@
     <Compile Include="..\Parlot\SourceGeneration\TargetFrameworkInfo.cs" Link="SourceGeneration\TargetFrameworkInfo.cs" />
     <Compile Include="..\Parlot\SourceGeneration\TypeNameHelper.cs" Link="SourceGeneration\TypeNameHelper.cs" />
     <Compile Include="..\Parlot\ThrowHelper.cs" Link="ThrowHelper.cs" />
+    <Compile Include="..\Parlot.SourceGenerator\GenerateParserAttribute.cs" Link="SourceGeneration\GenerateParserAttribute.cs" />
+    <Compile Include="..\Parlot.SourceGenerator\IncludeFilesAttribute.cs" Link="SourceGeneration\IncludeFilesAttribute.cs" />
+    <Compile Include="..\Parlot.SourceGenerator\IncludeUsingsAttribute.cs" Link="SourceGeneration\IncludeUsingsAttribute.cs" />
+    <Compile Include="..\Parlot.SourceGenerator\IncludeGeneratorsAttribute.cs" Link="SourceGeneration\IncludeGeneratorsAttribute.cs" />
   </ItemGroup>
 
   <ItemGroup>
