@@ -1,7 +1,5 @@
 using Parlot.SourceGeneration;
 using System;
-using System.Collections.Generic;
-using System.Linq;
 
 namespace Parlot.Fluent;
 
@@ -53,10 +51,14 @@ public sealed class LeftAssociative<T, TInput> : Parser<T>, ISourceable
         var value = result.Value;
         var end = result.End;
 
+        // The operator is read again by the caller when it isn't followed by an operand
+        var pin = context.Pin();
+
         // Parse zero or more (operator operand) pairs
         while (true)
         {
             var operatorPosition = context.Scanner.Cursor.Position;
+            context.MovePin(pin);
             var operatorResult = new ParseResult<int>();
 
             // The choice returns the index of the operator it matched
@@ -88,16 +90,23 @@ public sealed class LeftAssociative<T, TInput> : Parser<T>, ISourceable
             end = rightResult.End;
         }
 
+        context.Unpin(pin);
+
         result = new ParseResult<T>(result.Start, end, value);
 
         context.ExitParser(this);
         return true;
     }
 
-
     public SourceResult GenerateSource(SourceGenerationContext context)
     {
         ThrowHelper.ThrowIfNull(context, nameof(context));
+
+        // Each callback needs the accumulated value, even if the final value is discarded.
+        if (context.DiscardResult)
+        {
+            return context.WithDiscardResult(false, () => GenerateSource(context));
+        }
 
         if (_parser is not ISourceable parserSourceable)
         {
@@ -108,29 +117,9 @@ public sealed class LeftAssociative<T, TInput> : Parser<T>, ISourceable
         var ctx = context.ParseContextName;
         var cursorName = context.CursorName;
         var valueTypeName = SourceGenerationContext.GetTypeName(typeof(T));
-        var inputTypeName = SourceGenerationContext.GetTypeName(typeof(TInput));
 
         // Generate a unique ID for this LeftAssociative instance to avoid collisions
         var uniqueId = context.NextNumber();
-        
-        var operatorMatchedName = $"opMatched{context.NextNumber()}";
-
-        result.Body.Add($"bool {operatorMatchedName} = false;");
-
-        // Helper function to get parser value type
-        static Type GetParserValueType(object parser)
-        {
-            var type = parser.GetType();
-            while (type != null)
-            {
-                if (type.IsGenericType && type.GetGenericTypeDefinition().FullName == "Parlot.Fluent.Parser`1")
-                {
-                    return type.GetGenericArguments()[0];
-                }
-                type = type.BaseType!;
-            }
-            throw new InvalidOperationException("Unable to determine parser value type.");
-        }
 
         // Register helper for the base parser with unique prefix
         var baseHelperName = context.Helpers
@@ -147,80 +136,49 @@ public sealed class LeftAssociative<T, TInput> : Parser<T>, ISourceable
             result.Body.Add($"if ({baseHelperName}({ctx}, out {result.ValueVariable}))");
         }
         result.Body.Add("{");
-        result.Body.Add("    while (true)");
-        result.Body.Add("    {");
-        result.Body.Add($"        {operatorMatchedName} = false;");
-        var operatorPositionName = $"opPos{context.NextNumber()}";
-        result.Body.Add($"        var {operatorPositionName} = {cursorName}.Position;");
 
-        // Generate operator matching for each operator
-        for (int i = 0; i < _operators.Length; i++)
+        // The operators are tried through the choice, which returns the index of the one it matched
+        var operatorHelperName = context.WithDiscardResult(false, () => context.Helpers
+            .GetOrCreate(_choice, $"{context.MethodNamePrefix}_LeftAssoc{uniqueId}", "int", () => _choice.GenerateSource(context))
+            .MethodName);
+
+        var factoryNames = new string[_operators.Length];
+
+        for (var i = 0; i < _operators.Length; i++)
         {
-            var (op, factory) = _operators[i];
-
-            if (op is not ISourceable opSourceable)
-            {
-                throw new NotSupportedException($"LeftAssociative requires all operator parsers to be source-generatable.");
-            }
-
-            // Register the factory lambda
-            var factoryFieldName = context.RegisterLambda(factory);
-
-            // Register helper for the operator parser with unique prefix
-            var opValueTypeName = SourceGenerationContext.GetTypeName(GetParserValueType(opSourceable));
-            var opHelperName = context.Helpers
-                .GetOrCreate(opSourceable, $"{context.MethodNamePrefix}_LeftAssoc{uniqueId}", opValueTypeName, () => opSourceable.GenerateSource(context))
-                .MethodName;
-
-            var opResultName = $"opResult{context.NextNumber()}";
-
-            var indent = "        ";
-            if (i == 0)
-            {
-                result.Body.Add($"{indent}if ({opHelperName}({ctx}, out _))");
-            }
-            else
-            {
-                result.Body.Add($"{indent}if (!{operatorMatchedName})");
-                result.Body.Add($"{indent}{{");
-                result.Body.Add($"{indent}    if ({opHelperName}({ctx}, out _))");
-            }
-
-            var innerIndent = i == 0 ? indent : $"{indent}    ";
-            result.Body.Add($"{innerIndent}{{");
-            // Parse right operand using helper
-            result.Body.Add($"{innerIndent}    if ({baseHelperName}({ctx}, out var {opResultName}RightValue))");
-            result.Body.Add($"{innerIndent}    {{");
-            // Neither the operator nor the operand read anything, so they would match forever
-            result.Body.Add($"{innerIndent}        if ({cursorName}.Offset == {operatorPositionName}.Offset)");
-            result.Body.Add($"{innerIndent}        {{");
-            result.Body.Add($"{innerIndent}            break;");
-            result.Body.Add($"{innerIndent}        }}");
-            result.Body.Add($"{innerIndent}        {operatorMatchedName} = true;");
-            if (!context.DiscardResult)
-            {
-                result.Body.Add($"{innerIndent}        {result.ValueVariable} = {factoryFieldName}({result.ValueVariable}, {opResultName}RightValue);");
-            }
-            else
-            {
-                result.Body.Add($"{innerIndent}        {factoryFieldName}({result.ValueVariable}, {opResultName}RightValue);");
-            }
-            result.Body.Add($"{innerIndent}    }}");
-            result.Body.Add($"{innerIndent}    else");
-            result.Body.Add($"{innerIndent}    {{");
-            result.Body.Add($"{innerIndent}        {cursorName}.ResetPosition({operatorPositionName});");
-            result.Body.Add($"{innerIndent}        break;");
-            result.Body.Add($"{innerIndent}    }}");
-            result.Body.Add($"{innerIndent}}}");
-
-            if (i > 0)
-            {
-                result.Body.Add($"{indent}}}");
-            }
+            factoryNames[i] = context.RegisterLambda(_operators[i].Factory);
         }
 
-        result.Body.Add($"        if (!{operatorMatchedName}) break;");
+        var operatorPositionName = $"opPos{context.NextNumber()}";
+        var operatorName = $"op{context.NextNumber()}";
+        var rightName = $"right{context.NextNumber()}";
+
+        // The operator is read again by the caller when it isn't followed by an operand
+        var pin = context.Pin(result);
+        result.Body.Add("    while (true)");
+        result.Body.Add("    {");
+        result.Body.Add($"        var {operatorPositionName} = {cursorName}.Position;");
+        context.MovePin(result, pin, "        ");
+        result.Body.Add($"        if (!{operatorHelperName}({ctx}, out var {operatorName})) break;");
+        result.Body.Add($"        if (!{baseHelperName}({ctx}, out var {rightName}))");
+        result.Body.Add("        {");
+        result.Body.Add($"            {cursorName}.ResetPosition({operatorPositionName});");
+        result.Body.Add("            break;");
+        result.Body.Add("        }");
+        result.Body.Add($"        if ({cursorName}.Offset == {operatorPositionName}.Offset) break;");
+        result.Body.Add($"        switch ({operatorName})");
+        result.Body.Add("        {");
+
+        for (var i = 0; i < _operators.Length; i++)
+        {
+            result.Body.Add($"            case {i}:");
+            result.Body.Add($"                {result.ValueVariable} = {factoryNames[i]}({result.ValueVariable}, {rightName});");
+            result.Body.Add("                break;");
+        }
+
+        result.Body.Add("        }");
         result.Body.Add("    }");
+        context.Unpin(result, pin, "    ");
         result.Body.Add($"    {result.SuccessVariable} = true;");
         result.Body.Add("}");
 
@@ -229,7 +187,6 @@ public sealed class LeftAssociative<T, TInput> : Parser<T>, ISourceable
 
     public override string ToString() => Name ?? $"LeftAssociative({_parser})";
 }
-
 
 public sealed class LeftAssociativeWithContext<T, TInput> : Parser<T>, ISourceable
 {
@@ -272,9 +229,13 @@ public sealed class LeftAssociativeWithContext<T, TInput> : Parser<T>, ISourceab
         var value = result.Value;
         var end = result.End;
 
+        // The operator is read again by the caller when it isn't followed by an operand
+        var pin = context.Pin();
+
         while (true)
         {
             var operatorPosition = context.Scanner.Cursor.Position;
+            context.MovePin(pin);
             var operatorResult = new ParseResult<int>();
 
             // The choice returns the index of the operator it matched
@@ -302,16 +263,22 @@ public sealed class LeftAssociativeWithContext<T, TInput> : Parser<T>, ISourceab
             end = rightResult.End;
         }
 
+        context.Unpin(pin);
+
         result = new ParseResult<T>(result.Start, end, value);
 
         context.ExitParser(this);
         return true;
     }
 
-
     public SourceResult GenerateSource(SourceGenerationContext context)
     {
         ThrowHelper.ThrowIfNull(context, nameof(context));
+
+        if (context.DiscardResult)
+        {
+            return context.WithDiscardResult(false, () => GenerateSource(context));
+        }
 
         if (_parser is not ISourceable parserSourceable)
         {
@@ -324,24 +291,6 @@ public sealed class LeftAssociativeWithContext<T, TInput> : Parser<T>, ISourceab
         var valueTypeName = SourceGenerationContext.GetTypeName(typeof(T));
 
         var uniqueId = context.NextNumber();
-        var operatorMatchedName = $"opMatched{context.NextNumber()}";
-
-        result.Body.Add($"bool {operatorMatchedName} = false;");
-
-        static Type GetParserValueType(object parser)
-        {
-            var type = parser.GetType();
-            while (type != null)
-            {
-                if (type.IsGenericType && type.GetGenericTypeDefinition().FullName == "Parlot.Fluent.Parser`1")
-                {
-                    return type.GetGenericArguments()[0];
-                }
-                type = type.BaseType!;
-            }
-            throw new InvalidOperationException("Unable to determine parser value type.");
-        }
-
         var baseHelperName = context.Helpers
             .GetOrCreate(parserSourceable, $"{context.MethodNamePrefix}_LeftAssocCtx{uniqueId}", valueTypeName, () => parserSourceable.GenerateSource(context))
             .MethodName;
@@ -356,79 +305,49 @@ public sealed class LeftAssociativeWithContext<T, TInput> : Parser<T>, ISourceab
         }
 
         result.Body.Add("{");
-        result.Body.Add("    while (true)");
-        result.Body.Add("    {");
-        result.Body.Add($"        {operatorMatchedName} = false;");
 
-        var operatorPositionName = $"opPos{context.NextNumber()}";
-        result.Body.Add($"        var {operatorPositionName} = {cursorName}.Position;");
+        // The operators are tried through the choice, which returns the index of the one it matched
+        var operatorHelperName = context.WithDiscardResult(false, () => context.Helpers
+            .GetOrCreate(_choice, $"{context.MethodNamePrefix}_LeftAssocCtx{uniqueId}", "int", () => _choice.GenerateSource(context))
+            .MethodName);
 
-        for (int i = 0; i < _operators.Length; i++)
+        var factoryNames = new string[_operators.Length];
+
+        for (var i = 0; i < _operators.Length; i++)
         {
-            var (op, factory) = _operators[i];
-
-            if (op is not ISourceable opSourceable)
-            {
-                throw new NotSupportedException("LeftAssociative requires all operator parsers to be source-generatable.");
-            }
-
-            var factoryFieldName = context.RegisterLambda(factory);
-
-            var opValueTypeName = SourceGenerationContext.GetTypeName(GetParserValueType(opSourceable));
-            var opHelperName = context.Helpers
-                .GetOrCreate(opSourceable, $"{context.MethodNamePrefix}_LeftAssocCtx{uniqueId}", opValueTypeName, () => opSourceable.GenerateSource(context))
-                .MethodName;
-
-            var opResultName = $"opResult{context.NextNumber()}";
-
-            var indent = "        ";
-            if (i == 0)
-            {
-                result.Body.Add($"{indent}if ({opHelperName}({ctx}, out _))");
-            }
-            else
-            {
-                result.Body.Add($"{indent}if (!{operatorMatchedName})");
-                result.Body.Add($"{indent}{{");
-                result.Body.Add($"{indent}    if ({opHelperName}({ctx}, out _))");
-            }
-
-            var innerIndent = i == 0 ? indent : $"{indent}    ";
-            result.Body.Add($"{innerIndent}{{");
-            result.Body.Add($"{innerIndent}    if ({baseHelperName}({ctx}, out var {opResultName}RightValue))");
-            result.Body.Add($"{innerIndent}    {{");
-            // Neither the operator nor the operand read anything, so they would match forever
-            result.Body.Add($"{innerIndent}        if ({cursorName}.Offset == {operatorPositionName}.Offset)");
-            result.Body.Add($"{innerIndent}        {{");
-            result.Body.Add($"{innerIndent}            break;");
-            result.Body.Add($"{innerIndent}        }}");
-            result.Body.Add($"{innerIndent}        {operatorMatchedName} = true;");
-
-            if (!context.DiscardResult)
-            {
-                result.Body.Add($"{innerIndent}        {result.ValueVariable} = {factoryFieldName}({ctx}, {result.ValueVariable}, {opResultName}RightValue);");
-            }
-            else
-            {
-                result.Body.Add($"{innerIndent}        {factoryFieldName}({ctx}, {result.ValueVariable}, {opResultName}RightValue);");
-            }
-
-            result.Body.Add($"{innerIndent}    }}");
-            result.Body.Add($"{innerIndent}    else");
-            result.Body.Add($"{innerIndent}    {{");
-            result.Body.Add($"{innerIndent}        {cursorName}.ResetPosition({operatorPositionName});");
-            result.Body.Add($"{innerIndent}        break;");
-            result.Body.Add($"{innerIndent}    }}");
-            result.Body.Add($"{innerIndent}}}");
-
-            if (i > 0)
-            {
-                result.Body.Add($"{indent}}}");
-            }
+            factoryNames[i] = context.RegisterLambda(_operators[i].Factory);
         }
 
-        result.Body.Add($"        if (!{operatorMatchedName}) break;");
+        var operatorPositionName = $"opPos{context.NextNumber()}";
+        var operatorName = $"op{context.NextNumber()}";
+        var rightName = $"right{context.NextNumber()}";
+
+        // The operator is read again by the caller when it isn't followed by an operand
+        var pin = context.Pin(result);
+        result.Body.Add("    while (true)");
+        result.Body.Add("    {");
+        result.Body.Add($"        var {operatorPositionName} = {cursorName}.Position;");
+        context.MovePin(result, pin, "        ");
+        result.Body.Add($"        if (!{operatorHelperName}({ctx}, out var {operatorName})) break;");
+        result.Body.Add($"        if (!{baseHelperName}({ctx}, out var {rightName}))");
+        result.Body.Add("        {");
+        result.Body.Add($"            {cursorName}.ResetPosition({operatorPositionName});");
+        result.Body.Add("            break;");
+        result.Body.Add("        }");
+        result.Body.Add($"        if ({cursorName}.Offset == {operatorPositionName}.Offset) break;");
+        result.Body.Add($"        switch ({operatorName})");
+        result.Body.Add("        {");
+
+        for (var i = 0; i < _operators.Length; i++)
+        {
+            result.Body.Add($"            case {i}:");
+            result.Body.Add($"                {result.ValueVariable} = {factoryNames[i]}({ctx}, {result.ValueVariable}, {rightName});");
+            result.Body.Add("                break;");
+        }
+
+        result.Body.Add("        }");
         result.Body.Add("    }");
+        context.Unpin(result, pin, "    ");
         result.Body.Add($"    {result.SuccessVariable} = true;");
         result.Body.Add("}");
 

@@ -7,8 +7,9 @@ namespace Parlot.SourceGenerator;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <strong>Root Directory:</strong> All file paths are resolved relative to the directory containing 
-/// the source file where the <c>[GenerateParser]</c> method is defined, not the project root or solution root.
+/// <strong>Root Directory:</strong> All file paths are resolved relative to the directory containing
+/// the source file where the <c>[GenerateParser]</c> method is defined. Paths must remain within the
+/// MSBuild project root. Absolute paths, symbolic links, and patterns not ending in <c>.cs</c> are rejected.
 /// Both forward slashes (/) and backslashes (\) are accepted as path separators.
 /// </para>
 /// 
@@ -23,7 +24,7 @@ namespace Parlot.SourceGenerator;
 /// 
 /// Example usage:
 /// <code>
-/// [GenerateParser]
+/// [GenerateParser("TryParseSql")]
 /// [IncludeFiles("SqlAst.cs")]
 /// public static Parser&lt;StatementList&gt; CreateSqlParser()
 /// {
@@ -33,33 +34,35 @@ namespace Parlot.SourceGenerator;
 /// 
 /// You can specify multiple files:
 /// <code>
-/// [GenerateParser]
+/// [GenerateParser("TryParseExpression")]
 /// [IncludeFiles("Ast.cs", "Tokens.cs", "Helpers.cs")]
 /// public static Parser&lt;Expression&gt; CreateExpressionParser() =&gt; ...;
 /// </code>
 /// 
 /// Using glob patterns to include multiple files:
 /// <code>
-/// [GenerateParser]
-/// [IncludeFiles("*.cs", "../Shared/**/*.cs")]
+/// [GenerateParser("TryParseExpression")]
+/// [IncludeFiles("*.cs", "../Shared/**/*.cs")] // Shared must remain inside the project root.
 /// public static Parser&lt;Expression&gt; CreateExpressionParser() =&gt; ...;
 /// </code>
 /// 
 /// You can apply this attribute to methods or container classes:
 /// <code>
 /// [IncludeFiles("CommonAst.cs")]
-/// public static class MyParsers
+/// public static partial class MyParsers
 /// {
-///     [GenerateParser]
+///     [GenerateParser("TryParseExpression")]
 ///     public static Parser&lt;Expression&gt; ExpressionParser() =&gt; ...;
 ///     
-///     [GenerateParser]
+///     [GenerateParser("TryParseStatement")]
 ///     [IncludeFiles("StatementAst.cs")]
 ///     public static Parser&lt;Statement&gt; StatementParser() =&gt; ...;
 /// }
 /// </code>
 /// 
 /// When applied to a class, the files will be included for all generated parsers within that class.
+/// These examples belong in build-only .parlot.cs files with matching partial parsing declarations
+/// in normal source files. Included files are added to the build compilation, not emitted into the application.
 /// </remarks>
 [System.AttributeUsage(System.AttributeTargets.Method | System.AttributeTargets.Class, AllowMultiple = false)]
 #if SOURCE_GENERATOR
@@ -78,7 +81,8 @@ sealed class IncludeFilesAttribute : System.Attribute
     /// Specifies additional source files to include when generating the parser.
     /// </summary>
     /// <param name="files">
-    /// Relative paths or glob patterns for files to include (relative to the file containing the parser method).
+    /// Relative paths or glob patterns for C# files to include (relative to the file containing the parser method
+    /// and contained by the MSBuild project root).
     /// Supports wildcards: * (any characters except /), ** (recursive, any characters including /), and ? (single character).
     /// Both / and \ are accepted as path separators.
     /// </param>

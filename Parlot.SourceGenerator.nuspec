@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd">
+  <metadata>
+    <id>AlliedBits.Parlot.SourceGenerator</id>
+    <version>2.1.0.1</version>
+    <title>Parlot Source Generator</title>
+    <authors>Sebastien Ros</authors>
+    <description>Roslyn source generator for compiling Parlot parser combinators into optimized C# code.</description>
+    <copyright>Sebastien Ros</copyright>
+    <license type="expression">BSD-3-Clause</license>
+    <licenseUrl>https://licenses.nuget.org/BSD-3-Clause</licenseUrl>
+    <projectUrl>https://github.com/Allied-Bits-Ltd/parlot</projectUrl>
+    <repository type="git" url="https://github.com/Allied-Bits-Ltd/parlot" commit="48b6b99508ddf4905bf6f6a486e522d491c89abd" />
+    <readme>README.md</readme>
+    <tags>parlot parser parser-combinator source-generator roslyn</tags>
+    <!-- Analyzer-only package: there are no lib assets. The dependency groups describe the generated consumers. -->
+    <dependencies>
+      <group targetFramework=".NETFramework4.7.2">
+        <dependency id="System.Memory" version="4.6.3" />
+      </group>
+      <group targetFramework=".NETStandard2.0">
+        <dependency id="System.Memory" version="4.6.3" />
+      </group>
+      <group targetFramework="net8.0" />
+    </dependencies>
+  </metadata>
+  <files>
+    <file src="src\Parlot.SourceGenerator\README.md" target="README.md" />
+    <file src="LICENSE" target="LICENSE" />
+
+    <!-- The generator runs inside the compiler host, so both assemblies go to the analyzers folder -->
+    <file src="src\Parlot.SourceGenerator\bin\Release\netstandard2.0\Parlot.SourceGenerator.dll" target="analyzers\dotnet\cs" />
+    <file src="src\Parlot\bin\Release\netstandard2.0\Parlot.dll" target="analyzers\dotnet\cs" />
+
+    <!-- NuGet only imports build files that are named after the package id -->
+    <file src="src\Parlot.SourceGenerator\build\Parlot.SourceGenerator.props" target="build\AlliedBits.Parlot.SourceGenerator.props" />
+    <file src="src\Parlot.SourceGenerator\build\Parlot.SourceGenerator.targets" target="build\AlliedBits.Parlot.SourceGenerator.targets" />
+  </files>
+</package>

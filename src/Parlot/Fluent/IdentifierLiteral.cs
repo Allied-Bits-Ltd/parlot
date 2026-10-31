@@ -40,38 +40,31 @@ internal sealed class IdentifierLiteral : Parser<TextSpan>, ISeekable
 
     public override bool Parse(ParseContext context, ref ParseResult<TextSpan> result)
     {
-        context.EnterParser(this);
-
-        if (ParseSpan(context.Scanner.Cursor, _startSearchValues, _partSearchValues, out var span))
+        if (context.IsCompacting)
         {
-            result.Set(span.Offset, span.Offset + span.Length, span);
-
-            context.ExitParser(this);
-            return true;
+            return context.ParseToken(this, ref result);
         }
 
-        context.ExitParser(this);
-        return false;
-    }
+        context.EnterParser(this);
 
-    private static bool ParseSpan(Cursor cursor, SearchValues<char> startSearchValues, SearchValues<char> partSearchValues, out TextSpan span)
-    {
-        var cursorSpan = cursor.Span;
+        var span = context.Scanner.Cursor.Span;
 
-        if (cursorSpan.Length == 0 || !startSearchValues.Contains(cursorSpan[0]))
+        if (span.Length == 0 || !_startSearchValues.Contains(span[0]))
         {
-            span = default;
+            context.ExitParser(this);
             return false;
         }
 
-        var index = cursorSpan.Slice(1).IndexOfAnyExcept(partSearchValues);
+        var index = span.Slice(1).IndexOfAnyExcept(_partSearchValues);
 
         // If index == -1 the whole input is a match
-        var size = index == -1 ? cursorSpan.Length : index + 1;
+        var size = index == -1 ? span.Length : index + 1;
 
-        var start = cursor.Offset;
-        cursor.AdvanceNoNewLines(size);
-        span = new TextSpan(cursor.Buffer, start, size);
+        var start = context.Scanner.Cursor.Position.Offset;
+        context.Scanner.Cursor.AdvanceNoNewLines(size);
+        result.Set(start, start + size, context.Scanner.Cursor.CreateSpan(start, size));
+
+        context.ExitParser(this);
         return true;
     }
 }

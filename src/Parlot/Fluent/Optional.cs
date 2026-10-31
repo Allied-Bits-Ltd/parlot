@@ -1,19 +1,16 @@
 using Parlot.SourceGeneration;
 using System;
-using System.Reflection;
 
 namespace Parlot.Fluent;
 
 /// <summary>
-/// Returns a list containing zero or one element.
+/// Returns an option containing a value when the inner parser matches.
 /// </summary>
 /// <remarks>
-/// This parser will always succeed. If the previous parser fails, it will return an empty list.
+/// This parser will always succeed. If the inner parser fails, it will return an option without a value.
 /// </remarks>
 public sealed class Optional<T> : Parser<Option<T>>, ISourceable
 {
-    private static readonly ConstructorInfo _optionConstructor = typeof(Option<T>).GetConstructor([typeof(T)])!;
-
     private readonly Parser<T> _parser;
     public Optional(Parser<T> parser)
     {
@@ -26,7 +23,10 @@ public sealed class Optional<T> : Parser<Option<T>>, ISourceable
 
         var parsed = new ParseResult<T>();
 
+        // The text is read again when the parser fails
+        var pin = context.Pin();
         var success = _parser.Parse(context, ref parsed);
+        context.Unpin(pin);
 
         if (success)
         {
@@ -43,7 +43,6 @@ public sealed class Optional<T> : Parser<Option<T>>, ISourceable
         context.ExitParser(this);
         return true;
     }
-
 
     public SourceResult GenerateSource(SourceGenerationContext context)
     {
@@ -73,7 +72,8 @@ public sealed class Optional<T> : Parser<Option<T>>, ISourceable
         // }
         // success = true; (always succeeds)
         var innerValueName = $"innerValue{context.NextNumber()}";
-        result.Body.Add($"if ({helperName}({context.ParseContextName}, out var {innerValueName}))");
+        var success = context.PinnedCall(result, $"{helperName}({context.ParseContextName}, out var {innerValueName})");
+        result.Body.Add($"if ({success})");
         result.Body.Add("{");
         if (!context.DiscardResult)
         {

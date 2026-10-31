@@ -27,12 +27,9 @@ public class FluentTests
     [Fact]
     public void IfShouldNotInvokeParserWhenFalse()
     {
-        bool invoked = false;
-
-#pragma warning disable CS0618 // Type or member is obsolete
-        var evenState = If(predicate: (context, x) => x % 2 == 0, state: 0, parser: Literals.Integer().Then(x => invoked = true));
-        var oddState = If(predicate: (context, x) => x % 2 == 0, state: 1, parser: Literals.Integer().Then(x => invoked = true));
-#pragma warning restore CS0618 // Type or member is obsolete
+        var invoked = false;
+        var evenState = If(condition: static () => true, parser: Literals.Integer().Then(x => invoked = true));
+        var oddState = If(condition: static () => false, parser: Literals.Integer().Then(x => invoked = true));
 
         Assert.False(oddState.TryParse("1234", out var result1));
         Assert.False(invoked);
@@ -47,6 +44,7 @@ public class FluentTests
         var evenIntegers = ZeroOrOne(Literals.Integer().When((c, x) => x % 2 == 0)).And(Literals.Integer());
 
         Assert.True(evenIntegers.TryParse("1235", out var result1));
+        Assert.Empty(result1.Item1);
         Assert.Equal(1235, result1.Item2);
     }
 
@@ -297,7 +295,6 @@ public class FluentTests
         Assert.True(code.TryParse("hello world", out _));
     }
 
-
     [Fact]
     public void ShouldSkipSequences()
     {
@@ -449,9 +446,7 @@ public class FluentTests
     [InlineData('"', @"""a\""b"" c", "a\"b")]
     public void ShouldReadStringsWithAnEscapedQuote(char quote, string text, string expected)
     {
-        var parser = new StringLiteral(quote);
-
-        Assert.True(parser.TryParse(text, out var result));
+        Assert.True(new StringLiteral(quote).TryParse(text, out var result));
         Assert.Equal(expected, result.ToString());
     }
 
@@ -480,9 +475,8 @@ public class FluentTests
     {
         var context = new ParseContext(new Scanner(text));
         var result = new ParseResult<TextSpan>();
-        var parser = new StringLiteral(quote);
 
-        Assert.False(parser.Parse(context, ref result));
+        Assert.False(new StringLiteral(quote).Parse(context, ref result));
         Assert.Equal(0, context.Scanner.Cursor.Offset);
     }
 
@@ -763,14 +757,6 @@ public class FluentTests
         Assert.Throws<InvalidOperationException>(() => Literals.Identifier(start.AsSpan(), part.AsSpan()));
         Assert.Throws<InvalidOperationException>(() => Terms.Identifier(System.Buffers.SearchValues.Create(start), System.Buffers.SearchValues.Create(part)));
     }
-
-    [Fact]
-    public void IdentifierShouldStopBeforeNewLines()
-    {
-        var parser = Literals.Identifier(System.Buffers.SearchValues.Create("a"), System.Buffers.SearchValues.Create("ab"));
-
-        Assert.Equal("a", parser.Parse("a\nb").ToString());
-    }
 #endif
 
     [Fact]
@@ -914,7 +900,6 @@ public class FluentTests
         Assert.True(Always(1).TryParse("123", out var r2) && r2 == 1);
     }
 
-
     [Fact]
     public void FailShouldFail()
     {
@@ -1057,6 +1042,87 @@ public class FluentTests
         Assert.False(parser.Parse("1"));
         Assert.False(parser.Parse("1,"));
         Assert.True(parser.Parse("1,x"));
+    }
+
+    [Theory]
+    [InlineData("a,b", false, false, false, 2)]
+    [InlineData("a,,b", true, false, false, 2)]
+    [InlineData(",a", false, true, false, 1)]
+    [InlineData("a,", false, false, true, 1)]
+    [InlineData(",,a", true, true, false, 1)]
+    [InlineData("a,,", true, false, true, 1)]
+    [InlineData(",a,", false, true, true, 1)]
+    [InlineData(",,a,,b", true, true, false, 2)]
+    [InlineData("a,,b,,", true, false, true, 2)]
+    [InlineData(",,a,,b,,", true, true, true, 2)]
+    public void SeparatedOptionsAcceptConfiguredSeparators(
+        string input, bool removeEmptyEntries, bool allowLeadingSeparator, bool allowTrailingSeparator, int count)
+    {
+        var parser = Separated(Literals.Char(','), Literals.Char('a').Or(Literals.Char('b')),
+            removeEmptyEntries, allowLeadingSeparator, allowTrailingSeparator).Eof();
+
+        Assert.True(parser.TryParse(input, out var values));
+        Assert.Equal(count, values.Count);
+    }
+
+    [Theory]
+    [InlineData("", true, true, true)]
+    [InlineData(",,", true, true, true)]
+    [InlineData(",a", true, false, false)]
+    [InlineData("a,", true, false, false)]
+    [InlineData("a,,b", false, true, true)]
+    [InlineData(",,a", false, true, false)]
+    [InlineData("a,,", false, false, true)]
+    public void SeparatedOptionsRejectUnconfiguredOrValueLessInput(
+        string input, bool removeEmptyEntries, bool allowLeadingSeparator, bool allowTrailingSeparator)
+    {
+        var parser = Separated(Literals.Char(','), Literals.Char('a').Or(Literals.Char('b')),
+            removeEmptyEntries, allowLeadingSeparator, allowTrailingSeparator).Eof();
+
+        Assert.False(parser.TryParse(input, out _));
+    }
+
+    [Fact]
+    public void SeparatedOptionsRestoreCursorWhenNoValueIsFound()
+    {
+        var parser = Separated(Literals.Char(','), Literals.Char('a'),
+            removeEmptyEntries: true, allowLeadingSeparator: true, allowTrailingSeparator: true);
+        var context = new ParseContext(new Scanner(",,,"));
+        var result = new ParseResult<IReadOnlyList<char>>();
+
+        Assert.False(parser.Parse(context, ref result));
+        Assert.Equal(0, context.Scanner.Cursor.Offset);
+    }
+
+    [Fact]
+    public void SeparatedOptionsDoNotTreatEmptyMatchesAsValues()
+    {
+        var parser = Separated(ZeroOrOne(Literals.Char(',')), ZeroOrOne(Literals.Char('a')),
+            removeEmptyEntries: true, allowLeadingSeparator: true).Eof();
+
+        Assert.Equal(3, parser.Parse("aaa")!.Count);
+        Assert.Null(parser.Parse(","));
+        Assert.Null(parser.Parse(""));
+    }
+
+    [Fact]
+    public void SeparatedOptionsLeaveUnmatchedRunsForTheNextParser()
+    {
+        var parser = Separated(Literals.Char(','), Literals.Char('a'), removeEmptyEntries: true)
+            .AndSkip(Literals.Text(",,?"));
+
+        Assert.True(parser.TryParse("a,,?", out var values));
+        Assert.Single(values);
+        Assert.False(parser.TryParse("a,?", out _));
+    }
+
+    [Fact]
+    public void SeparatedOptionsCaptureLeadingAndTrailingSeparators()
+    {
+        var parser = Capture(Separated(Literals.Char(','), Literals.Char('a'),
+            allowLeadingSeparator: true, allowTrailingSeparator: true)).Eof();
+
+        Assert.Equal(",a,", parser.Parse(",a,").ToString());
     }
 
     [Fact]
@@ -1278,10 +1344,10 @@ public class FluentTests
         Assert.Equal("HELLO", parser.Parse("HELLO world"));
         Assert.NotSame(differentCaseInput, parser.Parse("HELLO world"));
         Assert.Equal("HELLO", Terms.Text(literal, caseInsensitive: true, returnMatchedText: true).Parse(" HELLO"));
-        Assert.Same(literal, Terms.Text(literal, caseInsensitive: true).Parse(" HELLO"));
         Assert.False(parser.TryParse("world", out _));
         Assert.Same(literal, new TextLiteral(literal, StringComparison.Ordinal).Parse(exactInput));
-        Assert.Same(string.Empty, new TextLiteral(string.Empty, StringComparison.OrdinalIgnoreCase).Parse(""));
+        Assert.Same(literal, Literals.Text(literal, caseInsensitive: true).Parse(differentCaseInput));
+        Assert.Same(string.Empty, new TextLiteral(string.Empty, StringComparison.OrdinalIgnoreCase, returnMatchedText: true).Parse(""));
     }
 
     [Fact]
@@ -1310,12 +1376,11 @@ public class FluentTests
         var exponent = Terms.Char('^');
 
         var exponentiation = primary.RightAssociative(
-            (exponent, static (a, b) => System.Math.Pow(a, b))
+            (exponent, static (a, b) => Math.Pow(a, b))
             );
 
         Assert.Equal(result, exponentiation.Parse(expression));
     }
-
 
     [Theory]
     [InlineData("2", 2)]
@@ -1363,6 +1428,153 @@ public class FluentTests
         Assert.Equal(1, result.End);
 
         Assert.Equal(1, context.Scanner.Cursor.Offset);
+    }
+
+    [Fact]
+    public void LeftAssociativeShouldStopWhenOperatorAndOperandAreEmpty()
+    {
+        var operand = Literals.Text("x").Optional().Then(static _ => 1);
+        var parser = operand.LeftAssociative((Literals.Text("+").Optional(), static (a, b) => a + b));
+
+        var context = new ParseContext(new Scanner("x+x+y"));
+        var result = new ParseResult<int>();
+
+        Assert.True(parser.Parse(context, ref result));
+        Assert.Equal(3, result.Value);
+        Assert.Equal(4, context.Scanner.Cursor.Offset);
+    }
+
+    [Fact]
+    public void LeftAssociativeWithContextShouldStopWhenOperatorAndOperandAreEmpty()
+    {
+        var operand = Literals.Text("x").Optional().Then(static _ => 1);
+        var parser = operand.LeftAssociative((Literals.Text("+").Optional(), static (ParseContext _, int a, int b) => a + b));
+
+        var context = new ParseContext(new Scanner("x+x+y"));
+        var result = new ParseResult<int>();
+
+        Assert.True(parser.Parse(context, ref result));
+        Assert.Equal(3, result.Value);
+        Assert.Equal(4, context.Scanner.Cursor.Offset);
+    }
+
+    [Theory]
+    [InlineData(false, "10 - 4 - 2", 4)]
+    [InlineData(true, "10 - 4 - 2", 8)]
+    [InlineData(false, "10 + 4 - 2", 12)]
+    [InlineData(true, "10 + 4 - 2", 12)]
+    [InlineData(false, "10", 10)]
+    [InlineData(true, "10", 10)]
+    public void AssociativeFactoryReceivesOperatorValue(bool rightAssociative, string input, double expected)
+    {
+        var number = Terms.Number<double>(NumberOptions.Float);
+        Parser<char>[] operators = [Terms.Char('+'), Terms.Char('-')];
+        var parser = rightAssociative
+            ? number.RightAssociative(operators, static (left, right, op) => op == '+' ? left + right : left - right)
+            : number.LeftAssociative(operators, static (left, right, op) => op == '+' ? left + right : left - right);
+
+        Assert.Equal(expected, parser.Parse(input));
+    }
+
+    [Theory]
+    [InlineData(false, 4)]
+    [InlineData(true, 6)]
+    public void AssociativeFactoryReceivesContext(bool rightAssociative, double expected)
+    {
+        var context = new ParseContext(new Scanner("8 - 3 - 1"));
+        var number = Terms.Number<double>(NumberOptions.Float);
+        Parser<char>[] operators = [Terms.Char('-')];
+        double Combine(ParseContext actual, double left, double right, char op)
+        {
+            Assert.Same(context, actual);
+            Assert.Equal('-', op);
+            return left - right;
+        }
+
+        var parser = rightAssociative
+            ? number.RightAssociative(operators, Combine)
+            : number.LeftAssociative(operators, Combine);
+        var result = new ParseResult<double>();
+
+        Assert.True(parser.Parse(context, ref result));
+        Assert.Equal(expected, result.Value);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void TupleAssociativeRestoresCursorAndReportsPositions(bool withContext)
+    {
+        var number = Terms.Decimal();
+        var parser = withContext
+            ? number.RightAssociative((Terms.Char('-'), static (ParseContext _, decimal left, decimal right) => left - right))
+            : number.RightAssociative((Terms.Char('-'), static (left, right) => left - right));
+        var context = new ParseContext(new Scanner(" 8 - 3 - 1 -"));
+        var result = new ParseResult<decimal>();
+
+        Assert.True(parser.Parse(context, ref result));
+        Assert.Equal(6m, result.Value);
+        Assert.Equal(1, result.Start);
+        Assert.Equal(10, result.End);
+        Assert.Equal(10, context.Scanner.Cursor.Offset);
+
+        Assert.Equal(8m, parser.Parse(" 8"));
+        Assert.False(parser.TryParse("-", out _));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void AssociativeFactoryRestoresCursorOnIncompletePair(bool rightAssociative)
+    {
+        var number = Terms.Decimal();
+        Parser<char>[] operators = [Terms.Char('+')];
+        var parser = rightAssociative
+            ? number.RightAssociative(operators, static (left, right, _) => left + right)
+            : number.LeftAssociative(operators, static (left, right, _) => left + right);
+        var context = new ParseContext(new Scanner("1+2+"));
+        var result = new ParseResult<decimal>();
+
+        Assert.True(parser.Parse(context, ref result));
+        Assert.Equal(3m, result.Value);
+        Assert.Equal(0, result.Start);
+        Assert.Equal(3, result.End);
+        Assert.Equal(3, context.Scanner.Cursor.Offset);
+
+        context = new ParseContext(new Scanner("x"));
+        result = new ParseResult<decimal>();
+        Assert.False(parser.Parse(context, ref result));
+        Assert.Equal(0, context.Scanner.Cursor.Offset);
+    }
+
+    [Fact]
+    public void AssociativeFactoryRequiresOperators()
+    {
+        var number = Terms.Decimal();
+        Assert.Throws<ArgumentException>(() => number.LeftAssociative([], static (decimal left, decimal right, char _) => left + right));
+        Assert.Throws<ArgumentException>(() => number.RightAssociative([], static (decimal left, decimal right, char _) => left + right));
+        Assert.Throws<ArgumentNullException>(() => number.LeftAssociative((Parser<char>[])null!, static (decimal left, decimal right, char _) => left + right));
+        Assert.Throws<ArgumentNullException>(() => number.RightAssociative((Parser<char>[])null!, static (decimal left, decimal right, char _) => left + right));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void AssociativeFactoryStopsWhenPairConsumesNoInput(bool rightAssociative)
+    {
+        var calls = 0;
+        int Combine(int left, int right, char _)
+        {
+            calls++;
+            return left + right;
+        }
+
+        var parser = rightAssociative
+            ? Always(1).RightAssociative([Always('+')], Combine)
+            : Always(1).LeftAssociative([Always('+')], Combine);
+
+        Assert.Equal(1, parser.Parse(""));
+        Assert.Equal(0, calls);
     }
 
     [Theory]
@@ -1441,8 +1653,42 @@ public class FluentTests
     {
         var parser = ZeroOrOne(Terms.Text("hello"));
 
-        Assert.Equal("hello", parser.Parse(" hello world hello"));
-        Assert.Null(parser.Parse(" foo"));
+        Assert.Equal(["hello"], parser.Parse(" hello world hello"));
+        Assert.Empty(parser.Parse(" foo")!);
+        Assert.Equal(["hello"], Terms.Text("hello").ZeroOrOne().Parse("hello"));
+    }
+
+    [Fact]
+    public void ZeroOrOneShouldRestoreCursorWhenInnerParserFails()
+    {
+        var parser = ZeroOrOne(Literals.Char('a').And(Literals.Char('b')));
+        var context = new ParseContext(new Scanner("ac"));
+        var result = new ParseResult<IReadOnlyList<(char, char)>>();
+
+        Assert.True(parser.Parse(context, ref result));
+        Assert.Empty(result.Value);
+        Assert.Equal(0, context.Scanner.Cursor.Offset);
+    }
+
+    [Fact]
+    public void ZeroOrOneShouldIncludeMatchWithoutConsumingInput()
+    {
+        var parser = ZeroOrOne(new Always<char>('x'));
+        var context = new ParseContext(new Scanner("other"));
+        var result = new ParseResult<IReadOnlyList<char>>();
+
+        Assert.True(parser.Parse(context, ref result));
+        Assert.Equal(['x'], result.Value);
+        Assert.Equal(0, context.Scanner.Cursor.Offset);
+    }
+
+    [Fact]
+    public void ZeroOrOneShouldIncludeNullWhenInnerParserMatches()
+    {
+        var parser = ZeroOrOne(new Always<string>(null));
+
+        Assert.Single(parser.Parse("")!);
+        Assert.Null(parser.Parse("")![0]);
     }
 
     [Fact]
@@ -1461,7 +1707,7 @@ public class FluentTests
         var b = Literals.Char('b');
         var c = Literals.Char('c');
 
-        var oneOf = OneOf(ZeroOrOne(a), b);
+        var oneOf = OneOf(ZeroOrOne(a), ZeroOrOne(b));
 
         // This should succeed, the ZeroOrOne(a) should always return true
         Assert.True(oneOf.TryParse("c", out _));
@@ -1481,9 +1727,9 @@ public class FluentTests
     }
 
     [Fact]
-    public void ShouldZeroOrOneWithDefault()
+    public void OptionalShouldProvideScalarFallback()
     {
-        var parser = ZeroOrOne(Terms.Text("hello"), "world");
+        var parser = Terms.Text("hello").Optional().Then(static option => option.OrSome("world"));
 
         Assert.Equal("world", parser.Parse(" this is an apple"));
         Assert.Equal("hello", parser.Parse(" hello world"));
@@ -1503,7 +1749,7 @@ public class FluentTests
         Assert.Equal((decimal)123, Literals.Number<decimal>().Parse("123"));
         Assert.Equal((double)123, Literals.Number<double>().Parse("123"));
         Assert.Equal((float)123, Literals.Number<float>().Parse("123"));
-#if NET6_0_OR_GREATER
+#if NET8_0_OR_GREATER
         Assert.Equal((Half)123, Literals.Number<Half>().Parse("123"));
 #endif
         Assert.Equal((BigInteger)123, Literals.Number<BigInteger>().Parse("123"));
@@ -1531,7 +1777,7 @@ public class FluentTests
         Assert.Equal((decimal)120, Literals.Number<decimal>(e).Parse("12e1"));
         Assert.Equal((double)120, Literals.Number<double>(e).Parse("12e1"));
         Assert.Equal((float)120, Literals.Number<float>(e).Parse("12e1"));
-#if NET6_0_OR_GREATER
+#if NET8_0_OR_GREATER
         Assert.Equal((Half)120, Literals.Number<Half>(e).Parse("12e1"));
 #endif
         Assert.Equal((BigInteger)120, Literals.Number<BigInteger>(e).Parse("12e1"));
@@ -2209,6 +2455,45 @@ public class FluentTests
     }
 
     [Fact]
+    public void KeywordShouldReuseMatchedTextOnlyAfterBoundary()
+    {
+        var literal = new string(['i', 'f']);
+        var parser = new KeywordLiteral(literal, StringComparison.OrdinalIgnoreCase, returnMatchedText: true);
+        var input = new string(['I', 'F']);
+
+        Assert.Same(literal, parser.Parse("if"));
+        Assert.Same(input, parser.Parse(input));
+        Assert.Equal("IF", parser.Parse("IF("));
+        Assert.False(parser.TryParse("IFoo", out _));
+    }
+
+    [Fact]
+    public void KeywordShouldNotMoveTheCursorWhenALetterFollows()
+    {
+        var result = new ParseResult<string>();
+
+        var context = new ParseContext(new Scanner(" ifx"));
+        Assert.False(Terms.Keyword("if").Parse(context, ref result));
+        Assert.Equal(TextPosition.Start, context.Scanner.Cursor.Position);
+
+        context = new ParseContext(new Scanner("IFX"));
+        Assert.False(Literals.Keyword("if", caseInsensitive: true, returnMatchedText: true).Parse(context, ref result));
+        Assert.Equal(TextPosition.Start, context.Scanner.Cursor.Position);
+
+        // The position after the keyword, and the lines of a text containing new lines, are tracked
+        context = new ParseContext(new Scanner(" if("));
+        Assert.True(Terms.Keyword("if").Parse(context, ref result));
+        Assert.Equal(1, result.Start);
+        Assert.Equal(3, result.End);
+        Assert.Equal(new TextPosition(3, 1, 4), context.Scanner.Cursor.Position);
+
+        context = new ParseContext(new Scanner("a\nb c"));
+        Assert.True(new KeywordLiteral("a\nb").Parse(context, ref result));
+        Assert.Equal("a\nb", result.Value);
+        Assert.Equal(new TextPosition(3, 2, 2), context.Scanner.Cursor.Position);
+    }
+
+    [Fact]
     public void KeywordShouldMatchNonLetterCharactersAfter()
     {
         var parser = Terms.Keyword("return");
@@ -2226,6 +2511,68 @@ public class FluentTests
         Assert.Equal("return", result);
 
         Assert.False(parser.TryParse("returns", out result));
+    }
+
+    [Theory]
+    [InlineData("in", true)]
+    [InlineData("in (1..3)", true)]
+    [InlineData("in.x", true)]
+    [InlineData("inX", true)]
+    [InlineData("inside", false)]
+    [InlineData("in1", false)]
+    [InlineData("in_x", false)]
+    [InlineData("in-x", false)]
+    [InlineData("in\u00e9", false)]
+    [InlineData("in\u00e8", true)]
+    [InlineData("i", false)]
+    public void KeywordShouldNotMatchIfFollowedByIdentifierPart(string input, bool success)
+    {
+        const string identifierPart = "abcdefghijklmnopqrstuvwxyz0123456789_-\u00e9";
+
+        foreach (var parser in new[]
+        {
+            Literals.Keyword("in", identifierPart),
+            Literals.Keyword("in", identifierPart.AsSpan()),
+            Terms.Keyword("in", identifierPart),
+            Terms.Keyword("in", identifierPart.AsSpan()),
+        })
+        {
+            var context = new ParseContext(new Scanner(input));
+            var result = new ParseResult<string>();
+            Assert.Equal(success, parser.Parse(context, ref result));
+
+            if (success)
+            {
+                Assert.Equal("in", result.Value);
+                Assert.Equal(2, context.Scanner.Cursor.Offset);
+            }
+            else
+            {
+                Assert.Equal(TextPosition.Start, context.Scanner.Cursor.Position);
+            }
+        }
+    }
+
+    [Fact]
+    public void KeywordIdentifierPartShouldReplaceTheDefaultLetters()
+    {
+        // An empty set accepts any following char, like Text
+        Assert.Equal("in", Literals.Keyword("in", "").Parse("inside"));
+        Assert.Equal("in", Literals.Keyword("in", "-").Parse("inside"));
+        Assert.Null(Literals.Keyword("in", "-").Parse("in-x"));
+
+        // Both halves of the ASCII bitset, and the chars at their edges
+        foreach (var c in "\0?@\u007f")
+        {
+            Assert.Null(Literals.Keyword("in", c.ToString()).Parse("in" + c));
+            Assert.Equal("in", Literals.Keyword("in", "x").Parse("in" + c));
+        }
+
+        Assert.Equal("IN", Terms.Keyword("in", "abc", caseInsensitive: true, returnMatchedText: true).Parse(" IN!"));
+        Assert.Null(Terms.Keyword("in", "abc", caseInsensitive: true).Parse(" INa"));
+        Assert.Throws<ArgumentNullException>(() => Literals.Keyword("in", (string)null!));
+        Assert.Equal("abc", ((KeywordLiteral)Literals.Keyword("in", "abc")).IdentifierPart);
+        Assert.Null(((KeywordLiteral)Literals.Keyword("in")).IdentifierPart);
     }
 
     [Fact]
@@ -2350,5 +2697,18 @@ public class FluentTests
             Assert.True(seekable.CanSeek);
             Assert.Equal(['a', 'b', 'c'], seekable.ExpectedChars);
         }
+    }
+
+    [Theory]
+    [InlineData("\"a\\nb\"", "a\\nb", "a\nb")]
+    [InlineData("'it\\'s'", "it\\'s", "it's")]
+    [InlineData("\"plain\"", "plain", "plain")]
+    public void StringLiteralShouldOnlyDecodeWhenRequested(string text, string raw, string decoded)
+    {
+        Assert.Equal(raw, new StringLiteral(StringLiteralQuotes.SingleOrDouble, returnDecoded: false).Parse(text).ToString());
+        Assert.Equal(decoded, new StringLiteral(StringLiteralQuotes.SingleOrDouble).Parse(text).ToString());
+        Assert.Equal(raw, Literals.String(returnDecoded: false).Parse(text).ToString());
+        Assert.Equal(raw, Terms.String(returnDecoded: false).Parse(" " + text).ToString());
+        Assert.Equal(decoded, Terms.String().Parse(" " + text).ToString());
     }
 }

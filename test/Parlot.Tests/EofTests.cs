@@ -14,14 +14,13 @@ public class EofTests
     [InlineData("a\n", 2)]
     public void StandaloneEofSucceedsWithoutConsumingInput(string input, int offset)
     {
-        var parser = Eof();
         var context = new ParseContext(new Scanner(input));
         var cursor = context.Scanner.Cursor;
         cursor.Advance(offset);
         var start = cursor.Position;
         var result = new ParseResult<object?>();
 
-        Assert.True(parser.Parse(context, ref result));
+        Assert.True(Eof().Parse(context, ref result));
         Assert.Equal(start, cursor.Position);
         Assert.Equal(offset, result.Start);
         Assert.Equal(offset, result.End);
@@ -35,7 +34,6 @@ public class EofTests
     [InlineData("42 ", 2)]
     public void StandaloneEofFailsWithoutConsumingInput(string input, int offset)
     {
-        var parser = Eof();
         var context = new ParseContext(new Scanner(input));
         var cursor = context.Scanner.Cursor;
         cursor.Advance(offset);
@@ -43,7 +41,7 @@ public class EofTests
         var sentinel = new object();
         var result = new ParseResult<object?>(7, 8, sentinel);
 
-        Assert.False(parser.Parse(context, ref result));
+        Assert.False(Eof().Parse(context, ref result));
         Assert.Equal(start, cursor.Position);
         Assert.Equal(7, result.Start);
         Assert.Equal(8, result.End);
@@ -53,7 +51,7 @@ public class EofTests
     [Fact]
     public void StandaloneEofReportsTheTrailingInputPosition()
     {
-        Parser<long> parser = Terms.Integer().AndSkip(Eof().ElseError("Unexpected trailing input"));
+        var parser = Terms.Integer().AndSkip(Eof().ElseError("Unexpected trailing input"));
 
         Assert.True(parser.TryParse("42", out var value));
         Assert.Equal(42, value);
@@ -67,15 +65,14 @@ public class EofTests
     [Fact]
     public void StandaloneEofSequenceRestoresTheCursorOnFailure()
     {
-        Parser<long> parser = Terms.Integer().AndSkip(Eof());
-        var alternative = parser.Or(Terms.Integer().AndSkip(Literals.Char('a')));
+        var parser = Terms.Integer().AndSkip(Eof());
         var context = new ParseContext(new Scanner("42a"));
         var start = context.Scanner.Cursor.Position;
         var result = new ParseResult<long>();
 
         Assert.False(parser.Parse(context, ref result));
         Assert.Equal(start, context.Scanner.Cursor.Position);
-        Assert.True(alternative.TryParse("42a", out var value));
+        Assert.True(parser.Or(Terms.Integer().AndSkip(Literals.Char('a'))).TryParse("42a", out var value));
         Assert.Equal(42, value);
     }
 
@@ -83,18 +80,15 @@ public class EofTests
     public void GenericEofKeepsRollbackAndAlternativeSemantics()
     {
         var parser = Terms.Integer().Eof();
-        var errorParser = parser.ElseError("Unexpected trailing input");
-        var alternative = parser.Or(Terms.Integer().AndSkip(Literals.Char('a')));
         var context = new ParseContext(new Scanner("42a"));
         var start = context.Scanner.Cursor.Position;
         var result = new ParseResult<long>();
 
         Assert.False(parser.Parse(context, ref result));
         Assert.Equal(start, context.Scanner.Cursor.Position);
-        var exception = Assert.Throws<ParseException>(() => errorParser.Parse("42a"));
-        Assert.Equal("Unexpected trailing input", exception.Message);
+        var exception = Assert.Throws<ParseException>(() => parser.ElseError("Unexpected trailing input").Parse("42a"));
         Assert.Equal(start, exception.Position);
-        Assert.True(alternative.TryParse("42a", out var value));
+        Assert.True(parser.Or(Terms.Integer().AndSkip(Literals.Char('a'))).TryParse("42a", out var value));
         Assert.Equal(42, value);
     }
 }

@@ -4,7 +4,7 @@ using System;
 
 namespace Parlot.Fluent;
 
-public sealed class Capture<T> : Parser<TextSpan>, ISeekable, ISourceable
+public sealed class Capture<T> : Parser<TextSpan>, ISeekablePrefixes, ISourceable
 {
     private readonly Parser<T> _parser;
 
@@ -14,6 +14,7 @@ public sealed class Capture<T> : Parser<TextSpan>, ISeekable, ISourceable
 
     public bool SkipWhitespace { get; }
 
+    string[]? ISeekablePrefixes.ExpectedPrefixes => SeekableHints.Prefixes(_parser);
 
     public Capture(Parser<T> parser)
     {
@@ -35,13 +36,17 @@ public sealed class Capture<T> : Parser<TextSpan>, ISeekable, ISourceable
 
         ParseResult<T> _ = new();
 
-        // Did parser succeed.
-        if (_parser.Parse(context, ref _))
+        // The captured text must still be buffered once the parser is done
+        var pin = context.Pin();
+        var success = _parser.Parse(context, ref _);
+        context.Unpin(pin);
+
+        if (success)
         {
             var end = context.Scanner.Cursor.Offset;
             var length = end - start.Offset;
 
-            result.Set(start.Offset, end, new TextSpan(context.Scanner.Buffer, start.Offset, length));
+            result.Set(start.Offset, end, context.Scanner.Cursor.CreateSpan(start.Offset, length));
 
             context.ExitParser(this);
             return true;
@@ -50,7 +55,6 @@ public sealed class Capture<T> : Parser<TextSpan>, ISeekable, ISourceable
         context.ExitParser(this);
         return false;
     }
-
 
     public SourceResult GenerateSource(SourceGenerationContext context)
     {
@@ -65,23 +69,17 @@ public sealed class Capture<T> : Parser<TextSpan>, ISeekable, ISourceable
         var cursorName = context.CursorName;
         var scannerName = context.ScannerName;
         var innerValueTypeName = SourceGenerationContext.GetTypeName(typeof(T));
-        
+
         var startName = $"start{context.NextNumber()}";
         var endName = $"end{context.NextNumber()}";
         var lengthName = $"length{context.NextNumber()}";
-        
+
         result.Body.Add($"var {startName} = {cursorName}.Position;");
 
-        // Set DiscardResult to true for the inner parser, as we only care about whether it succeeds
-        var ignoreResults = context.DiscardResult;
-        context.DiscardResult = true;
-
         // Use helper instead of inlining
-        var helperName = context.Helpers
+        var helperName = context.WithDiscardResult(true, () => context.Helpers
             .GetOrCreate(sourceable, $"{context.MethodNamePrefix}_Capture", innerValueTypeName, () => sourceable.GenerateSource(context))
-            .MethodName;
-
-        context.DiscardResult = ignoreResults;
+            .MethodName);
 
         // if (Helper(context, out _))
         // {
@@ -90,11 +88,12 @@ public sealed class Capture<T> : Parser<TextSpan>, ISeekable, ISourceable
         //     value = new TextSpan(scanner.Buffer, start.Offset, length);
         //     success = true;
         // }
-        result.Body.Add($"if ({helperName}({context.ParseContextName}, out _))");
+        var success = context.PinnedCall(result, $"{helperName}({context.ParseContextName}, out _)");
+        result.Body.Add($"if ({success})");
         result.Body.Add("{");
         result.Body.Add($"    var {endName} = {cursorName}.Offset;");
         result.Body.Add($"    var {lengthName} = {endName} - {startName}.Offset;");
-        result.Body.Add($"    {result.ValueVariable} = new global::Parlot.TextSpan({scannerName}.Buffer, {startName}.Offset, {lengthName});");
+        result.Body.Add($"    {result.ValueVariable} = {cursorName}.CreateSpan({startName}.Offset, {lengthName});");
         result.Body.Add($"    {result.SuccessVariable} = true;");
         result.Body.Add("}");
 

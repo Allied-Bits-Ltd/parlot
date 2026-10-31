@@ -1,7 +1,6 @@
 using System.Collections.Generic;
 using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Configs;
-using BenchmarkDotNet.Jobs;
 using Parlot.Fluent;
 using static Parlot.Fluent.Parsers;
 
@@ -14,7 +13,7 @@ namespace Parlot.Benchmarks;
 public class SimpleParsersBenchmarks
 {
     // ==================== Text ====================
-    
+
     private static readonly Parser<string> _textFluent = Terms.Text("hello");
 
     private const string TextInput = "hello world";
@@ -29,7 +28,56 @@ public class SimpleParsersBenchmarks
     [Benchmark, BenchmarkCategory("Text")]
     public string Text_Generated()
     {
-        GeneratedParsers.TextParser().TryParse(TextInput, out var result);
+        GeneratedParsers.TryParseText(TextInput, out var result);
+        return result;
+    }
+
+    private static readonly Parser<string> _matchedTextFluent =
+        Literals.Text("hello", caseInsensitive: true, returnMatchedText: true);
+
+    private const string ExactTextInput = "hello";
+    private const string DifferentCaseTextInput = "HELLO";
+    private const string SlicedTextInput = "HELLO world";
+
+    [Benchmark(Baseline = true), BenchmarkCategory("MatchedTextExact")]
+    public string MatchedTextExact_Fluent()
+    {
+        _matchedTextFluent.TryParse(ExactTextInput, out var result);
+        return result;
+    }
+
+    [Benchmark, BenchmarkCategory("MatchedTextExact")]
+    public string MatchedTextExact_Generated()
+    {
+        GeneratedParsers.TryParseMatchedText(ExactTextInput, out var result);
+        return result;
+    }
+
+    [Benchmark(Baseline = true), BenchmarkCategory("MatchedTextDifferentCase")]
+    public string MatchedTextDifferentCase_Fluent()
+    {
+        _matchedTextFluent.TryParse(DifferentCaseTextInput, out var result);
+        return result;
+    }
+
+    [Benchmark, BenchmarkCategory("MatchedTextDifferentCase")]
+    public string MatchedTextDifferentCase_Generated()
+    {
+        GeneratedParsers.TryParseMatchedText(DifferentCaseTextInput, out var result);
+        return result;
+    }
+
+    [Benchmark(Baseline = true), BenchmarkCategory("MatchedTextSliced")]
+    public string MatchedTextSliced_Fluent()
+    {
+        _matchedTextFluent.TryParse(SlicedTextInput, out var result);
+        return result;
+    }
+
+    [Benchmark, BenchmarkCategory("MatchedTextSliced")]
+    public string MatchedTextSliced_Generated()
+    {
+        GeneratedParsers.TryParseMatchedText(SlicedTextInput, out var result);
         return result;
     }
 
@@ -49,7 +97,7 @@ public class SimpleParsersBenchmarks
     [Benchmark, BenchmarkCategory("Decimal")]
     public decimal Decimal_Generated()
     {
-        GeneratedParsers.DecimalParser().TryParse(DecimalInput, out var result);
+        GeneratedParsers.TryParseDecimal(DecimalInput, out var result);
         return result;
     }
 
@@ -69,7 +117,7 @@ public class SimpleParsersBenchmarks
     [Benchmark, BenchmarkCategory("Integer")]
     public long Integer_Generated()
     {
-        GeneratedParsers.IntegerParser().TryParse(IntegerInput, out var result);
+        GeneratedParsers.TryParseInteger(IntegerInput, out var result);
         return result;
     }
 
@@ -89,7 +137,7 @@ public class SimpleParsersBenchmarks
     [Benchmark, BenchmarkCategory("OneOf")]
     public string OneOf_Generated()
     {
-        GeneratedParsers.OneOfParser().TryParse(OneOfInput, out var result);
+        GeneratedParsers.TryParseOneOf(OneOfInput, out var result);
         return result;
     }
 
@@ -107,7 +155,7 @@ public class SimpleParsersBenchmarks
     [Benchmark, BenchmarkCategory("LiteralOneOf")]
     public string LiteralOneOf_Generated()
     {
-        GeneratedParsers.LiteralOneOfParser().TryParse(OneOfInput, out var result);
+        GeneratedParsers.TryParseLiteralOneOf(OneOfInput, out var result);
         return result;
     }
 
@@ -127,7 +175,7 @@ public class SimpleParsersBenchmarks
     [Benchmark, BenchmarkCategory("And")]
     public (string, decimal) And_Generated()
     {
-        GeneratedParsers.AndParser().TryParse(AndInput, out var result);
+        GeneratedParsers.TryParseAnd(AndInput, out var result);
         return result;
     }
 
@@ -147,7 +195,28 @@ public class SimpleParsersBenchmarks
     [Benchmark, BenchmarkCategory("ZeroOrMany")]
     public IReadOnlyList<decimal> ZeroOrMany_Generated()
     {
-        GeneratedParsers.ZeroOrManyParser().TryParse(ZeroOrManyInput, out var result);
+        GeneratedParsers.TryParseZeroOrMany(ZeroOrManyInput, out var result);
+        return result;
+    }
+
+    // ==================== ZeroOrOne ====================
+
+    private static readonly Parser<IReadOnlyList<decimal>> _zeroOrOneFluent = ZeroOrOne(Terms.Decimal());
+
+    [Params("123", "word")]
+    public string ZeroOrOneInput { get; set; } = "123";
+
+    [Benchmark(Baseline = true), BenchmarkCategory("ZeroOrOne")]
+    public IReadOnlyList<decimal> ZeroOrOne_Fluent()
+    {
+        _zeroOrOneFluent.TryParse(ZeroOrOneInput, out var result);
+        return result;
+    }
+
+    [Benchmark, BenchmarkCategory("ZeroOrOne")]
+    public IReadOnlyList<decimal> ZeroOrOne_Generated()
+    {
+        GeneratedParsers.TryParseZeroOrOne(ZeroOrOneInput, out var result);
         return result;
     }
 
@@ -167,7 +236,7 @@ public class SimpleParsersBenchmarks
     [Benchmark, BenchmarkCategory("SkipWhiteSpace")]
     public decimal SkipWhiteSpace_Generated()
     {
-        GeneratedParsers.SkipWhiteSpaceParser().TryParse(SkipWhiteSpaceInput, out var result);
+        GeneratedParsers.TryParseSkipWhiteSpace(SkipWhiteSpaceInput, out var result);
         return result;
     }
 }

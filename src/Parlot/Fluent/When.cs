@@ -1,9 +1,6 @@
 using Parlot.Rewriting;
 using Parlot.SourceGeneration;
 using System;
-#if NET
-using System.Linq;
-#endif
 
 namespace Parlot.Fluent;
 
@@ -11,7 +8,7 @@ namespace Parlot.Fluent;
 /// Ensure the given parser is valid based on a condition, and backtracks if not.
 /// </summary>
 /// <typeparam name="T">The output parser type.</typeparam>
-public sealed class When<T> : Parser<T>, ISeekable, ISourceable
+public sealed class When<T> : Parser<T>, ISeekablePrefixes, ISourceable
 {
     private readonly Func<ParseContext, T, bool> _action;
     private readonly Parser<T> _parser;
@@ -47,6 +44,8 @@ public sealed class When<T> : Parser<T>, ISeekable, ISourceable
 
     public bool SkipWhitespace { get; private set; }
 
+    string[]? ISeekablePrefixes.ExpectedPrefixes => SeekableHints.Prefixes(_parser);
+
     public override bool Parse(ParseContext context, ref ParseResult<T> result)
     {
         context.EnterParser(this);
@@ -63,7 +62,6 @@ public sealed class When<T> : Parser<T>, ISeekable, ISourceable
         context.ExitParser(this);
         return valid;
     }
-
 
     public SourceResult GenerateSource(SourceGenerationContext context)
     {
@@ -82,9 +80,9 @@ public sealed class When<T> : Parser<T>, ISeekable, ISourceable
         result.Body.Add($"var {startName} = {cursorName}.Position;");
 
         // Use helper instead of inlining
-        var helperName = context.Helpers
+        var helperName = context.WithDiscardResult(false, () => context.Helpers
             .GetOrCreate(sourceable, $"{context.MethodNamePrefix}_When", valueTypeName, () => sourceable.GenerateSource(context))
-            .MethodName;
+            .MethodName);
 
         // Register the action lambda
         var lambdaId = context.RegisterLambda(_action);

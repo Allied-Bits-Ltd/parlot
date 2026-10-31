@@ -53,62 +53,45 @@ internal sealed class SearchValuesCharLiteral : Parser<TextSpan>, ISeekable, ISo
 
     public override bool Parse(ParseContext context, ref ParseResult<TextSpan> result)
     {
+        if (context.IsCompacting)
+        {
+            return context.ParseToken(this, ref result);
+        }
+
         context.EnterParser(this);
 
-        if (ParseSpan(context.Scanner.Cursor, _searchValues, _minSize, _maxSize, _negate, _hasNewLine, out var span))
-        {
-            result.Set(span.Offset, span.Offset + span.Length, span);
-
-            context.ExitParser(this);
-            return true;
-        }
-
-        context.ExitParser(this);
-        return false;
-    }
-
-    private static bool ParseSpan(Cursor cursor, SearchValues<char> searchValues, int minSize, int maxSize, bool negate, bool hasNewLine, out TextSpan span)
-    {
-        var cursorSpan = cursor.Span;
-
-        if (minSize > cursorSpan.Length)
-        {
-            span = default;
-            return false;
-        }
+        var cursor = context.Scanner.Cursor;
+        var span = cursor.Span;
 
         // Only the chars that can be taken are scanned
-        if (maxSize > 0 && cursorSpan.Length > maxSize)
+        if (_maxSize > 0 && span.Length > _maxSize)
         {
-            cursorSpan = cursorSpan.Slice(0, maxSize);
+            span = span.Slice(0, _maxSize);
         }
 
         // First char not matching the searched values
-        var index = negate ? cursorSpan.IndexOfAny(searchValues) : cursorSpan.IndexOfAnyExcept(searchValues);
+        var index = _negate ? span.IndexOfAny(_searchValues) : span.IndexOfAnyExcept(_searchValues);
 
-        int size;
+        // If index == -1 the whole input is a match
+        var size = index == -1 ? span.Length : index;
 
-        if (index != -1)
+        // Too small?
+        if (size < _minSize)
         {
-            // Too small?
-            if (index < minSize)
+            if (index == -1)
             {
-                span = default;
-                return false;
+                // More matching chars could follow the end of the buffer
+                cursor.MarkHitEnd();
             }
 
-            size = index;
-        }
-        else
-        {
-            // If index == -1 the whole input is a match
-            size = cursorSpan.Length;
+            context.ExitParser(this);
+            return false;
         }
 
         var start = cursor.Offset;
 
         // The line and column only need to be tracked char by char when there are new lines
-        if (hasNewLine)
+        if (_hasNewLine)
         {
             cursor.Advance(size);
         }
@@ -117,7 +100,9 @@ internal sealed class SearchValuesCharLiteral : Parser<TextSpan>, ISeekable, ISo
             cursor.AdvanceNoNewLines(size);
         }
 
-        span = new TextSpan(cursor.Buffer, start, size);
+        result.Set(start, start + size, cursor.CreateSpan(start, size));
+
+        context.ExitParser(this);
         return true;
     }
 
@@ -126,6 +111,11 @@ internal sealed class SearchValuesCharLiteral : Parser<TextSpan>, ISeekable, ISo
     public SourceResult GenerateSource(SourceGenerationContext context)
     {
         ThrowHelper.ThrowIfNull(context, nameof(context));
+
+        if (context.IsCompacting)
+        {
+            return context.GenerateToken(this, typeof(TextSpan), () => GenerateSource(context));
+        }
 
         // We can only generate source if we have the original values string
         if (_valuesString == null)
@@ -218,12 +208,13 @@ internal sealed class SearchValuesCharLiteral : Parser<TextSpan>, ISeekable, ISo
         // Common code for both paths
         result.Body.Add($"if ({sizeVar} < {_minSize})");
         result.Body.Add("{");
+        result.Body.Add($"    if ({sizeVar} == {spanVar}.Length) {cursorName}.MarkHitEnd();");
         result.Body.Add($"    {result.ValueVariable} = default;");
         result.Body.Add("    return false;");
         result.Body.Add("}");
 
         result.Body.Add($"{cursorName}.Advance({sizeVar});");
-        result.Body.Add($"{result.ValueVariable} = new Parlot.TextSpan({scannerName}.Buffer, {startVar}, {sizeVar});");
+        result.Body.Add($"{result.ValueVariable} = {context.CursorName}.CreateSpan({startVar}, {sizeVar});");
         result.Body.Add("return true;");
 
         return result;

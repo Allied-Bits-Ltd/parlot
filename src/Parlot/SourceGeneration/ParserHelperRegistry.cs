@@ -9,10 +9,23 @@ namespace Parlot.SourceGeneration;
 /// </summary>
 public sealed class ParserHelperRegistry
 {
-    private readonly Dictionary<object, HelperEntry> _helpers = new();
+    private readonly Dictionary<(object Parser, bool DiscardResult, bool IsCompacting), HelperEntry> _helpers = new();
+    private readonly SourceGenerationContext? _context;
     private int _nextId;
 
-#if AOT_COMPILATION
+    /// <summary>
+    /// Creates a registry for value-producing parser helpers.
+    /// </summary>
+    public ParserHelperRegistry()
+    {
+    }
+
+    internal ParserHelperRegistry(SourceGenerationContext context)
+    {
+        _context = context;
+    }
+
+#if NET8_0_OR_GREATER
     [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2075", Justification = "Only used to read the optional public Name property; null is used when it is trimmed.")]
 #endif
     public (string MethodName, string ValueTypeName, SourceResult Result, string? ParserName) GetOrCreate(
@@ -21,11 +34,12 @@ public sealed class ParserHelperRegistry
         string valueTypeName,
         Func<SourceResult> resultFactory)
     {
-        if (!_helpers.TryGetValue(parser, out var entry))
+        var key = (parser, _context?.DiscardResult ?? false, _context?.IsCompacting ?? false);
+        if (!_helpers.TryGetValue(key, out var entry))
         {
             var methodName = suggestedName + "_" + _nextId++;
             var result = resultFactory();
-            
+
             // Try to get the parser's Name property via reflection
             string? parserName = null;
             var nameProp = parser.GetType().GetProperty("Name");
@@ -33,9 +47,9 @@ public sealed class ParserHelperRegistry
             {
                 parserName = nameProp.GetValue(parser) as string;
             }
-            
+
             entry = new HelperEntry(methodName, valueTypeName, result, parserName);
-            _helpers[parser] = entry;
+            _helpers[key] = entry;
         }
 
         return (entry.MethodName, entry.ValueTypeName, entry.Result, entry.ParserName);

@@ -2,7 +2,7 @@
 <package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd">
   <metadata>
     <id>AlliedBits.Parlot</id>
-    <version>1.6.0.2</version>
+    <version>2.1.0.1</version>
     <title>Parser combinator for .NET</title>
     <authors>Sebastien Ros</authors>
     <license type="expression">BSD-3-Clause</license>
@@ -16,20 +16,12 @@
     <dependencies>
       <group targetFramework=".NETFramework4.7.2">
         <dependency id="System.Memory" version="4.6.3" exclude="Build,Analyzers" />
-        <!-- <dependency id="FastExpressionCompiler" version="5.3.0" exclude="Build,Analyzers" /> -->
       </group>
-      <group targetFramework="net10.0">
-        <!-- <dependency id="FastExpressionCompiler" version="5.3.0" exclude="Build,Analyzers" /> -->
-      </group>
-      <group targetFramework="net9.0">
-        <!-- <dependency id="FastExpressionCompiler" version="5.3.0" exclude="Build,Analyzers" /> -->
-      </group>
-      <group targetFramework="net8.0">
-        <!-- <dependency id="FastExpressionCompiler" version="5.3.0" exclude="Build,Analyzers" /> -->
-      </group>
+      <group targetFramework="net10.0" />
+      <group targetFramework="net9.0" />
+      <group targetFramework="net8.0" />
       <group targetFramework=".NETStandard2.0">
         <dependency id="System.Memory" version="4.6.3" exclude="Build,Analyzers" />
-        <!-- <dependency id="FastExpressionCompiler" version="5.3.0" exclude="Build,Analyzers" /> -->
       </group>
     </dependencies>
   </metadata>
@@ -39,23 +31,16 @@
     <file src="src\Parlot\bin\Release\net472\Parlot.dll" target="lib\net472" />
     <file src="src\Parlot\bin\Release\netstandard2.0\Parlot.dll" target="lib\netstandard2.0" />
     <file src="src\Parlot\bin\Release\net10.0\Parlot.dll" target="lib\net10.0" />
-    <file src="src\Parlot.AOT\bin\Release\net10.0\Parlot.dll" target="assemblies\net10.0" />
     <file src="src\Parlot\bin\Release\net9.0\Parlot.dll" target="lib\net9.0" />
-    <file src="src\Parlot.AOT\bin\Release\net9.0\Parlot.dll" target="assemblies\net9.0" />
     <file src="src\Parlot\bin\Release\net8.0\Parlot.dll" target="lib\net8.0" />
 
-    <!-- buildTransitive makes the UseAotMode switch work for transitive consumers; build is kept for older NuGet clients -->
-    <file src="targets\net9.0\AlliedBits.Parlot.targets" target="buildTransitive\net9.0" />
-    <file src="targets\net10.0\AlliedBits.Parlot.targets" target="buildTransitive\net10.0" />
-    <file src="targets\net9.0\AlliedBits.Parlot.targets" target="build\net9.0" />
-    <file src="targets\net10.0\AlliedBits.Parlot.targets" target="build\net10.0" />
+    <file src="src\Parlot\buildTransitive\Parlot.props" target="buildTransitive" />
+
 
     <file src="src\Parlot\bin\Release\net472\Parlot.xml" target="lib\net472" />
     <file src="src\Parlot\bin\Release\netstandard2.0\Parlot.xml" target="lib\netstandard2.0" />
     <file src="src\Parlot\bin\Release\net10.0\Parlot.xml" target="lib\net10.0" />
-    <file src="src\Parlot.AOT\bin\Release\net10.0\Parlot.xml" target="assemblies\net10.0" />
     <file src="src\Parlot\bin\Release\net9.0\Parlot.xml" target="lib\net9.0" />
-    <file src="src\Parlot.AOT\bin\Release\net9.0\Parlot.xml" target="assemblies\net9.0" />
     <file src="src\Parlot\bin\Release\net8.0\Parlot.xml" target="lib\net8.0" />
   </files>
 </package>

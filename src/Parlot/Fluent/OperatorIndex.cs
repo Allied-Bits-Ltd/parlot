@@ -1,4 +1,5 @@
 using Parlot.Rewriting;
+using Parlot.SourceGeneration;
 using System;
 
 namespace Parlot.Fluent;
@@ -8,7 +9,7 @@ namespace Parlot.Fluent;
 /// can select the operator and the factory to apply with it.
 /// </summary>
 /// <typeparam name="T">The type of the operator parser.</typeparam>
-internal sealed class OperatorIndex<T> : Parser<int>, ISeekable
+internal sealed class OperatorIndex<T> : Parser<int>, ISeekablePrefixes, ISourceable
 {
     private readonly Parser<T> _parser;
     private readonly int _index;
@@ -32,6 +33,8 @@ internal sealed class OperatorIndex<T> : Parser<int>, ISeekable
 
     public bool SkipWhitespace { get; }
 
+    string[]? ISeekablePrefixes.ExpectedPrefixes => SeekableHints.Prefixes(_parser);
+
     public override bool Parse(ParseContext context, ref ParseResult<int> result)
     {
         context.EnterParser(this);
@@ -48,6 +51,36 @@ internal sealed class OperatorIndex<T> : Parser<int>, ISeekable
 
         context.ExitParser(this);
         return false;
+    }
+
+    public SourceResult GenerateSource(SourceGenerationContext context)
+    {
+        ThrowHelper.ThrowIfNull(context, nameof(context));
+
+        if (_parser is not ISourceable sourceable)
+        {
+            throw new NotSupportedException("LeftAssociative requires all operator parsers to be source-generatable.");
+        }
+
+        var result = context.CreateResult(typeof(int));
+        var valueTypeName = SourceGenerationContext.GetTypeName(typeof(T));
+
+        // The operator's value is never used, only which one matched
+        var helperName = context.WithDiscardResult(true, () => context.Helpers
+            .GetOrCreate(sourceable, $"{context.MethodNamePrefix}_Operator", valueTypeName, () => sourceable.GenerateSource(context))
+            .MethodName);
+
+        result.Body.Add($"{result.SuccessVariable} = {helperName}({context.ParseContextName}, out _);");
+
+        if (!context.DiscardResult)
+        {
+            result.Body.Add($"if ({result.SuccessVariable})");
+            result.Body.Add("{");
+            result.Body.Add($"    {result.ValueVariable} = {_index};");
+            result.Body.Add("}");
+        }
+
+        return result;
     }
 
     public override string ToString() => _parser.ToString() ?? "";

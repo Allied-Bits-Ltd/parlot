@@ -4,7 +4,6 @@ using Parlot.SourceGeneration;
 using System;
 using System.Globalization;
 using System.Numerics;
-using System.Reflection;
 
 namespace Parlot.Fluent;
 
@@ -14,10 +13,6 @@ public sealed class NumberLiteral<T> : Parser<T>, ISeekable, ISourceable
     private const char DefaultDecimalSeparator = '.';
     private const char DefaultGroupSeparator = ',';
 
-    private static readonly MethodInfo _tryParseMethodInfo = typeof(Numbers)
-        .GetMethod(nameof(Numbers.TryParseNumber), BindingFlags.Static | BindingFlags.Public)!
-        .MakeGenericMethod(typeof(T));
-
     private readonly char _decimalSeparator;
     private readonly char _secondDecimalSeparator;
     private readonly char _groupSeparator;
@@ -26,6 +21,8 @@ public sealed class NumberLiteral<T> : Parser<T>, ISeekable, ISourceable
     // A NumberFormatInfo is stored instead of a CultureInfo since NumberFormatInfo.GetInstance()
     // returns it directly, while a CultureInfo needs to be resolved on every call.
     private readonly NumberFormatInfo _culture = CultureInfo.InvariantCulture.NumberFormat;
+
+    // Used when the number is read using the second decimal separator
     private readonly NumberFormatInfo? _culture2;
     private readonly bool _allowLeadingSign;
     private readonly bool _allowDecimalSeparator;
@@ -40,37 +37,38 @@ public sealed class NumberLiteral<T> : Parser<T>, ISeekable, ISourceable
 
     public bool SkipWhitespace { get; }
 
-    public NumberLiteral(NumberOptions numberOptions = NumberOptions.Number, char decimalSeparator = DefaultDecimalSeparator, char groupSeparator = DefaultGroupSeparator, char secondDecimalSeparator = '\0')
+    public NumberLiteral(NumberOptions numberOptions = NumberOptions.Number, char decimalSeparator = DefaultDecimalSeparator, char groupSeparator = DefaultGroupSeparator, char secondDecimalSeparator = NumberLiterals.NoSecondDecimalSeparator)
     {
         _decimalSeparator = decimalSeparator;
         _secondDecimalSeparator = secondDecimalSeparator;
-        if (secondDecimalSeparator == '\0' || secondDecimalSeparator != groupSeparator)
-            _groupSeparator = groupSeparator;
+        _groupSeparator = NumberLiterals.GetEffectiveGroupSeparator(groupSeparator, secondDecimalSeparator);
         _numberStyles = numberOptions.ToNumberStyles();
 
+        if (_groupSeparator == NumberLiterals.NoSecondDecimalSeparator)
+        {
+            // The group separator is the second decimal separator, it can't be both
+            _numberStyles &= ~NumberStyles.AllowThousands;
+        }
+
         if (decimalSeparator != NumberLiterals.DefaultDecimalSeparator ||
-            groupSeparator != NumberLiterals.DefaultGroupSeparator)
+            groupSeparator != NumberLiterals.DefaultGroupSeparator ||
+            _groupSeparator != groupSeparator)
         {
             _culture = (NumberFormatInfo)CultureInfo.InvariantCulture.NumberFormat.Clone();
             _culture.NumberDecimalSeparator = decimalSeparator.ToString();
-            if (secondDecimalSeparator == '\0' || secondDecimalSeparator != groupSeparator)
-                _culture.NumberGroupSeparator = groupSeparator.ToString();
-            else
-                _culture.NumberGroupSeparator = string.Empty;
+            _culture.NumberGroupSeparator = _groupSeparator == groupSeparator ? groupSeparator.ToString() : string.Empty;
         }
-        if (secondDecimalSeparator != '\0')
+
+        if (secondDecimalSeparator != NumberLiterals.NoSecondDecimalSeparator)
         {
             _culture2 = (NumberFormatInfo)CultureInfo.InvariantCulture.NumberFormat.Clone();
             _culture2.NumberDecimalSeparator = secondDecimalSeparator.ToString();
-            if (secondDecimalSeparator != groupSeparator)
-                _culture2.NumberGroupSeparator = groupSeparator.ToString();
-            else
-                _culture2.NumberGroupSeparator = string.Empty;
+            _culture2.NumberGroupSeparator = _groupSeparator == groupSeparator ? groupSeparator.ToString() : string.Empty;
         }
 
         _allowLeadingSign = (numberOptions & NumberOptions.AllowLeadingSign) != 0;
         _allowDecimalSeparator = (numberOptions & NumberOptions.AllowDecimalSeparator) != 0;
-        _allowGroupSeparator = (numberOptions & NumberOptions.AllowGroupSeparators) != 0;
+        _allowGroupSeparator = (numberOptions & NumberOptions.AllowGroupSeparators) != 0 && _groupSeparator != NumberLiterals.NoSecondDecimalSeparator;
         _allowExponent = (numberOptions & NumberOptions.AllowExponent) != 0;
         _allowUnderscore = (numberOptions & NumberOptions.AllowUnderscore) != 0;
         _requireFractionalPartForDecimals = (numberOptions & NumberOptions.RequireFractionalPartForDecimals) != 0;
@@ -85,20 +83,30 @@ public sealed class NumberLiteral<T> : Parser<T>, ISeekable, ISourceable
         if (_allowDecimalSeparator)
         {
             ExpectedChars = [.. ExpectedChars, decimalSeparator];
-        }
 
-        // A group separator or an exponent can't be a starting char
+            if (secondDecimalSeparator != NumberLiterals.NoSecondDecimalSeparator)
+            {
+                ExpectedChars = [.. ExpectedChars, secondDecimalSeparator];
+            }
+        }
 
         if (_allowUnderscore)
         {
             ExpectedChars = [.. ExpectedChars, '_'];
         }
 
+        // A group separator or an exponent can't be a starting char
+
         Name = "NumberLiteral";
     }
 
     public override bool Parse(ParseContext context, ref ParseResult<T> result)
     {
+        if (context.IsCompacting)
+        {
+            return context.ParseToken(this, ref result);
+        }
+
         context.EnterParser(this);
 
         var reset = context.Scanner.Cursor.Position;
@@ -115,8 +123,8 @@ public sealed class NumberLiteral<T> : Parser<T>, ISeekable, ISourceable
                 context.ExitParser(this);
                 return true;
             }
-            else
-            if (_culture2 != null && (Numbers.TryParseNumber<T>(number, _numberStyles, _culture2, out var value2)))
+
+            if (_culture2 != null && Numbers.TryParseNumber<T>(number, _numberStyles, _culture2, out var value2))
             {
                 result.Set(start, end, value2);
 
@@ -131,10 +139,14 @@ public sealed class NumberLiteral<T> : Parser<T>, ISeekable, ISourceable
         return false;
     }
 
-
     public SourceResult GenerateSource(SourceGenerationContext context)
     {
         ThrowHelper.ThrowIfNull(context, nameof(context));
+
+        if (context.IsCompacting)
+        {
+            return context.GenerateToken(this, typeof(T), () => GenerateSource(context));
+        }
 
         var result = context.CreateResult(typeof(T));
         var cursorName = context.CursorName;
@@ -150,7 +162,10 @@ public sealed class NumberLiteral<T> : Parser<T>, ISeekable, ISourceable
         result.Body.Add($"var {resetName} = default(global::Parlot.TextPosition);");
         result.Body.Add($"var {startName} = 0;");
         result.Body.Add($"global::System.ReadOnlySpan<char> {numberSpanName} = default;");
-        result.Body.Add($"{valueTypeName} {parsedValueName} = default;");
+        if (!context.DiscardResult)
+        {
+            result.Body.Add($"{valueTypeName} {parsedValueName} = default;");
+        }
 
         result.Body.Add($"{result.SuccessVariable} = false;");
         result.Body.Add($"{resetName} = {cursorName}.Position;");
@@ -166,31 +181,41 @@ public sealed class NumberLiteral<T> : Parser<T>, ISeekable, ISourceable
         // Emit NumberStyles as a literal cast
         var numberStylesExpr = $"(global::System.Globalization.NumberStyles){(int)_numberStyles}";
 
-        var cultureExpr = "global::System.Globalization.CultureInfo.InvariantCulture.NumberFormat";
-        if (!ReferenceEquals(_culture, CultureInfo.InvariantCulture.NumberFormat))
-        {
-            var decimalSeparator = $"((char){(int)_decimalSeparator}).ToString()";
-            var groupSeparator = $"((char){(int)_groupSeparator}).ToString()";
-            cultureExpr = context.RegisterStaticField(
-                "private static readonly global::System.Globalization.NumberFormatInfo",
-                $"new global::System.Func<global::System.Globalization.NumberFormatInfo>(() => {{ var c = (global::System.Globalization.NumberFormatInfo)global::System.Globalization.CultureInfo.InvariantCulture.NumberFormat.Clone(); c.NumberDecimalSeparator = {decimalSeparator}; c.NumberGroupSeparator = {groupSeparator}; return c; }})()");
-        }
+        var cultureExpr = GetCultureExpression(context, _culture, _decimalSeparator);
+        var culture2Expr = _culture2 == null ? null : GetCultureExpression(context, _culture2, _secondDecimalSeparator);
 
         var decimalSeparatorLiteral = $"(char){(int)_decimalSeparator}";
         var groupSeparatorLiteral = $"(char){(int)_groupSeparator}";
-        var secondDecimalSeparatorLiteral = $"(char){(int)_decimalSeparator}";
+        var secondDecimalSeparatorLiteral = $"(char){(int)_secondDecimalSeparator}";
         result.Body.Add($"if ({scannerName}.ReadDecimal({allowLeadingSign}, {allowDecimalSeparator}, {allowGroupSeparator}, {allowExponent}, {allowUnderscore}, {requireFractionalPartForDecimals}, out {numberSpanName}, {decimalSeparatorLiteral}, {groupSeparatorLiteral}, {secondDecimalSeparatorLiteral}))");
         result.Body.Add("{");
-        if (context.DiscardResult)
+        var outTarget = context.DiscardResult ? "_" : parsedValueName;
+        // The generic helper needs the consumer's net8.0+ runtime; downlevel consumers only have the fixed overloads.
+        // An unknown target keeps the generic path this build was compiled for.
+        var downlevel = context.TargetFramework.Identifier switch
         {
-            result.Body.Add($"    {result.SuccessVariable} = true;");
-        }
-        else
+            TargetFrameworkIdentifier.NetFramework or TargetFrameworkIdentifier.NetStandard => true,
+            TargetFrameworkIdentifier.NetCoreApp => context.TargetFramework.Version < new Version(8, 0),
+            _ => false,
+        };
+        var tryParseMethod = !downlevel
+            ? $"global::Parlot.Numbers.TryParseNumber<{valueTypeName}>"
+            : Numbers.HasTryParseOverload(typeof(T))
+                ? "global::Parlot.Numbers.TryParse"
+                : throw new NotSupportedException($"Source generation for numbers of type '{typeof(T)}' requires .NET 8 or later.");
+
+        // The number is parsed using the second decimal separator if it can't be parsed using the first one
+        var cultures = culture2Expr == null ? new[] { cultureExpr } : new[] { cultureExpr, culture2Expr };
+
+        for (var i = 0; i < cultures.Length; i++)
         {
-            result.Body.Add($"    if (global::Parlot.Numbers.TryParseNumber<{valueTypeName}>({numberSpanName}, {numberStylesExpr}, {cultureExpr}, out {parsedValueName}))");
+            result.Body.Add($"    {(i == 0 ? "if" : "else if")} ({tryParseMethod}({numberSpanName}, {numberStylesExpr}, {cultures[i]}, out {outTarget}))");
             result.Body.Add("    {");
             result.Body.Add($"        {result.SuccessVariable} = true;");
-            result.Body.Add($"        {result.ValueVariable} = {parsedValueName};");
+            if (!context.DiscardResult)
+            {
+                result.Body.Add($"        {result.ValueVariable} = {parsedValueName};");
+            }
             result.Body.Add("    }");
         }
         result.Body.Add("}");
@@ -201,6 +226,22 @@ public sealed class NumberLiteral<T> : Parser<T>, ISeekable, ISourceable
         result.Body.Add("}");
 
         return result;
+    }
+
+    private static string GetCultureExpression(SourceGenerationContext context, NumberFormatInfo culture, char decimalSeparator)
+    {
+        if (ReferenceEquals(culture, CultureInfo.InvariantCulture.NumberFormat))
+        {
+            return "global::System.Globalization.CultureInfo.InvariantCulture.NumberFormat";
+        }
+
+        var decimalSeparatorExpr = $"((char){(int)decimalSeparator}).ToString()";
+        var groupSeparatorExpr = culture.NumberGroupSeparator.Length == 0
+            ? "string.Empty"
+            : $"((char){(int)culture.NumberGroupSeparator[0]}).ToString()";
+        return context.RegisterStaticField(
+            "private static readonly global::System.Globalization.NumberFormatInfo",
+            $"new global::System.Func<global::System.Globalization.NumberFormatInfo>(() => {{ var c = (global::System.Globalization.NumberFormatInfo)global::System.Globalization.CultureInfo.InvariantCulture.NumberFormat.Clone(); c.NumberDecimalSeparator = {decimalSeparatorExpr}; c.NumberGroupSeparator = {groupSeparatorExpr}; return c; }})()");
     }
 }
 #endif

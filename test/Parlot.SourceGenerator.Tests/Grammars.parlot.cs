@@ -1,0 +1,626 @@
+﻿#nullable enable
+
+using System;
+using System.Collections.Generic;
+using Parlot;
+using Parlot.Fluent;
+using Parlot.Rewriting;
+using Parlot.SourceGeneration;
+using Parlot.SourceGenerator;
+using Parlot.Tests.Calc;
+using static Parlot.Fluent.Parsers;
+
+namespace Parlot.SourceGenerator.Tests;
+
+[IncludeUsings("Parlot.Tests.Calc")]
+public static partial class Grammars
+{
+    [GenerateParser(nameof(TryParseStandaloneEof))]
+    private static Parser<object?> BuildStandaloneEof() => Eof();
+
+    [GenerateParser(nameof(TryParseIntegerStandaloneEof))]
+    private static Parser<long> BuildIntegerStandaloneEof() =>
+        Terms.Integer().AndSkip(Eof().ElseError("Unexpected trailing input"));
+
+    [GenerateParser(nameof(TryParseHello))]
+    private static Parser<string> BuildHello() => Terms.Text("hello");
+
+    [GenerateParser(nameof(TryParseOperators))]
+    private static Parser<(bool, long, IReadOnlyList<long>, IReadOnlyList<string>)> BuildOperators()
+    {
+        // sign? integer ('[' integers separated by ',' ']')? identifiers-except-keywords* !'!'
+        var keyword = Terms.Keyword("end") | Terms.Keyword("stop");
+        var sign = (-Terms.Char('-')).Then(static sign => sign.HasValue);
+        var list = (-(Terms.Char('[') >> Terms.Integer() % Terms.Char(',') << Terms.Char(']')))
+            .Then(static list => list.HasValue ? list.Value : []);
+        var name = (Terms.Identifier() - keyword).Then(static name => name.ToString());
+
+        return sign + Terms.Integer() + list + ~name << !Terms.Char('!');
+    }
+
+    [GenerateParser(nameof(TryParseExpression))]
+    private static Parser<double> BuildExpression()
+    {
+        var value = OneOf(
+            Terms.Text("one").Then(static _ => 1.0),
+            Terms.Text("two").Then(static _ => 2.0),
+            Terms.Text("three").Then(static _ => 3.0));
+        return value.And(ZeroOrMany(Terms.Char('+').SkipAnd(value))).Then(static tuple =>
+        {
+            var result = tuple.Item1;
+            foreach (var addition in tuple.Item2)
+            {
+                result += addition;
+            }
+            return result;
+        });
+    }
+
+    [GenerateParser(nameof(TryParseLeftAssociative))]
+    private static Parser<double> BuildLeftAssociative() =>
+        Terms.Decimal().Then(static value => (double)value).LeftAssociative(
+            (Terms.Char('+'), static (left, right) => left + right),
+            (Terms.Char('-'), static (left, right) => left - right));
+
+    [GenerateParser(nameof(TryParseValueLeftAssociative))]
+    private static Parser<double> BuildValueLeftAssociative() =>
+        Terms.Decimal().Then(static value => (double)value).LeftAssociative(
+            [Terms.Char('+').Then(static _ => 1), Terms.Char('-').Then(static _ => -1)],
+            static (left, right, operation) => operation == 1 ? left + right : left - right);
+
+    [GenerateParser(nameof(TryParseValueRightAssociative))]
+    private static Parser<double> BuildValueRightAssociative() =>
+        Terms.Decimal().Then(static value => (double)value).RightAssociative(
+            [Terms.Char('+').Then(static _ => 1), Terms.Char('-').Then(static _ => -1)],
+            static (left, right, operation) => operation == 1 ? left + right : left - right);
+
+    [GenerateParser(nameof(TryParseValueLeftAssociativeContext))]
+    private static Parser<double> BuildValueLeftAssociativeContext() =>
+        Terms.Decimal().Then(static value => (double)value).LeftAssociative(
+            [Terms.Char('+').Then(static _ => 1), Terms.Char('-').Then(static _ => -1)],
+            static (ParseContext _, double left, double right, int operation) => operation == 1 ? left + right : left - right);
+
+    [GenerateParser(nameof(TryParseValueRightAssociativeContext))]
+    private static Parser<double> BuildValueRightAssociativeContext() =>
+        Terms.Decimal().Then(static value => (double)value).RightAssociative(
+            [Terms.Char('+').Then(static _ => 1), Terms.Char('-').Then(static _ => -1)],
+            static (ParseContext _, double left, double right, int operation) => operation == 1 ? left + right : left - right);
+
+    [GenerateParser(nameof(TryParseValueRightAssociativeThenPlus))]
+    private static Parser<double> BuildValueRightAssociativeThenPlus() =>
+        Terms.Decimal().Then(static value => (double)value)
+            .RightAssociative([Literals.Char('+').Then(static _ => 1)],
+                static (left, right, _) => left + right)
+            .AndSkip(Literals.Char('+'))
+            .Eof();
+
+    [GenerateParser(nameof(TryParseValueRightAssociativeEmpty))]
+    private static Parser<int> BuildValueRightAssociativeEmpty() =>
+        Always(1).RightAssociative([Always('+')], static (left, right, _) => left + right);
+
+    [GenerateParser(nameof(TryParseNestedLeftAssociative))]
+    private static Parser<double> BuildNestedLeftAssociative()
+    {
+        var number = Terms.Decimal().Then(static value => (double)value);
+        var product = number.LeftAssociative(
+            (Terms.Char('*'), static (left, right) => left * right),
+            (Terms.Char('/'), static (left, right) => left / right));
+        return product.LeftAssociative(
+            (Terms.Char('+'), static (left, right) => left + right),
+            (Terms.Char('-'), static (left, right) => left - right));
+    }
+
+    [GenerateParser(nameof(TryParseCalculator))]
+    private static Parser<Expression> BuildCalculator()
+    {
+        var expression = Deferred<Expression>();
+        var number = Terms.Decimal().Then<Expression>(static value => new Number(value));
+        var primary = number.Or(Between(Terms.Char('('), expression, Terms.Char(')')));
+        var unary = primary.Unary((Terms.Char('-'), static value => new NegateExpression(value)));
+        var product = unary.LeftAssociative(
+            (Terms.Char('/'), static (left, right) => new Division(left, right)),
+            (Terms.Char('*'), static (left, right) => new Multiplication(left, right)));
+        expression.Parser = product.LeftAssociative(
+            (Terms.Char('+'), static (left, right) => new Addition(left, right)),
+            (Terms.Char('-'), static (left, right) => new Subtraction(left, right)));
+        return expression;
+    }
+
+    [GenerateParser(nameof(TryParseTermsChar))]
+    private static Parser<char> BuildTermsChar() => Terms.Char('h');
+
+    [GenerateParser(nameof(TryParseTermsString))]
+    private static Parser<string> BuildTermsString() => Terms.String().Then(static value => value.ToString());
+
+    [GenerateParser(nameof(TryParseTermsPattern))]
+    private static Parser<string> BuildTermsPattern() =>
+        Terms.Pattern(static character => Character.IsInRange(character, 'a', 'z'))
+            .Then(static value => value.ToString());
+
+    [GenerateParser(nameof(TryParseTermsIdentifier))]
+    private static Parser<string> BuildTermsIdentifier() => Terms.Identifier().Then(static value => value.ToString());
+
+    [GenerateParser(nameof(TryParseTermsWhiteSpace))]
+    private static Parser<string> BuildTermsWhiteSpace() => Terms.WhiteSpace().Then(static value => value.ToString());
+
+    [GenerateParser(nameof(TryParseTermsNonWhiteSpace))]
+    private static Parser<string> BuildTermsNonWhiteSpace() => Terms.NonWhiteSpace().Then(static value => value.ToString());
+
+    [GenerateParser(nameof(TryParseTermsDecimal))]
+    private static Parser<decimal> BuildTermsDecimal() => Terms.Decimal();
+
+    [GenerateParser(nameof(TryParseTermsKeyword))]
+    private static Parser<string> BuildTermsKeyword() => Terms.Text("if").When(static (context, _) =>
+        context.Scanner.Cursor.Eof
+        || (!Character.IsInRange(context.Scanner.Cursor.Current, 'a', 'z')
+            && !Character.IsInRange(context.Scanner.Cursor.Current, 'A', 'Z')));
+
+    [GenerateParser(nameof(TryParseLiteralsText))]
+    private static Parser<string> BuildLiteralsText() => Literals.Text("hello");
+
+    [GenerateParser(nameof(TryParseMatchedText))]
+    private static Parser<string> BuildMatchedText() =>
+        Literals.Text("hello", caseInsensitive: true, returnMatchedText: true);
+
+    [GenerateParser(nameof(TryParseMatchedTerm))]
+    private static Parser<string> BuildMatchedTerm() =>
+        Terms.Text("hello", caseInsensitive: true, returnMatchedText: true);
+
+    [GenerateParser(nameof(TryParseCanonicalText))]
+    private static Parser<string> BuildCanonicalText() =>
+        Literals.Text("hello", caseInsensitive: true);
+
+    [GenerateParser(nameof(TryParseMatchedKeyword))]
+    private static Parser<string> BuildMatchedKeyword() =>
+        Literals.Keyword("if", caseInsensitive: true, returnMatchedText: true);
+
+    [GenerateParser(nameof(TryParseEmptyText))]
+    private static Parser<string> BuildEmptyText() =>
+        Literals.Text("", caseInsensitive: true, returnMatchedText: true);
+
+    [GenerateParser(nameof(TryParseLiteralsChar))]
+    private static Parser<char> BuildLiteralsChar() => Literals.Char('h');
+
+    [GenerateParser(nameof(TryParseLiteralsQuote))]
+    private static Parser<char> BuildLiteralsQuote() => Literals.Char('\'');
+
+    [GenerateParser(nameof(TryParseLiteralsBackslash))]
+    private static Parser<char> BuildLiteralsBackslash() => Literals.Char('\\');
+
+    [GenerateParser(nameof(TryParseLiteralsNewLine))]
+    private static Parser<char> BuildLiteralsNewLine() => Literals.Char('\n');
+
+    [GenerateParser(nameof(TryParseSequence))]
+    private static Parser<(string Text, char Character)> BuildSequence() => Terms.Text("hi").And(Terms.Char('!'));
+
+    [GenerateParser(nameof(TryParseSkipAnd))]
+    private static Parser<char> BuildSkipAnd() => Terms.Text("hi").SkipAnd(Terms.Char('!'));
+
+    [GenerateParser(nameof(TryParseAndSkip))]
+    private static Parser<char> BuildAndSkip() => Terms.Char('!').AndSkip(Terms.Text("hi"));
+
+    [GenerateParser(nameof(TryParseOptionalText))]
+    private static Parser<string?> BuildOptionalText() =>
+        Terms.Text("hi").Optional().Then(static option => option.HasValue ? option.Value : null);
+
+    [GenerateParser(nameof(TryParseZeroOrManyChars))]
+    private static Parser<IReadOnlyList<char>> BuildZeroOrManyChars() => ZeroOrMany(Terms.Char('a'));
+
+    [GenerateParser(nameof(TryParseZeroOrOneChar))]
+    private static Parser<IReadOnlyList<char>> BuildZeroOrOneChar() =>
+        ZeroOrOne(Terms.Char('a'));
+
+    [GenerateParser(nameof(TryParseZeroOrOneEmpty))]
+    private static Parser<IReadOnlyList<char>> BuildZeroOrOneEmpty() =>
+        ZeroOrOne(new Always<char>('x')).Eof();
+
+    [GenerateParser(nameof(TryParseEofText))]
+    private static Parser<string> BuildEofText() => Terms.Text("end").Eof();
+
+    [GenerateParser(nameof(TryParseCaptureChar))]
+    private static Parser<string> BuildCaptureChar() => Capture(Terms.Char('z')).Then(static value => value.ToString());
+
+    [GenerateParser(nameof(TryParseOneOfChar))]
+    private static Parser<char> BuildOneOfChar() => OneOf(Terms.Char('a'), Terms.Char('b'));
+
+    [GenerateParser(nameof(TryParseBetweenIdentifier))]
+    private static Parser<string> BuildBetweenIdentifier() =>
+        Between(Terms.Char('('), Terms.Identifier(), Terms.Char(')')).Then(static value => value.ToString());
+
+    [GenerateParser(nameof(TryParseSeparatedDecimals))]
+    private static Parser<IReadOnlyList<decimal>> BuildSeparatedDecimals() => Separated(Terms.Char(','), Terms.Decimal());
+
+    [GenerateParser(nameof(TryParseUnaryDecimal))]
+    private static Parser<decimal> BuildUnaryDecimal() =>
+        Terms.Decimal().Unary((Terms.Char('-'), static value => -value));
+
+    [GenerateParser(nameof(TryParseLeftAssociativeDecimal))]
+    private static Parser<decimal> BuildLeftAssociativeDecimal() =>
+        Terms.Decimal().LeftAssociative((Terms.Char('+'), static (left, right) => left + right));
+
+    [GenerateParser(nameof(TryParseLeftAssociativeThenPlus))]
+    private static Parser<decimal> BuildLeftAssociativeThenPlus() =>
+        Terms.Decimal()
+            .LeftAssociative((Literals.Char('+'), static (left, right) => left + right))
+            .AndSkip(Literals.Char('+'))
+            .Eof();
+
+    [GenerateParser(nameof(TryParseLeftAssociativeEmpty))]
+    private static Parser<int> BuildLeftAssociativeEmpty() =>
+        Literals.Text("x").Optional().Then(static _ => 1)
+            .LeftAssociative((Literals.Text("+").Optional(), static (left, right) => left + right));
+
+    [GenerateParser(nameof(TryParseLeftAssociativeContextEmpty))]
+    private static Parser<int> BuildLeftAssociativeContextEmpty() =>
+        Literals.Text("x").Optional().Then(static _ => 1)
+            .LeftAssociative((Literals.Text("+").Optional(), static (ParseContext _, int left, int right) => left + right));
+
+    [GenerateParser(nameof(TryParseUnaryFallback))]
+    private static Parser<decimal> BuildUnaryFallback()
+    {
+        var unary = Terms.Decimal().Unary((Literals.Char('-'), static value => -value));
+        return OneOf(unary, Literals.Char('-').Then(static _ => 42m)).Eof();
+    }
+
+    [GenerateParser(nameof(TryParseThenPositions))]
+    private static Parser<string> BuildThenPositions() =>
+        Terms.Text("ab").Then(static (ParseContext _, int start, int end, string value) => $"{start}:{end}:{value}");
+
+    [GenerateParser(nameof(TryParseLiteralThenPositions))]
+    private static Parser<string> BuildLiteralThenPositions() =>
+        Literals.Text("ab").Then(static (ParseContext _, int start, int end, string value) => $"{start}:{end}:{value}");
+
+    [GenerateParser(nameof(TryParseThenPositionsFallback))]
+    private static Parser<string> BuildThenPositionsFallback() =>
+        OneOf(
+            Terms.Text("ab").Then(static (ParseContext _, int start, int end, string value) => $"{start}:{end}:{value}"),
+            Literals.Text(" ac").Then(static (ParseContext _, int start, int end, string value) => $"{start}:{end}:{value}"));
+
+    [GenerateParser(nameof(TryParseDiscards))]
+    private static Parser<int> BuildDiscards() =>
+        Literals.Text("a").Then(static (_, _) => 1)
+            .And(Literals.Text("b").Then(static (_, _, _, _) => 2))
+            .And(Literals.Text("c").Then(static (_, start, _, _) => start))
+            .Then(static x => x.Item1 + x.Item2 + x.Item3);
+
+    [GenerateParser(nameof(TryParseEscapedError))]
+    private static Parser<char> BuildEscapedError() =>
+        Literals.Char('x').ElseError("line1\nline2 \"quoted\" back\\slash\ttab");
+
+    [GenerateParser(nameof(TryParseHalf))]
+    private static Parser<Half> BuildHalf() => Terms.Number<Half>(NumberOptions.Float).Eof();
+
+    [GenerateParser(nameof(TryParseInt128Hex))]
+    private static Parser<Int128> BuildInt128Hex() => Terms.Hexadecimal<Int128>().Eof();
+
+    [GenerateParser(nameof(TryParseTupleRightAssociative))]
+    private static Parser<double> BuildTupleRightAssociative() =>
+        Terms.Decimal().Then(static value => (double)value).RightAssociative(
+            (Terms.Char('-'), static (left, right) => left - right),
+            (Terms.Char('+'), static (left, right) => left + right));
+
+    [GenerateParser(nameof(TryParseTupleRightAssociativeContext))]
+    private static Parser<double> BuildTupleRightAssociativeContext() =>
+        Terms.Decimal().Then(static value => (double)value).RightAssociative(
+            (Terms.Char('^'), static (ParseContext _, double left, double right) => Math.Pow(left, right)),
+            (Terms.Char('-'), static (ParseContext _, double left, double right) => left - right));
+
+    [GenerateParser(nameof(TryParseTupleRightAssociativeThenPlus))]
+    private static Parser<double> BuildTupleRightAssociativeThenPlus() =>
+        Terms.Decimal().Then(static value => (double)value)
+            .RightAssociative((Literals.Char('+'), static (left, right) => left + right))
+            .AndSkip(Literals.Char('+'))
+            .Eof();
+
+    [GenerateParser(nameof(TryParseLeftRecursive))]
+    private static Parser<long> BuildLeftRecursive()
+    {
+        // expression = expression '+' integer | integer: the first alternative re-enters the deferred
+        // parser at the same position, which must fail instead of overflowing the stack
+        var expression = Deferred<long>();
+        expression.Parser = expression.AndSkip(Terms.Char('+')).And(Terms.Integer()).Then(static x => x.Item1 + x.Item2)
+            .Or(Terms.Integer());
+        return expression;
+    }
+
+    [GenerateParser(nameof(TryParseIndirectLeftRecursive))]
+    private static Parser<long> BuildIndirectLeftRecursive()
+    {
+        // a = b | integer; b = a '+' integer: the cycle goes through two deferred parsers, and a parenthesized
+        // operand enters them again at a new position
+        var a = Deferred<long>();
+        var b = Deferred<long>();
+        var group = Between(Terms.Char('('), a, Terms.Char(')'));
+        b.Parser = a.AndSkip(Terms.Char('+')).And(Terms.Integer()).Then(static x => x.Item1 + x.Item2);
+        a.Parser = b.Or(group).Or(Terms.Integer());
+        return a;
+    }
+
+    [GenerateParser(nameof(TryParseUnaryEmptyOperator))]
+    private static Parser<long> BuildUnaryEmptyOperator() =>
+        Terms.Integer().Unary(
+            (ZeroOrMany(Literals.Char('-')).Then(static _ => 0), static value => -value),
+            (Literals.Char('+').Then(static _ => 0), static value => value + 100));
+
+    [GenerateParser(nameof(TryParseUnaryContextEmptyOperator))]
+    private static Parser<long> BuildUnaryContextEmptyOperator() =>
+        Terms.Integer().Unary(
+            (ZeroOrMany(Literals.Char('-')).Then(static _ => 0), static (ParseContext _, long value) => -value),
+            (Literals.Char('+').Then(static _ => 0), static (ParseContext _, long value) => value + 100));
+
+    [GenerateParser(nameof(TryParseSevenSequenceChoice))]
+    private static Parser<string> BuildSevenSequenceChoice() =>
+        OneOf(
+            Literals.Char('a').And(Literals.Char('b')).And(Literals.Char('c')).And(Literals.Char('d'))
+                .And(Literals.Char('e')).And(Literals.Char('f')).And(Literals.Char('g'))
+                .Then(static _ => "abcdefg"),
+            Literals.Char('z').Then(static _ => "z"));
+
+    [GenerateParser(nameof(TryParseEmptyPattern))]
+    private static Parser<string> BuildEmptyPattern() =>
+        Literals.Pattern(static character => character == 'a', minSize: 0)
+            .And(Literals.Char('b'))
+            .Then(static tuple => tuple.Item1.ToString());
+
+    [GenerateParser(nameof(TryParseReplacedRecursive))]
+    private static Parser<string> BuildReplacedRecursive()
+    {
+        var recursive = Recursive<string>(static _ => Literals.Text("a"));
+        recursive.Parser = Literals.Text("b");
+        return OneOf(recursive, Literals.Text("c"));
+    }
+
+    [GenerateParser(nameof(TryParseAnyOfDigits))]
+    private static Parser<string> BuildAnyOfDigits() => Literals.AnyOf("0123456789").Then(static value => value.ToString());
+
+    [GenerateParser(nameof(TryParseAnyOfLetters))]
+    private static Parser<string> BuildAnyOfLetters() =>
+        Literals.AnyOf("abcdefghijklmnopqrstuvwxyz", minSize: 2, maxSize: 10)
+            .Then(static value => value.ToString());
+
+    [GenerateParser(nameof(TryParseNoneOfWhitespace))]
+    private static Parser<string> BuildNoneOfWhitespace() =>
+        Literals.NoneOf(" \t\r\n").Then(static value => value.ToString());
+
+    [GenerateParser(nameof(TryParseBlockLambda))]
+    private static Parser<string> BuildBlockLambda() => Terms.Identifier().Then(static value =>
+    {
+        var upper = value.ToString().ToUpperInvariant();
+        return "Result: " + upper;
+    });
+
+    [GenerateParser(nameof(TryParseNotX))]
+    private static Parser<char> BuildNotX() => Not(Terms.Char('x'));
+
+    [GenerateParser(nameof(TryParseHelloNotBang))]
+    private static Parser<string> BuildHelloNotBang() =>
+        Terms.Text("hello").And(Not(Terms.Char('!'))).Then(static value => value.Item1);
+
+    [GenerateParser(nameof(TryParseHelloBang))]
+    private static Parser<string> BuildHelloBang() =>
+        Terms.Text("hello").And(Terms.Char('!')).Then(static value => value.Item1);
+
+    [GenerateParser(nameof(TryParseCountingOneOf))]
+    private static Parser<char> BuildCountingOneOf() =>
+        OneOf(new CountingParser('a', "a", skipWhitespace: true), new CountingParser('b', "b", skipWhitespace: true));
+
+    [GenerateParser(nameof(TryParseLateDeferredOneOf))]
+    private static Parser<char> BuildLateDeferredOneOf()
+    {
+        // The deferred is set after the choice is built, as the expression of a grammar usually is
+        var deferred = Deferred<char>();
+        var choice = OneOf(deferred, new CountingParser('b', "late-b", skipWhitespace: true));
+        deferred.Parser = new CountingParser('a', "late-a", skipWhitespace: true);
+        return choice;
+    }
+
+    [GenerateParser(nameof(TryParseSeekableWrappers))]
+    private static Parser<char> BuildSeekableWrappers()
+    {
+        // Each wrapper declares the chars of the parser it runs first, so the choice only tries the matching one
+        var a = new CountingParser('a', "wrap-a", skipWhitespace: true);
+        var b = new CountingParser('b', "wrap-b", skipWhitespace: true);
+        var c = new CountingParser('c', "wrap-c", skipWhitespace: true);
+        var d = new CountingParser('d', "wrap-d", skipWhitespace: true);
+        var e = new CountingParser('e', "wrap-e", skipWhitespace: true);
+        return OneOf(
+            If(static () => true, a),
+            Select(static () => 0, b),
+            c.Eof(),
+            Terms.Char('x').Switch(static (context, value) => 0, d),
+            e.Error("no e"));
+    }
+
+    [GenerateParser(nameof(TryParseCountingLeftAssociative))]
+    private static Parser<long> BuildCountingLeftAssociative() =>
+        Terms.Integer().LeftAssociative(
+            (new CountingParser('p', "op-p", skipWhitespace: true), static (left, right) => left + right),
+            (new CountingParser('m', "op-m", skipWhitespace: true), static (left, right) => left - right));
+
+    [GenerateParser(nameof(TryParseCountingLeftAssociativeContext))]
+    private static Parser<long> BuildCountingLeftAssociativeContext() =>
+        Terms.Integer().LeftAssociative(
+            (new CountingParser('p', "ctx-op-p", skipWhitespace: true), static (ParseContext _, long left, long right) => left + right),
+            (new CountingParser('m', "ctx-op-m", skipWhitespace: true), static (ParseContext _, long left, long right) => left - right));
+
+    [GenerateParser(nameof(TryParseCustomSwitch))]
+    private static Parser<char> BuildCustomSwitch()
+    {
+        var prefix = OneOf(Terms.Char('a'), Terms.Char('b'));
+        var x = new CountingParser('x', "x", skipWhitespace: false);
+        var y = new CountingParser('y', "y", skipWhitespace: false);
+        return prefix.Switch(static (_, value) => value == 'a' ? 0 : 1, x, y).Eof();
+    }
+
+    [GenerateParser(nameof(TryParseCustomSelect))]
+    private static Parser<char> BuildCustomSelect(bool preferX)
+    {
+        var x = new CountingParser('x', "x", skipWhitespace: false);
+        var y = new CountingParser('y', "y", skipWhitespace: false);
+        return Select(() => preferX ? 0 : 1, x, y).Eof();
+    }
+
+    [GenerateParser(nameof(TryParseZeroOrManyOptional))]
+    private static Parser<IReadOnlyList<IReadOnlyList<char>>> BuildZeroOrManyOptional() =>
+        ZeroOrMany(ZeroOrOne(Literals.Char('a'))).Eof();
+
+    [GenerateParser(nameof(TryParseOneOrManyOptional))]
+    private static Parser<IReadOnlyList<IReadOnlyList<char>>> BuildOneOrManyOptional() =>
+        OneOrMany(ZeroOrOne(Literals.Char('a'))).Eof();
+
+    [GenerateParser(nameof(TryParseSeparatedOptional))]
+    private static Parser<IReadOnlyList<IReadOnlyList<char>>> BuildSeparatedOptional() =>
+        Separated(ZeroOrOne(Literals.Char(',')), ZeroOrOne(Literals.Char('a'))).Eof();
+
+    private static readonly Parser<long> Long = Terms.Number<long>(NumberOptions.Integer);
+    private static readonly Parser<string> Equal = Terms.Text("==");
+
+    private static Parser<NodeBase> CreatePropertyParser<T>(
+        string name,
+        Parser<string> @operator,
+        Parser<T> comparand) =>
+        comparand
+            .AndSkip(@operator)
+            .AndSkip(Terms.Text(name, caseInsensitive: true))
+            .And(comparand)
+            .Then<NodeBase>(items => new BasicNode(items.Item2!));
+
+    [GenerateParser(nameof(TryParseGenericProperty))]
+    private static Parser<NodeBase> BuildGenericProperty() =>
+        CreatePropertyParser("long", Equal, Long).Eof();
+
+    [GenerateParser(nameof(TryParseInteger))]
+    private static Parser<long> BuildInteger() => Terms.Integer().Eof();
+
+    [GenerateParser(nameof(TryParseDecimal))]
+    private static Parser<decimal> BuildDecimal() => Terms.Decimal().Eof();
+
+    [GenerateParser(nameof(TryParseDoubleExponent))]
+    private static Parser<double> BuildDoubleExponent() =>
+        Terms.Number<double>(NumberOptions.Number | NumberOptions.AllowExponent).Eof();
+
+    [GenerateParser(nameof(TryParseCommaDecimal))]
+    private static Parser<decimal> BuildCommaDecimal() =>
+        Terms.Number<decimal>(
+            NumberOptions.AllowLeadingSign | NumberOptions.AllowDecimalSeparator,
+            decimalSeparator: ',').Eof();
+
+    [GenerateParser(nameof(TryParseUnderscoreInteger))]
+    private static Parser<long> BuildUnderscoreInteger() =>
+        Terms.Number<long>(
+            NumberOptions.Integer | NumberOptions.AllowGroupSeparators,
+            groupSeparator: '_').Eof();
+
+    [GenerateParser(nameof(TryParseUnderscoreDecimal))]
+    private static Parser<decimal> BuildUnderscoreDecimal() =>
+        Terms.Number<decimal>(NumberOptions.Number | NumberOptions.AllowGroupSeparators | NumberOptions.AllowUnderscore).Eof();
+
+    // The second decimal separator is also the group separator: it is only a decimal separator here
+    [GenerateParser(nameof(TryParseSecondSeparatorGroupDecimal))]
+    private static Parser<decimal> BuildSecondSeparatorGroupDecimal() =>
+        Terms.Number<decimal>(
+            NumberOptions.Number | NumberOptions.AllowGroupSeparators,
+            decimalSeparator: '.',
+            groupSeparator: ',',
+            secondDecimalSeparator: ',').Eof();
+
+    [GenerateParser(nameof(TryParseSecondSeparatorDecimal))]
+    private static Parser<decimal> BuildSecondSeparatorDecimal() =>
+        Terms.Number<decimal>(
+            NumberOptions.AllowLeadingSign | NumberOptions.AllowDecimalSeparator,
+            decimalSeparator: ',',
+            groupSeparator: '_',
+            secondDecimalSeparator: '.').Eof();
+
+    [GenerateParser(nameof(TryParseSecondSeparatorDouble))]
+    private static Parser<double> BuildSecondSeparatorDouble() =>
+        Terms.Number<double>(
+            NumberOptions.Number | NumberOptions.AllowExponent | NumberOptions.AllowUnderscore,
+            decimalSeparator: '.',
+            secondDecimalSeparator: ',').Eof();
+
+    [GenerateParser(nameof(TryParseFractionalPartRequired))]
+    private static Parser<decimal> BuildFractionalPartRequired() =>
+        Terms.Number<decimal>(NumberOptions.Number | NumberOptions.RequireFractionalPartForDecimals)
+            .AndSkip(Literals.Char('.')).Eof();
+
+    [GenerateParser(nameof(TryParseFractionalPartOptional))]
+    private static Parser<decimal> BuildFractionalPartOptional() =>
+        Terms.Number<decimal>(NumberOptions.Number)
+            .AndSkip(ZeroOrOne(Literals.Char('.'))).Eof();
+
+    [GenerateParser(nameof(TryParseRawString))]
+    private static Parser<string> BuildRawString() =>
+        Terms.String(returnDecoded: false).Then(static value => value.ToString());
+
+    [GenerateParser(nameof(TryParseUnsignedInteger))]
+    private static Parser<long> BuildUnsignedInteger() => Terms.Number<long>(NumberOptions.None).Eof();
+
+    [GenerateParser(nameof(TryParseIntegralDecimal))]
+    private static Parser<decimal> BuildIntegralDecimal() =>
+        Terms.Number<decimal>(NumberOptions.AllowLeadingSign).Eof();
+
+    [GenerateParser(nameof(TryParseFloat))]
+    private static Parser<float> BuildFloat() =>
+        Terms.Number<float>(NumberOptions.Number | NumberOptions.AllowExponent).Eof();
+
+    [GenerateParser(nameof(TryParseLong))]
+    private static Parser<long> BuildLong() => Terms.Integer(NumberOptions.Integer).Eof();
+
+    [GenerateParser(nameof(TryParseByte))]
+    private static Parser<byte> BuildByte() => Terms.Number<byte>(NumberOptions.Integer).Eof();
+
+    [GenerateParser(nameof(TryParseCustomCultureDecimal))]
+    private static Parser<decimal> BuildCustomCultureDecimal() =>
+        Terms.Number<decimal>(
+            NumberOptions.Number | NumberOptions.AllowGroupSeparators,
+            decimalSeparator: ',',
+            groupSeparator: '_').Eof();
+
+    [GenerateParser(nameof(TryParseHexadecimal))]
+    private static Parser<int> BuildHexadecimal() => Terms.Hexadecimal<int>().Eof();
+
+    [GenerateParser(nameof(TryParseOctal))]
+    private static Parser<long> BuildOctal() => Terms.Octal<long>().Eof();
+
+    [GenerateParser(nameof(TryParseBinary))]
+    private static Parser<byte> BuildBinary() => Terms.Binary<byte>().Eof();
+}
+
+internal sealed class CountingParser : Parser<char>, ISeekable, ISourceable
+{
+    private readonly char _expected;
+    private readonly string _name;
+    private readonly bool _skipWhitespace;
+
+    public CountingParser(char expected, string name, bool skipWhitespace)
+    {
+        _expected = expected;
+        _name = name;
+        _skipWhitespace = skipWhitespace;
+    }
+
+    public bool CanSeek => true;
+    public char[] ExpectedChars => [_expected];
+    public bool SkipWhitespace => _skipWhitespace;
+
+    public override bool Parse(ParseContext context, ref ParseResult<char> result) =>
+        throw new NotSupportedException("The build-only parser must be source generated.");
+
+    public SourceResult GenerateSource(SourceGenerationContext context)
+    {
+        var result = context.CreateResult(typeof(char));
+        result.Body.Add($"global::Parlot.SourceGenerator.Tests.GeneratedParserCounters.Increment(\"{_name}\");");
+        if (_skipWhitespace)
+        {
+            result.Body.Add($"{context.ParseContextName}.SkipWhiteSpace();");
+        }
+        result.Body.Add($"if ({context.CursorName}.Current == '{_expected}')");
+        result.Body.Add("{");
+        result.Body.Add($"    {context.CursorName}.Advance();");
+        result.Body.Add($"    {result.SuccessVariable} = true;");
+        result.Body.Add($"    {result.ValueVariable} = '{_expected}';");
+        result.Body.Add("}");
+        return result;
+    }
+}

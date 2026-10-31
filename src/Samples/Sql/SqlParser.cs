@@ -1,17 +1,15 @@
 #nullable enable
 
 using Parlot.Fluent;
-using Parlot.SourceGenerator;
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using static Parlot.Fluent.Parsers;
 
 namespace Parlot.Tests.Sql;
 
 public partial class SqlParser
 {
-    // Keywords can't be used as identifiers or function names (static for source generation)
+    // Keywords can't be used as identifiers or function names.
     private static readonly HashSet<string> Keywords = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
         "SELECT", "FROM", "WHERE", "AS", "JOIN", "INNER", "LEFT", "RIGHT", "ON",
@@ -22,8 +20,7 @@ public partial class SqlParser
 
     private static readonly ColumnItem StarColumnItem = new(new ColumnSourceIdentifier(Identifier.STAR), null);
 
-    [GenerateParser]
-    public static Parser<StatementList> CreateSqlParser()
+    private static Parser<StatementList> CreateRuntimeParser()
     {
         // Basic terminals
         var COMMA = Terms.Char(',');
@@ -79,8 +76,8 @@ public partial class SqlParser
 
         // Identifiers
         var simpleIdentifier = Terms.Identifier().Then(x => x.ToString())
-            .Or(Between(Terms.Char('['), Literals.NoneOf("]"), Terms.Char(']')).Then(x => x.ToString()))
-            .Or(Between(Terms.Char('"'), Literals.NoneOf("\""), Terms.Char('"')).Then(x => x.ToString())).Named("SimpleIdentifier");
+            .Or(Between(Terms.Char('['), Literals.NoneOf("]".AsSpan()), Terms.Char(']')).Then(x => x.ToString()))
+            .Or(Between(Terms.Char('"'), Literals.NoneOf("\"".AsSpan()), Terms.Char('"')).Then(x => x.ToString())).Named("SimpleIdentifier");
 
         var identifier = Separated(DOT, simpleIdentifier).Named("Identifier")
             .Then(parts => new Identifier(parts));
@@ -88,7 +85,7 @@ public partial class SqlParser
         // Without the keywords check "FROM a WHERE" would interpret "WHERE" as an alias since "AS" is optional
         var identifierNoKeywords = Separated(DOT, simpleIdentifier).When(static (ctx, parts) => parts.Count > 0 && !Keywords.Contains(parts[0])).Named("IdentiferNoKeywords")
             .Then(static parts => new Identifier(parts));
-
+            
         // Deferred parsers
         var expression = Deferred<Expression>();
         var selectStatement = Deferred<SelectStatement>();
@@ -440,8 +437,16 @@ public partial class SqlParser
 
     public static bool TryParse(string input, out StatementList? result, out ParseError? error)
     {
-        var parser = CreateSqlParser();
         var context = new ParseContext(new Scanner(input), disableLoopDetection: true);
-        return parser.TryParse(context, out result, out error);
+        return RuntimeState.Parser.TryParse(context, out result, out error);
+    }
+
+#if NET8_0_OR_GREATER
+    public static partial bool TryParse(string input, out StatementList value);
+#endif
+
+    private static class RuntimeState
+    {
+        internal static readonly Parser<StatementList> Parser = CreateRuntimeParser();
     }
 }

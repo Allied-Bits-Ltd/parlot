@@ -14,27 +14,17 @@
     <Nullable>enable</Nullable>
     <LangVersion>Latest</LangVersion>
     <Configurations>Debug;Release</Configurations>
+    <IsAotCompatible Condition="$([MSBuild]::IsTargetFrameworkCompatible('$(TargetFramework)', 'net8.0'))">true</IsAotCompatible>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="System.Memory" Condition="!$([MSBuild]::IsTargetFrameworkCompatible('$(TargetFramework)', 'net8.0'))" />
-    <PackageReference Include="System.Collections.Immutable" Condition="!$([MSBuild]::IsTargetFrameworkCompatible('$(TargetFramework)', 'net8.0'))" />
-    <!-- Build-time only dependency for source generation literal escaping - not shipped with the package -->
-    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" PrivateAssets="all" />
-  </ItemGroup>
-
-  <!-- Pack the source generator into the analyzers folder for NuGet package -->
-  <!-- The source generator must be built before packing Parlot -->
-  <ItemGroup>
-    <None Include="../Parlot.SourceGenerator/bin/$(Configuration)/netstandard2.0/Parlot.SourceGenerator.dll"
-          Pack="true"
-          PackagePath="analyzers/dotnet/cs"
-          Visible="false" />
-    <!-- Also include Parlot.dll itself as a dependency for the source generator at runtime -->
-    <None Include="bin/$(Configuration)/netstandard2.0/Parlot.dll"
-          Pack="true"
-          PackagePath="analyzers/dotnet/cs"
-          Visible="false" />
+    <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" Condition="!$([MSBuild]::IsTargetFrameworkCompatible('$(TargetFramework)', 'net8.0'))" />
+    <!-- Build-time only dependency for source generation literal escaping - not shipped with the package.
+         The compiler host supplies Roslyn at run time. Excluding runtime assets keeps Roslyn and its
+         System.Collections.Immutable out of the net472 output, where referencing projects pick them up
+         and hit MSB3277 against their own older System.Collections.Immutable. -->
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" PrivateAssets="all" ExcludeAssets="runtime" />
   </ItemGroup>
 
   <!-- Include build props file in the NuGet package for automatic using static import when ImplicitUsings is enabled -->

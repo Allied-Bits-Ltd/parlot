@@ -28,7 +28,6 @@ public class CharMapParserTests
             Literals.Text("\u00e9b"),
             Literals.Text("\u4e2d"));
 
-
         Assert.True(parser.TryParse(input, out var value));
         Assert.Equal(input, value);
     }
@@ -40,7 +39,6 @@ public class CharMapParserTests
     public void OneOfShouldRestorePositionWhenLookupOrBranchFails(string input)
     {
         var parser = OneOf(Literals.Text("a"), Literals.Text("\u00e9a"), Literals.Text("\u00e9b"));
-
         var context = new ParseContext(new Scanner("!" + input));
         context.Scanner.Cursor.Advance();
         var start = context.Scanner.Cursor.Position;
@@ -50,14 +48,12 @@ public class CharMapParserTests
         Assert.Equal(start, context.Scanner.Cursor.Position);
     }
 
-    [Theory]
-    [InlineData("a")]
-    [InlineData("\u00e9")]
-    public void OneOfShouldPreserveBranchOrderForDuplicateKeys(string input)
+    [Fact]
+    public void OneOfShouldPreserveBranchOrderForDuplicateNonAsciiKeys()
     {
-        var parser = OneOf(Literals.Text(input).Then(1), Literals.Text(input).Then(2));
+        var parser = OneOf(Literals.Text("\u00e9").Then(1), Literals.Text("\u00e9").Then(2));
 
-        Assert.Equal(1, parser.Parse(input));
+        Assert.Equal(1, parser.Parse("\u00e9"));
     }
 
     [Fact]

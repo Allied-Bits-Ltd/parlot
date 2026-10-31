@@ -28,7 +28,12 @@ public sealed class Else<T> : Parser<T>, ISourceable
     {
         context.EnterParser(this);
 
-        if (!_parser.Parse(context, ref result))
+        // The text is read again when the parser fails
+        var pin = context.Pin();
+        var success = _parser.Parse(context, ref result);
+        context.Unpin(pin);
+
+        if (!success)
         {
             // The parser reset the cursor, and may have left the positions of a partial match in the result
             var offset = context.Scanner.Cursor.Offset;
@@ -47,7 +52,6 @@ public sealed class Else<T> : Parser<T>, ISourceable
         context.ExitParser(this);
         return true;
     }
-
 
     public SourceResult GenerateSource(SourceGenerationContext context)
     {
@@ -75,10 +79,11 @@ public sealed class Else<T> : Parser<T>, ISourceable
         //     value = _func != null ? _func(context) : _value;
         // }
         // success = true; (always succeeds)
-        
-        result.Body.Add($"if (!{helperName}({context.ParseContextName}, out {result.ValueVariable}))");
+
+        var success = context.PinnedCall(result, $"{helperName}({context.ParseContextName}, out {result.ValueVariable})");
+        result.Body.Add($"if (!{success})");
         result.Body.Add("{");
-        
+
         if (_func != null)
         {
             var lambdaId = context.RegisterLambda(_func);
@@ -101,13 +106,13 @@ public sealed class Else<T> : Parser<T>, ISourceable
                     $"Else<{typeof(T).Name}> with a value of type '{typeof(T).Name}' cannot be source-generated. " +
                     $"Use a lambda instead, e.g., .Else(static _ => yourValue)");
             }
-            
+
             if (!context.DiscardResult)
             {
                 result.Body.Add($"    {result.ValueVariable} = {valueExpr};");
             }
         }
-        
+
         result.Body.Add("}");
         result.Body.Add($"{result.SuccessVariable} = true;");
 

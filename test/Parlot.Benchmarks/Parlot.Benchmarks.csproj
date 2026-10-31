@@ -3,16 +3,24 @@
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFrameworks>net10.0</TargetFrameworks>
+    <LangVersion>13</LangVersion>
     <IsPackable>false</IsPackable>
     <AnalysisLevel>latest-Default</AnalysisLevel>
     <SignAssembly>False</SignAssembly>
     <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
     <CompilerGeneratedFilesOutputPath>$(BaseIntermediateOutputPath)\GeneratedFiles</CompilerGeneratedFilesOutputPath>
-    <InterceptorsNamespaces>$(InterceptorsNamespaces);Parlot.Benchmarks;</InterceptorsNamespaces>
+  </PropertyGroup>
+
+  <!-- A TextReader entry point embeds the streaming runtime in the whole assembly, so it is opt-in:
+       set the GeneratedReader environment variable to true to benchmark it. -->
+  <PropertyGroup Condition="'$(GeneratedReader)' == 'true'">
+    <DefineConstants>$(DefineConstants);GENERATED_READER</DefineConstants>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="BenchmarkDotNet" />
+    <PackageReference Include="Farkle" />
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" />
     <PackageReference Include="Pidgin" />
     <PackageReference Include="Sprache" />
     <PackageReference Include="Superpower" />
@@ -20,6 +28,9 @@
   </ItemGroup>
   
   <ItemGroup>
+    <Compile Include="../../src/Parlot/SourceGeneration/KnownStringLookup.cs" Link="KnownStringLookup.cs" />
+    <Compile Include="../Parlot.Tests/LiquidScanners.cs" Link="LiquidScanners.cs" />
+    <Compile Include="../Parlot.Tests/HandWrittenLiquidIdentifier.cs" Link="HandWrittenLiquidIdentifier.cs" />
     <ProjectReference Include="..\..\src\Parlot\Parlot.csproj" />
     <ProjectReference Include="..\..\src\Samples\Samples.csproj" />
     
@@ -29,7 +40,7 @@
                       ReferenceOutputAssembly="false"
                       GlobalPropertiesToRemove="ArtifactsPath;OutDir;OutputPath;PublishDir" />
     
-    <!-- Make Parlot.dll available to the source generator at compile time for dynamic assembly loading -->
+    <!-- Make Parlot.dll available while the analyzer executes build-only grammar factories -->
     <Analyzer Include="..\..\src\Parlot\bin\$(Configuration)\netstandard2.0\Parlot.dll" />
     
     <!-- Make Samples.dll available to the source generator at compile time -->
@@ -43,5 +54,8 @@
     <Copy SourceFiles="..\..\src\Parlot\bin\$(Configuration)\net10.0\Parlot.dll"
           DestinationFiles="$(OutDir)Parlot.dll" />
   </Target>
+
+  <Import Project="..\..\src\Parlot.SourceGenerator\build\Parlot.SourceGenerator.props" />
+  <Import Project="..\..\src\Parlot.SourceGenerator\build\Parlot.SourceGenerator.targets" />
 
 </Project>

@@ -1,9 +1,6 @@
 using Parlot.Rewriting;
 using Parlot.SourceGeneration;
 using System;
-#if NET
-using System.Linq;
-#endif
 
 namespace Parlot.Fluent;
 
@@ -32,7 +29,6 @@ public sealed class ElseError<T> : Parser<T>, ISourceable
         return true;
     }
 
-
     public SourceResult GenerateSource(SourceGenerationContext context)
     {
         ThrowHelper.ThrowIfNull(context, nameof(context));
@@ -59,7 +55,7 @@ public sealed class ElseError<T> : Parser<T>, ISourceable
         // {
         //     throw new ParseException(_message, cursor.Position);
         // }
-        
+
         if (context.DiscardResult)
         {
             result.Body.Add($"if ({helperName}({context.ParseContextName}, out _))");
@@ -73,7 +69,7 @@ public sealed class ElseError<T> : Parser<T>, ISourceable
         result.Body.Add("}");
         result.Body.Add("else");
         result.Body.Add("{");
-        result.Body.Add($"    throw new global::Parlot.ParseException(\"{_message.Replace("\"", "\\\"")}\", {cursorName}.Position);");
+        result.Body.Add($"    throw new global::Parlot.ParseException({LiteralHelper.StringToLiteral(_message)}, {cursorName}.Position);");
         result.Body.Add("}");
 
         return result;
@@ -82,7 +78,7 @@ public sealed class ElseError<T> : Parser<T>, ISourceable
     public override string ToString() => $"{_parser} (ElseError)";
 }
 
-public sealed class Error<T> : Parser<T>, ISourceable, ISeekable
+public sealed class Error<T> : Parser<T>, ISeekablePrefixes, ISourceable
 {
     private readonly Parser<T> _parser;
     private readonly string _message;
@@ -95,6 +91,8 @@ public sealed class Error<T> : Parser<T>, ISourceable, ISeekable
 
     /// <inheritdoc />
     public bool SkipWhitespace { get; }
+
+    string[]? ISeekablePrefixes.ExpectedPrefixes => SeekableHints.Prefixes(_parser);
 
     public Error(Parser<T> parser, string message)
     {
@@ -124,7 +122,6 @@ public sealed class Error<T> : Parser<T>, ISourceable, ISeekable
         return false;
     }
 
-
     public SourceResult GenerateSource(SourceGenerationContext context)
     {
         ThrowHelper.ThrowIfNull(context, nameof(context));
@@ -148,10 +145,10 @@ public sealed class Error<T> : Parser<T>, ISourceable, ISeekable
         //     throw new ParseException(_message, cursor.Position);
         // }
         // success = false;
-        
+
         result.Body.Add($"if ({helperName}({context.ParseContextName}, out _))");
         result.Body.Add("{");
-        result.Body.Add($"    throw new global::Parlot.ParseException(\"{_message.Replace("\"", "\\\"")}\", {cursorName}.Position);");
+        result.Body.Add($"    throw new global::Parlot.ParseException({LiteralHelper.StringToLiteral(_message)}, {cursorName}.Position);");
         result.Body.Add("}");
 
         return result;
@@ -160,7 +157,7 @@ public sealed class Error<T> : Parser<T>, ISourceable, ISeekable
     public override string ToString() => $"{_parser} (Error)";
 }
 
-public sealed class Error<T, U> : Parser<U>, ISeekable, ISourceable
+public sealed class Error<T, U> : Parser<U>, ISeekablePrefixes, ISourceable
 {
     private readonly Parser<T> _parser;
     private readonly string _message;
@@ -170,6 +167,8 @@ public sealed class Error<T, U> : Parser<U>, ISeekable, ISourceable
     public char[] ExpectedChars { get; } = [];
 
     public bool SkipWhitespace { get; }
+
+    string[]? ISeekablePrefixes.ExpectedPrefixes => SeekableHints.Prefixes(_parser);
 
     public Error(Parser<T> parser, string message)
     {
@@ -200,7 +199,6 @@ public sealed class Error<T, U> : Parser<U>, ISeekable, ISourceable
         return false;
     }
 
-
     public SourceResult GenerateSource(SourceGenerationContext context)
     {
         ThrowHelper.ThrowIfNull(context, nameof(context));
@@ -224,10 +222,10 @@ public sealed class Error<T, U> : Parser<U>, ISeekable, ISourceable
         //     throw new ParseException(_message, cursor.Position);
         // }
         // success = false;
-        
+
         result.Body.Add($"if ({helperName}({context.ParseContextName}, out _))");
         result.Body.Add("{");
-        result.Body.Add($"    throw new global::Parlot.ParseException(\"{_message.Replace("\"", "\\\"")}\", {cursorName}.Position);");
+        result.Body.Add($"    throw new global::Parlot.ParseException({LiteralHelper.StringToLiteral(_message)}, {cursorName}.Position);");
         result.Body.Add("}");
 
         return result;

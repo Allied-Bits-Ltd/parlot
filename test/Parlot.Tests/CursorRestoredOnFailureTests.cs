@@ -4,69 +4,79 @@ using static Parlot.Fluent.Parsers;
 
 namespace Parlot.Tests;
 
+// A parser that fails must leave the cursor where it started, such that the next alternative reads the same text.
 public class CursorRestoredOnFailureTests
 {
-    private static Parser<string> Create(string scenario)
+    private static void AssertFailsAtStart<T>(Parser<T> parser, string text)
     {
-        var next = Literals.Text("b");
-        var parser = scenario switch
-        {
-            "eof" => Literals.Text("ab").Eof(),
-            "switch" => Literals.Text("a").Switch((_, _) => 0, next),
-            "null" => Literals.Text("a").Switch(static (_, _) => -1, next),
-            "consume" => AnyCharBefore(Literals.Char(','), consumeDelimiter: true).Then(static x => x.ToString()),
-            "keep" => AnyCharBefore(Literals.Char(',')).Then(static x => x.ToString()),
-            _ => throw new System.InvalidOperationException()
-        };
-        return parser;
-    }
-
-    [Theory]
-    [InlineData("eof", "abc")]
-    [InlineData("switch", "ac")]
-    [InlineData("null", "ab")]
-    [InlineData("consume", ",abc")]
-    [InlineData("keep", ",abc")]
-    public void FailureRestoresOffsetLineAndColumn(string scenario, string text)
-    {
-        var parser = Create(scenario);
-        var context = new ParseContext(new Scanner("!!" + text));
-        context.Scanner.Cursor.Advance(2);
-        var start = context.Scanner.Cursor.Position;
-        var result = new ParseResult<string>();
+        var context = new ParseContext(new Scanner(text));
+        var result = new ParseResult<T>();
 
         Assert.False(parser.Parse(context, ref result));
-        Assert.Equal(start, context.Scanner.Cursor.Position);
-
-        var alternative = parser.Or(Literals.Text(text));
-        Assert.True(alternative.Parse(context, ref result));
-        Assert.Equal(text, result.Value);
+        Assert.Equal(0, context.Scanner.Cursor.Position.Offset);
+        Assert.Equal(1, context.Scanner.Cursor.Position.Line);
+        Assert.Equal(1, context.Scanner.Cursor.Position.Column);
     }
 
     [Fact]
-    public void SuccessfulCasesStillMatch()
+    public void EofShouldRestoreTheCursorWhenTextFollows()
     {
-        Assert.True(Create("eof").TryParse("ab", out var value));
-        Assert.Equal("ab", value);
-        Assert.True(Create("switch").TryParse("ab", out value));
-        Assert.Equal("b", value);
-        Assert.True(Create("consume").TryParse("abc,", out value));
-        Assert.Equal("abc", value);
-    }
-    [Theory]
-    [InlineData("eof", "abc")]
-    [InlineData("switch", "ac")]
-    [InlineData("null", "ab")]
-    [InlineData("consume", ",abc")]
-    public void DiscardedFailureRestoresCursor(string scenario, string text)
-    {
-        var parser = (Parser<char>)Literals.Char('!').AndSkip(Create(scenario));
-        var context = new ParseContext(new Scanner("!!" + text));
-        context.Scanner.Cursor.Advance();
-        var start = context.Scanner.Cursor.Position;
-        var result = new ParseResult<char>();
-        Assert.False(parser.Parse(context, ref result));
-        Assert.Equal(start, context.Scanner.Cursor.Position);
+        AssertFailsAtStart(Literals.Text("ab").Eof(), "abc");
     }
 
+    [Fact]
+    public void EofShouldLetTheNextAlternativeMatch()
+    {
+        var parser = Literals.Text("ab").Eof().Or(Literals.Text("abc"));
+
+        Assert.True(parser.TryParse("abc", out var value));
+        Assert.Equal("abc", value);
+
+        Assert.True(parser.TryParse("ab", out value));
+        Assert.Equal("ab", value);
+    }
+
+    [Fact]
+    public void SwitchShouldRestoreTheCursorWhenTheSelectedParserFails()
+    {
+        AssertFailsAtStart(Literals.Text("a").Switch(static (_, _) => 0, Literals.Text("b")), "ac");
+    }
+
+    [Theory]
+    [InlineData(-1)]
+    [InlineData(1)]
+    public void SwitchShouldRestoreTheCursorWhenTheIndexIsOutOfRange(int index)
+    {
+        AssertFailsAtStart(Literals.Text("a").Switch((_, _) => index, Literals.Text("b")), "ab");
+    }
+
+    [Fact]
+    public void SwitchShouldLetTheNextAlternativeMatch()
+    {
+        var parser = Literals.Text("a").Switch(static (_, _) => 0, Literals.Text("b")).Or(Literals.Text("ac"));
+
+        Assert.True(parser.TryParse("ac", out var value));
+        Assert.Equal("ac", value);
+
+        Assert.True(parser.TryParse("ab", out value));
+        Assert.Equal("b", value);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void AnyCharBeforeShouldRestoreTheCursorWhenEmpty(bool consumeDelimiter)
+    {
+        AssertFailsAtStart(AnyCharBefore(Literals.Char(','), consumeDelimiter: consumeDelimiter), ",abc");
+    }
+
+    [Fact]
+    public void AnyCharBeforeShouldLetTheNextAlternativeMatch()
+    {
+        var parser = AnyCharBefore(Literals.Char(','), consumeDelimiter: true).Then(static x => x.ToString())
+            .Or(Literals.Text(",abc"));
+
+        Assert.True(parser.TryParse(",abc", out var value));
+        Assert.Equal(",abc", value);
+    }
 }

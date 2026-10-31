@@ -1,3 +1,4 @@
+using System;
 using Parlot.Fluent;
 using Parlot.Rewriting;
 using System.Globalization;
@@ -25,6 +26,7 @@ public class NumberLiteralTests
     {
         // The chars a number can start with are the digits, the signs and the decimal separator, and the underscore
         // when it is allowed. A group separator or an exponent only follow digits, so they can't be the first char.
+        // The runtime parser and the one the source generator builds the lookup tables from have to agree on the set.
         var parsers = new System.Collections.Generic.List<ISeekable>
         {
             (ISeekable)new TestNumberLiteral(options, decimalSeparator, groupSeparator),
@@ -66,9 +68,19 @@ public class NumberLiteralTests
         {
         }
 
-        public override bool TryParseNumber(System.ReadOnlySpan<char> s, NumberStyles style, System.IFormatProvider provider, out decimal value)
+        public override bool TryParseNumber(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider provider, out decimal value)
             => decimal.TryParse(s.ToString(), style, provider, out value);
     }
+
+#if NET8_0_OR_GREATER
+    [Fact]
+    public void GenericRuntimeTryParseShouldStillHonorNumberStyles()
+    {
+        Assert.True(Numbers.TryParse<int>("2A", NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var value));
+        Assert.Equal(42, value);
+        Assert.False(Numbers.TryParse<int>("-42", NumberStyles.None, CultureInfo.InvariantCulture, out _));
+    }
+#endif
 
     [Fact]
     public void ByteNumberLiteralShouldParseValidNumbers()
@@ -275,6 +287,129 @@ public class NumberLiteralTests
         Assert.Equal(BigInteger.Parse("-123456789012345678901234567890"), result3);
     }
 
+    [Theory]
+    [InlineData("0", 0)]
+    [InlineData("2a", 42)]
+    [InlineData("CAFE", 51966)]
+    public void HexadecimalNumberLiteralShouldParseValidNumbers(string source, int expected)
+    {
+        Assert.True(Literals.Hexadecimal<int>().TryParse(source, out var result));
+        Assert.Equal(expected, result);
+    }
+
+    [Theory]
+    [InlineData("0", 0)]
+    [InlineData("52", 42)]
+    [InlineData("177777", 65535)]
+    public void OctalNumberLiteralShouldParseValidNumbers(string source, long expected)
+    {
+        Assert.True(Literals.Octal<long>().TryParse(source, out var result));
+        Assert.Equal(expected, result);
+    }
+
+    [Theory]
+    [InlineData("0", 0)]
+    [InlineData("101010", 42)]
+    [InlineData("11111111", 255)]
+    public void BinaryNumberLiteralShouldParseValidNumbers(string source, byte expected)
+    {
+        Assert.True(Literals.Binary<byte>().TryParse(source, out var result));
+        Assert.Equal(expected, result);
+    }
+
+    [Fact]
+    public void RadixNumberLiteralsShouldSupportDifferentNumericTypes()
+    {
+        Assert.Equal(255u, Literals.Hexadecimal<uint>().Parse("ff"));
+        Assert.Equal(uint.MaxValue, Literals.Hexadecimal<uint>().Parse("ffffffff"));
+        Assert.Equal(int.MaxValue, Literals.Hexadecimal<int>().Parse("7fffffff"));
+        Assert.Equal((ushort)511, Literals.Octal<ushort>().Parse("777"));
+        Assert.Equal(10L, Literals.Binary<long>().Parse("1010"));
+        Assert.Equal(new BigInteger(255), Literals.Hexadecimal<BigInteger>().Parse("ff"));
+    }
+
+    [Fact]
+    public void RadixNumberLiteralsShouldNotConsumePrefixes()
+    {
+        var parser = Literals.Text("0x").SkipAnd(Literals.Hexadecimal<int>());
+
+        Assert.True(parser.TryParse("0x2a", out var result));
+        Assert.Equal(42, result);
+    }
+
+    [Fact]
+    public void RadixNumberLiteralsShouldFailOnInvalidOrOverflowingNumbers()
+    {
+        Assert.False(Literals.Hexadecimal<int>().TryParse("xyz", out _));
+        Assert.False(Literals.Octal<int>().TryParse("89", out _));
+        Assert.False(Literals.Binary<int>().TryParse("2", out _));
+        Assert.False(Literals.Hexadecimal<byte>().TryParse("100", out _));
+        Assert.False(Literals.Hexadecimal<int>().TryParse("80000000", out _));
+        Assert.False(Literals.Octal<byte>().TryParse("400", out _));
+        Assert.False(Literals.Binary<byte>().TryParse("100000000", out _));
+    }
+
+#if NET8_0_OR_GREATER
+    [Fact]
+    public void GenericRadixNumbersShouldFailOnOverflowWithoutAnException()
+    {
+        // These types go through the generic TryParseRadix<TNumber>, which must not throw on overflow
+        Assert.Equal(Int128.MaxValue, Literals.Hexadecimal<Int128>().Parse("7fffffffffffffffffffffffffffffff"));
+        Assert.False(Literals.Hexadecimal<Int128>().TryParse("80000000000000000000000000000000", out _));
+        Assert.Equal(UInt128.MaxValue, Literals.Hexadecimal<UInt128>().Parse("ffffffffffffffffffffffffffffffff"));
+        Assert.False(Literals.Hexadecimal<UInt128>().TryParse("100000000000000000000000000000000", out _));
+        Assert.Equal(Int128.MaxValue, Literals.Binary<Int128>().Parse(new string('1', 127)));
+        Assert.False(Literals.Binary<Int128>().TryParse(new string('1', 128), out _));
+        Assert.Equal((Int128)0x1FF, Literals.Octal<Int128>().Parse("777"));
+
+        if (IntPtr.Size == 8)
+        {
+            Assert.Equal(nint.MaxValue, Literals.Hexadecimal<nint>().Parse("7fffffffffffffff"));
+            Assert.False(Literals.Hexadecimal<nint>().TryParse("8000000000000000", out _));
+            Assert.Equal(nuint.MaxValue, Literals.Hexadecimal<nuint>().Parse("ffffffffffffffff"));
+            Assert.False(Literals.Hexadecimal<nuint>().TryParse("10000000000000000", out _));
+        }
+
+        // The generic method called directly with a type that has its own overload
+        Assert.True(Numbers.TryParseRadix<ulong>("ffffffffffffffff", 16, out var charsRead, out var unsignedValue));
+        Assert.Equal(ulong.MaxValue, unsignedValue);
+        Assert.Equal(16, charsRead);
+        Assert.False(Numbers.TryParseRadix<ulong>("10000000000000000", 16, out charsRead, out unsignedValue));
+        Assert.Equal(0, charsRead);
+        Assert.Equal(0ul, unsignedValue);
+        Assert.True(Numbers.TryParseRadix<long>("7fffffffffffffff", 16, out _, out var signedValue));
+        Assert.Equal(long.MaxValue, signedValue);
+        Assert.False(Numbers.TryParseRadix<long>("8000000000000000", 16, out _, out _));
+        Assert.False(Numbers.TryParseRadix<sbyte>("80", 16, out _, out _));
+        Assert.True(Numbers.TryParseRadix<sbyte>("7f", 16, out _, out var small));
+        Assert.Equal(sbyte.MaxValue, small);
+
+        // A type without a largest value never overflows
+        Assert.True(Numbers.TryParseRadix<BigInteger>("ffffffffffffffffffffffffffffffffffffffff", 16, out charsRead, out var big));
+        Assert.Equal(BigInteger.Parse("1461501637330902918203684832716283019655932542975"), big);
+        Assert.Equal(40, charsRead);
+    }
+#endif
+
+    [Fact]
+    public void RadixNumberLiteralsShouldResetPositionWhenTheyFail()
+    {
+        var parser = OneOf(
+            Literals.Hexadecimal<byte>().Then(static _ => "number"),
+            Literals.Text("100").Then(static _ => "text"));
+
+        Assert.True(parser.TryParse("100", out var result));
+        Assert.Equal("text", result);
+    }
+
+    [Fact]
+    public void RadixNumberTermsShouldSkipWhiteSpace()
+    {
+        Assert.Equal(42, Terms.Hexadecimal<int>().Parse("  2a"));
+        Assert.Equal(42, Terms.Octal<int>().Parse("  52"));
+        Assert.Equal(42, Terms.Binary<int>().Parse("  101010"));
+    }
+
     [Fact]
     public void NumberLiteralsShouldSupportExponent()
     {
@@ -379,5 +514,101 @@ public class NumberLiteralTests
     {
         Assert.True(Literals.Number<decimal>(NumberOptions.Float).TryParse(source, out var result));
         Assert.Equal(expected, result);
+    }
+
+    [Fact]
+    public void ExpectedCharsShouldContainTheSecondDecimalSeparator()
+    {
+        var parsers = new System.Collections.Generic.List<ISeekable>
+        {
+            (ISeekable)Literals.Number<decimal>(NumberOptions.Number, '.', '_', ','),
+            (ISeekable)Literals.Number<long>(NumberOptions.Number, '.', '_', ','),
+        };
+
+        foreach (var parser in parsers)
+        {
+            Assert.Contains(',', parser.ExpectedChars!);
+            Assert.Contains('.', parser.ExpectedChars!);
+        }
+    }
+
+    [Theory]
+    [InlineData("1_000", 1000)]
+    [InlineData("1_2_3", 123)]
+    [InlineData("12", 12)]
+    public void NumberLiteralShouldAllowUnderscores(string source, int expected)
+    {
+        Assert.Equal(expected, Literals.Number<int>(NumberOptions.Integer | NumberOptions.AllowUnderscore).Parse(source));
+        Assert.Equal((decimal)expected, Literals.Number<decimal>(NumberOptions.Number | NumberOptions.AllowUnderscore).Parse(source));
+    }
+
+    [Fact]
+    public void NumberLiteralShouldNotAllowUnderscoresByDefault()
+    {
+        var parser = Literals.Number<int>(NumberOptions.Integer).AndSkip(Literals.Text("_000"));
+
+        Assert.Equal(1, parser.Parse("1_000"));
+    }
+
+    [Theory]
+    [InlineData("1.5", 1.5)]
+    [InlineData("1,5", 1.5)]
+    [InlineData(",5", 0.5)]
+    [InlineData("-1,25", -1.25)]
+    [InlineData("1_0,5", 10.5)]
+    public void NumberLiteralShouldAcceptTheSecondDecimalSeparator(string source, double expected)
+    {
+        var options = NumberOptions.Number | NumberOptions.AllowUnderscore;
+
+        Assert.Equal((decimal)expected, Literals.Number<decimal>(options, '.', '_', ',').Parse(source));
+        Assert.Equal(expected, Literals.Number<double>(options, '.', '_', ',').Parse(source));
+        Assert.Equal((decimal)expected, Terms.Number<decimal>(options, '.', '_', ',').Parse(" " + source));
+    }
+
+    [Theory]
+    [InlineData("1,5", 1.5)]
+    [InlineData("1.5", 1.5)]
+    [InlineData("12", 12)]
+    public void SecondDecimalSeparatorShouldBeAbleToBeTheGroupSeparator(string source, double expected)
+    {
+        var parser = Literals.Number<decimal>(NumberOptions.Number | NumberOptions.AllowGroupSeparators, '.', ',', ',');
+
+        Assert.Equal((decimal)expected, parser.Parse(source));
+    }
+
+    [Fact]
+    public void NumberLiteralShouldFailWhenNeitherDecimalSeparatorMatches()
+    {
+        var parser = Literals.Number<decimal>(NumberOptions.Number, ',', '_', ';');
+
+        // The dot is neither of the separators, so the number ends before it
+        Assert.Equal(1m, parser.Parse("1.5"));
+        Assert.Equal(1.5m, parser.Parse("1;5"));
+        Assert.Equal(1.5m, parser.Parse("1,5"));
+    }
+
+    [Fact]
+    public void NumberLiteralShouldLeaveTheTrailingDecimalSeparatorWhenTheFractionalPartIsRequired()
+    {
+        var options = NumberOptions.Number | NumberOptions.RequireFractionalPartForDecimals;
+        var parser = Literals.Number<decimal>(options).And(Literals.Char('.'));
+
+        Assert.True(parser.TryParse("1.", out var result));
+        Assert.Equal(1m, result.Item1);
+
+        Assert.Equal(1.5m, Literals.Number<decimal>(options).Parse("1.5"));
+    }
+
+    [Fact]
+    public void NumberLiteralShouldConsumeTheTrailingDecimalSeparatorByDefault()
+    {
+        var parser = Literals.Number<decimal>(NumberOptions.Number);
+
+        var context = new ParseContext(new Scanner("1."));
+        var result = new ParseResult<decimal>();
+
+        Assert.True(parser.Parse(context, ref result));
+        Assert.Equal(1m, result.Value);
+        Assert.Equal(2, context.Scanner.Cursor.Offset);
     }
 }

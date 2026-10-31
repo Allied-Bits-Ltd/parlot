@@ -1,552 +1,413 @@
-using Parlot.Tests.Calc;
-using Parlot.Fluent;
+﻿#nullable enable
+
 using System;
 using System.Linq;
-using System.Threading;
+using System.Reflection;
+using Parlot.Tests.Calc;
 using Xunit;
-using static Parlot.Fluent.Parsers;
 
 namespace Parlot.SourceGenerator.Tests;
 
 public class GrammarsTests
 {
     [Fact]
-    public void ParserWithNoName_InterceptsMethodCall()
+    public void Generated_Public_Surface_Is_Only_Direct_TryParse_Methods()
     {
-        // This call will be intercepted and return the source-generated parser
-        var parser = Grammars.ParserWithNoName();
+        var methods = typeof(Grammars).GetMethods(
+                BindingFlags.Public | BindingFlags.Static | BindingFlags.DeclaredOnly)
+            .Where(static method => method.Name.StartsWith("TryParse", StringComparison.Ordinal))
+            .ToArray();
 
-        var result = parser.Parse("hello");
-        Assert.Equal("hello", result);
-
-        result = parser.Parse("world");
-        Assert.Null(result);
+        Assert.NotEmpty(methods);
+        Assert.All(methods, static method =>
+        {
+            Assert.Equal(typeof(bool), method.ReturnType);
+            Assert.Equal(typeof(string), method.GetParameters()[0].ParameterType);
+            Assert.True(method.GetParameters()[^1].IsOut);
+        });
+        Assert.DoesNotContain(
+            typeof(Grammars).GetMethods(BindingFlags.NonPublic | BindingFlags.Static),
+            static method => method.Name.StartsWith("Build", StringComparison.Ordinal));
     }
 
     [Fact]
-    public void HelloParser_InterceptsMethodCall()
+    public void Operators_Build_Generated_Parsers()
     {
-        // This call will be intercepted and return the source-generated parser
-        var parser = Grammars.HelloParser();
+        Assert.True(Grammars.TryParseOperators("-1 [2, 3] foo bar end", out var result));
+        Assert.True(result.Item1);
+        Assert.Equal(1, result.Item2);
+        Assert.Equal([2, 3], result.Item3);
+        Assert.Equal(["foo", "bar"], result.Item4);
 
-        var result = parser.Parse("hello");
-        Assert.Equal("hello", result);
+        Assert.True(Grammars.TryParseOperators("7", out result));
+        Assert.False(result.Item1);
+        Assert.Equal(7, result.Item2);
+        Assert.Empty(result.Item3);
+        Assert.Empty(result.Item4);
 
-        result = parser.Parse("world");
-        Assert.Null(result);
+        // The trailing !Terms.Char('!') lookahead rejects an exclamation mark
+        Assert.False(Grammars.TryParseOperators("7 !", out _));
     }
 
     [Fact]
-    public void ExpressionParser_InterceptsMethodCall()
+    public void Matched_Text_Reuses_Existing_Strings()
     {
-        var parser = Grammars.ExpressionParser();
+        var exactInput = new string(['h', 'e', 'l', 'l', 'o']);
+        var differentCaseInput = new string(['H', 'E', 'L', 'L', 'O']);
 
-        // Test basic values
-        var result = parser.Parse("one");
-        Assert.Equal(1.0, result);
-
-        result = parser.Parse("two");
-        Assert.Equal(2.0, result);
-
-        result = parser.Parse("three");
-        Assert.Equal(3.0, result);
-
-        // Test additions
-        result = parser.Parse("one + two");
-        Assert.Equal(3.0, result);
-
-        result = parser.Parse("one + two + three");
-        Assert.Equal(6.0, result);
-
-        // Test invalid input returns default (0.0) when parsing fails
-        result = parser.Parse("four");
-        Assert.Equal(0.0, result);
+        Assert.True(Grammars.TryParseMatchedText(exactInput, out var exact));
+        Assert.Same("hello", exact);
+        Assert.NotSame(exactInput, exact);
+        Assert.True(Grammars.TryParseMatchedText(differentCaseInput, out var differentCase));
+        Assert.Same(differentCaseInput, differentCase);
+        var slicedInput = "HELLO world";
+        Assert.True(Grammars.TryParseMatchedText(slicedInput, out var sliced));
+        Assert.Equal("HELLO", sliced);
+        Assert.NotSame(slicedInput, sliced);
+        var prefixedInput = " HELLO";
+        Assert.True(Grammars.TryParseMatchedTerm(prefixedInput, out var prefixed));
+        Assert.Equal("HELLO", prefixed);
+        Assert.NotSame(prefixedInput, prefixed);
+        Assert.False(Grammars.TryParseMatchedText("world", out _));
+        Assert.True(Grammars.TryParseEmptyText("", out var empty));
+        Assert.Same(string.Empty, empty);
+        Assert.True(Grammars.TryParseCanonicalText(differentCaseInput, out var canonical));
+        Assert.Same("hello", canonical);
+        Assert.True(Grammars.TryParseLiteralsText(exactInput, out var ordinal));
+        Assert.Same("hello", ordinal);
     }
 
     [Fact]
-    public void LeftAssociativeParser_InterceptsMethodCall()
+    public void Matched_Keyword_Respects_Boundary_And_Reuses_Strings()
     {
-        var parser = Grammars.LeftAssociativeParser();
+        var input = new string(['I', 'F']);
 
-        // Test basic number
-        var result = parser.Parse("5");
-        Assert.Equal(5.0, result);
+        Assert.True(Grammars.TryParseMatchedKeyword(input, out var matched));
+        Assert.Same(input, matched);
+        Assert.True(Grammars.TryParseMatchedKeyword("IF(", out var sliced));
+        Assert.Equal("IF", sliced);
+        Assert.False(Grammars.TryParseMatchedKeyword("IFoo", out _));
+    }
 
-        // Test addition
-        result = parser.Parse("3 + 2");
-        Assert.Equal(5.0, result);
+    [Theory]
+    [InlineData("one", 1.0)]
+    [InlineData("two + three", 5.0)]
+    [InlineData("one + two + three", 6.0)]
+    public void Expression_Composes_Choice_Sequence_And_Repetition(string input, double expected)
+    {
+        Assert.True(Grammars.TryParseExpression(input, out var value));
+        Assert.Equal(expected, value);
+    }
 
-        // Test subtraction
-        result = parser.Parse("10 - 4");
-        Assert.Equal(6.0, result);
+    [Theory]
+    [InlineData("10 - 4 - 2", 4.0)]
+    [InlineData("10 + 5 - 3", 12.0)]
+    public void Left_Associative_Operators_Evaluate_In_Order(string input, double expected)
+    {
+        Assert.True(Grammars.TryParseLeftAssociative(input, out var value));
+        Assert.Equal(expected, value);
+    }
 
-        // Test multiple operators (left-associative)
-        result = parser.Parse("10 - 4 - 2");
-        Assert.Equal(4.0, result); // (10 - 4) - 2 = 4
-
-        result = parser.Parse("1 + 2 + 3");
-        Assert.Equal(6.0, result); // (1 + 2) + 3 = 6
-
-        // Test mixed operators
-        result = parser.Parse("10 + 5 - 3");
-        Assert.Equal(12.0, result); // (10 + 5) - 3 = 12
+    [Theory]
+    [InlineData("2 + 3 * 4", 14.0)]
+    [InlineData("2 * 3 + 4", 10.0)]
+    [InlineData("1 + 2 * 3 - 4 / 2", 5.0)]
+    [InlineData("20 / 4 / 2", 2.5)]
+    public void Nested_Left_Associative_Operators_Preserve_Precedence(string input, double expected)
+    {
+        Assert.True(Grammars.TryParseNestedLeftAssociative(input, out var value));
+        Assert.Equal(expected, value);
     }
 
     [Fact]
-    public void NestedLeftAssociativeParser_InterceptsMethodCall()
+    public void Left_Associative_Stops_When_Operator_And_Operand_Are_Empty()
     {
-        var parser = Grammars.NestedLeftAssociativeParser();
+        Assert.True(Grammars.TryParseLeftAssociativeEmpty("x+x+y", out var value));
+        Assert.Equal(3, value);
 
-        // Test basic number
-        var result = parser.Parse("5");
-        Assert.Equal(5.0, result);
-
-        // Test multiplication (higher precedence)
-        result = parser.Parse("3 * 2");
-        Assert.Equal(6.0, result);
-
-        // Test division
-        result = parser.Parse("10 / 2");
-        Assert.Equal(5.0, result);
-
-        // Test addition (lower precedence)
-        result = parser.Parse("3 + 2");
-        Assert.Equal(5.0, result);
-
-        // Test precedence: multiplication before addition
-        result = parser.Parse("2 + 3 * 4");
-        Assert.Equal(14.0, result); // 2 + (3 * 4) = 2 + 12 = 14
-
-        result = parser.Parse("2 * 3 + 4");
-        Assert.Equal(10.0, result); // (2 * 3) + 4 = 6 + 4 = 10
-
-        // Test complex expression
-        result = parser.Parse("1 + 2 * 3 - 4 / 2");
-        Assert.Equal(5.0, result); // 1 + (2*3) - (4/2) = 1 + 6 - 2 = 5
-
-        // Test left-associativity within same precedence
-        result = parser.Parse("20 / 4 / 2");
-        Assert.Equal(2.5, result); // (20 / 4) / 2 = 5 / 2 = 2.5
+        Assert.True(Grammars.TryParseLeftAssociativeContextEmpty("x+x+y", out value));
+        Assert.Equal(3, value);
     }
 
     [Fact]
-    public void GeneratedLeftAssociative_RestoresCursorWhenRightOperandMissing()
+    public void Left_Associative_Rolls_Back_An_Operator_With_No_Right_Operand()
     {
-        var parser = Grammars.LeftAssociativeAdditionParser();
+        Assert.True(Grammars.TryParseLeftAssociativeThenPlus("1+", out var value));
+        Assert.Equal(1m, value);
+    }
 
-        var context = new ParseContext(new Scanner("1+"));
-        var result = new ParseResult<decimal>();
-
-        Assert.True(parser.Parse(context, ref result));
-        Assert.Equal(1m, result.Value);
-        Assert.Equal(0, result.Start);
-        Assert.Equal(1, result.End);
-
-        // The trailing '+' must not be consumed if the RHS doesn't parse.
-        Assert.Equal(1, context.Scanner.Cursor.Offset);
+    [Theory]
+    [InlineData("10 - 4 - 2", 4.0, 8.0)]
+    [InlineData("10 + 4 - 2", 12.0, 12.0)]
+    [InlineData("10", 10.0, 10.0)]
+    public void Value_Associative_Parsers_Receive_Operator_Values(string input, double leftExpected, double rightExpected)
+    {
+        Assert.True(Grammars.TryParseValueLeftAssociative(input, out var left));
+        Assert.Equal(leftExpected, left);
+        Assert.True(Grammars.TryParseValueRightAssociative(input, out var right));
+        Assert.Equal(rightExpected, right);
+        Assert.True(Grammars.TryParseValueLeftAssociativeContext(input, out var leftContext));
+        Assert.Equal(leftExpected, leftContext);
+        Assert.True(Grammars.TryParseValueRightAssociativeContext(input, out var rightContext));
+        Assert.Equal(rightExpected, rightContext);
     }
 
     [Fact]
-    public void GeneratedLeftAssociativeWithContext_RestoresCursorWhenRightOperandMissing()
+    public void Value_Right_Associative_Rolls_Back_An_Operator_With_No_Right_Operand()
     {
-        var parser = Grammars.LeftAssociativeAdditionWithContextParser();
-
-        var context = new ParseContext(new Scanner("1+"));
-        var result = new ParseResult<decimal>();
-
-        Assert.True(parser.Parse(context, ref result));
-        Assert.Equal(1m, result.Value);
-        Assert.Equal(0, result.Start);
-        Assert.Equal(1, result.End);
-
-        Assert.Equal(1, context.Scanner.Cursor.Offset);
+        Assert.True(Grammars.TryParseValueRightAssociativeThenPlus("1+", out var value));
+        Assert.Equal(1.0, value);
     }
 
     [Fact]
-    public void GeneratedUnary_RestoresCursorWhenOperandMissing()
+    public void Value_Right_Associative_Stops_When_A_Pair_Consumes_No_Input()
     {
-        var parser = Grammars.UnaryNegateDecimalParser();
+        Assert.True(Grammars.TryParseValueRightAssociativeEmpty("", out var value));
+        Assert.Equal(1, value);
+    }
 
-        var context = new ParseContext(new Scanner("-"));
-        var result = new ParseResult<decimal>();
+    [Theory]
+    [InlineData("1", 1)]
+    [InlineData("-1", -1)]
+    [InlineData("--1", -1)]
+    [InlineData("+1", 101)]
+    [InlineData("-+1", -101)]
+    public void Unary_Treats_A_Non_Consuming_Operator_As_No_Operator(string input, long expected)
+    {
+        Assert.True(Grammars.TryParseUnaryEmptyOperator(input, out var value));
+        Assert.Equal(expected, value);
+        Assert.True(Grammars.TryParseUnaryContextEmptyOperator(input, out var contextValue));
+        Assert.Equal(expected, contextValue);
+        Assert.False(Grammars.TryParseUnaryEmptyOperator("x", out _));
+        Assert.False(Grammars.TryParseUnaryContextEmptyOperator("x", out _));
+    }
 
-        Assert.False(parser.Parse(context, ref result));
+    [Theory]
+    [InlineData("abcdefg", "abcdefg")]
+    [InlineData("z", "z")]
+    [InlineData("g", null)]
+    public void Seven_Element_Sequence_Is_Tried_By_OneOf(string input, string? expected)
+    {
+        Assert.Equal(expected != null, Grammars.TryParseSevenSequenceChoice(input, out var value));
+        Assert.Equal(expected, value);
+    }
 
-        // The '-' must not be consumed on failure.
-        Assert.Equal(0, context.Scanner.Cursor.Offset);
+    [Theory]
+    [InlineData("ab", "a")]
+    [InlineData("b", "")]
+    [InlineData("x", null)]
+    public void Pattern_With_No_Minimum_Size_Matches_Nothing(string input, string? expected)
+    {
+        Assert.Equal(expected != null, Grammars.TryParseEmptyPattern(input, out var value));
+        Assert.Equal(expected, value);
+    }
+
+    [Theory]
+    [InlineData("b", "b")]
+    [InlineData("c", "c")]
+    [InlineData("a", null)]
+    public void Replaced_Recursive_Parser_Is_Found_By_OneOf(string input, string? expected)
+    {
+        Assert.Equal(expected != null, Grammars.TryParseReplacedRecursive(input, out var value));
+        Assert.Equal(expected, value);
     }
 
     [Fact]
-    public void GeneratedUnaryWithContext_RestoresCursorWhenOperandMissing()
+    public void Unary_Rolls_Back_An_Operator_With_No_Operand()
     {
-        var parser = Grammars.UnaryNegateDecimalWithContextParser();
+        Assert.True(Grammars.TryParseUnaryFallback("-", out var value));
+        Assert.Equal(42m, value);
+    }
 
-        var context = new ParseContext(new Scanner("-"));
-        var result = new ParseResult<decimal>();
-
-        Assert.False(parser.Parse(context, ref result));
-        Assert.Equal(0, context.Scanner.Cursor.Offset);
+    [Theory]
+    [InlineData("5", 5)]
+    [InlineData("-5", -5)]
+    [InlineData("--5", 5)]
+    [InlineData("2 * 3", 6)]
+    [InlineData("1 + 2 * 3", 7)]
+    [InlineData("(1 + 2) * 3", 9)]
+    public void Recursive_Calculator_Produces_User_Owned_Ast(string input, decimal expected)
+    {
+        Assert.True(Grammars.TryParseCalculator(input, out var expression));
+        Assert.Equal(expected, expression.Evaluate());
     }
 
     [Fact]
-    public void GenericPropertyParserSample_InterceptsMethodCall()
+    public void Recursive_Calculator_Preserves_Ast_Shape()
     {
-        var parser = Grammars.GenericPropertyParserSample();
+        Assert.True(Grammars.TryParseCalculator("2 + 3 * 4", out var expression));
+        var addition = Assert.IsType<Addition>(expression);
+        Assert.IsType<Number>(addition.Left);
+        Assert.IsType<Multiplication>(addition.Right);
 
-        var node = parser.Parse("1 == long 2");
-        Assert.NotNull(node);
-
-        var nodeType = node!.GetType();
-        Assert.Equal("BasicNode", nodeType.Name);
-
-        var valueProperty = nodeType.GetProperty("Value");
-        Assert.NotNull(valueProperty);
-        Assert.Equal(2L, valueProperty!.GetValue(node));
-
-        // Case-insensitive property name
-        var node2 = parser.Parse("1 == LoNg 3");
-        Assert.NotNull(node2);
-        Assert.Equal(3L, valueProperty.GetValue(node2!));
+        Assert.True(Grammars.TryParseCalculator("(2 + 3) * 4", out expression));
+        var multiplication = Assert.IsType<Multiplication>(expression);
+        Assert.IsType<Addition>(multiplication.Left);
+        Assert.IsType<Number>(multiplication.Right);
     }
 
     [Fact]
-    public void CalculatorParser_InterceptsMethodCall()
+    public void Seekable_OneOf_Invokes_Only_The_Matching_Custom_Emitter()
     {
-        var parser = Grammars.CalculatorParser();
+        GeneratedParserCounters.Reset();
 
-        // Test basic number
-        var result = parser.Parse("5");
-        Assert.NotNull(result);
-        Assert.Equal(5m, ((Number)result).Value);
-
-        // Test negation
-        result = parser.Parse("-5");
-        Assert.NotNull(result);
-        Assert.IsType<NegateExpression>(result);
-        Assert.Equal(5m, ((Number)((NegateExpression)result).Inner).Value);
-
-        // Test double negation
-        result = parser.Parse("--5");
-        Assert.NotNull(result);
-        Assert.IsType<NegateExpression>(result);
-
-        // Test addition
-        result = parser.Parse("3 + 2");
-        Assert.NotNull(result);
-        Assert.IsType<Addition>(result);
-
-        // Test multiplication
-        result = parser.Parse("3 * 2");
-        Assert.NotNull(result);
-        Assert.IsType<Multiplication>(result);
-
-        // Test precedence: multiplication before addition
-        result = parser.Parse("2 + 3 * 4");
-        Assert.NotNull(result);
-        Assert.IsType<Addition>(result);
-        var add = (Addition)result;
-        Assert.IsType<Number>(add.Left);
-        Assert.IsType<Multiplication>(add.Right);
-
-        // Test parentheses
-        result = parser.Parse("(2 + 3) * 4");
-        Assert.NotNull(result);
-        Assert.IsType<Multiplication>(result);
-        var mult = (Multiplication)result;
-        Assert.IsType<Addition>(mult.Left);
-        Assert.IsType<Number>(mult.Right);
-
-        // Test complex expression with negation
-        result = parser.Parse("-2 + 3");
-        Assert.NotNull(result);
-        Assert.IsType<Addition>(result);
-        add = (Addition)result;
-        Assert.IsType<NegateExpression>(add.Left);
-        Assert.IsType<Number>(add.Right);
+        Assert.True(Grammars.TryParseCountingOneOf("  b", out var value));
+        Assert.Equal('b', value);
+        Assert.Equal(0, GeneratedParserCounters.GetCount("a"));
+        Assert.Equal(1, GeneratedParserCounters.GetCount("b"));
     }
 
     [Fact]
-    public void CountingOneOf_OnlyMatchingParserInvoked()
+    public void Deferred_Set_After_The_OneOf_Is_In_The_Generated_Lookup_Table()
     {
-        CountingParser.Reset();
-        var parser = Grammars.CountingOneOfParser();
+        GeneratedParserCounters.Reset();
 
-        var result = parser.Parse("b");
-        Assert.Equal('b', result);
+        Assert.True(Grammars.TryParseLateDeferredOneOf("  b", out var value));
+        Assert.Equal('b', value);
+        Assert.Equal(0, GeneratedParserCounters.GetCount("late-a"));
+        Assert.Equal(1, GeneratedParserCounters.GetCount("late-b"));
 
-        Assert.Equal(0, CountingParser.GetCount("a"));
-        Assert.Equal(1, CountingParser.GetCount("b"));
+        GeneratedParserCounters.Reset();
+
+        Assert.True(Grammars.TryParseLateDeferredOneOf("  a", out value));
+        Assert.Equal('a', value);
+        Assert.Equal(1, GeneratedParserCounters.GetCount("late-a"));
+        Assert.Equal(0, GeneratedParserCounters.GetCount("late-b"));
+
+        GeneratedParserCounters.Reset();
+
+        Assert.False(Grammars.TryParseLateDeferredOneOf("  c", out _));
+        Assert.Equal(0, GeneratedParserCounters.GetCount("late-a"));
+        Assert.Equal(0, GeneratedParserCounters.GetCount("late-b"));
+    }
+
+    [Theory]
+    [InlineData("  a", 'a', "wrap-a")]
+    [InlineData("  b", 'b', "wrap-b")]
+    [InlineData("  c", 'c', "wrap-c")]
+    [InlineData("  xd", 'd', "wrap-d")]
+    public void Seekable_Wrappers_Are_In_The_Generated_Lookup_Table(string input, char expected, string invoked)
+    {
+        GeneratedParserCounters.Reset();
+
+        Assert.True(Grammars.TryParseSeekableWrappers(input, out var value));
+        Assert.Equal(expected, value);
+
+        foreach (var name in new[] { "wrap-a", "wrap-b", "wrap-c", "wrap-d", "wrap-e" })
+        {
+            Assert.Equal(name == invoked ? 1 : 0, GeneratedParserCounters.GetCount(name));
+        }
+
+        GeneratedParserCounters.Reset();
+
+        Assert.False(Grammars.TryParseSeekableWrappers("  z", out _));
+        Assert.Equal(0, GeneratedParserCounters.GetCount(invoked));
+
+        GeneratedParserCounters.Reset();
+
+        // The error is reported as a failure, and only raised when the lookup selected the parser
+        Assert.False(Grammars.TryParseSeekableWrappers("  e", out _));
+        Assert.Equal(1, GeneratedParserCounters.GetCount("wrap-e"));
+        Assert.Equal(0, GeneratedParserCounters.GetCount(invoked));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void LeftAssociative_Operators_Are_Selected_By_Their_First_Char(bool withContext)
+    {
+        GeneratedParserCounters.Reset();
+        var prefix = withContext ? "ctx-op-" : "op-";
+
+        Assert.True(withContext
+            ? Grammars.TryParseCountingLeftAssociativeContext("10 p 4 m 2 m 1", out var value)
+            : Grammars.TryParseCountingLeftAssociative("10 p 4 m 2 m 1", out value));
+        Assert.Equal(11, value);
+
+        // Each operator was only tried where its char was next, and none at the end of the input
+        Assert.Equal(1, GeneratedParserCounters.GetCount(prefix + "p"));
+        Assert.Equal(2, GeneratedParserCounters.GetCount(prefix + "m"));
+
+        GeneratedParserCounters.Reset();
+
+        Assert.True(withContext
+            ? Grammars.TryParseCountingLeftAssociativeContext("10 m", out value)
+            : Grammars.TryParseCountingLeftAssociative("10 m", out value));
+        Assert.Equal(10, value);
+        Assert.Equal(0, GeneratedParserCounters.GetCount(prefix + "p"));
+        Assert.Equal(1, GeneratedParserCounters.GetCount(prefix + "m"));
     }
 
     [Fact]
-    public void CountingOneOf_SkipsWhitespaceOnce()
+    public void Switch_Uses_The_Generated_Target_Parser_Body()
     {
-        CountingParser.Reset();
-        var parser = Grammars.CountingOneOfParser();
+        GeneratedParserCounters.Reset();
 
-        var result = parser.Parse("   b");
-        Assert.Equal('b', result);
+        Assert.True(Grammars.TryParseCustomSwitch("ax", out var x));
+        Assert.Equal('x', x);
+        Assert.Equal(1, GeneratedParserCounters.GetCount("x"));
+        Assert.Equal(0, GeneratedParserCounters.GetCount("y"));
 
-        Assert.Equal(0, CountingParser.GetCount("a"));
-        Assert.Equal(1, CountingParser.GetCount("b"));
+        GeneratedParserCounters.Reset();
+        Assert.True(Grammars.TryParseCustomSwitch("by", out var y));
+        Assert.Equal('y', y);
+        Assert.Equal(1, GeneratedParserCounters.GetCount("y"));
+        Assert.Equal(0, GeneratedParserCounters.GetCount("x"));
     }
 
     [Fact]
-    public void GeneratedSwitch_UsesGeneratedTargetParserBody()
+    public void Select_Uses_Per_Call_Configuration_And_Generated_Target_Bodies()
     {
-        DualCountingCharParser.Reset();
+        GeneratedParserCounters.Reset();
 
-        var parser = Grammars.Switch_UsesGeneratedTargetParser();
+        Assert.True(Grammars.TryParseCustomSelect("x", preferX: true, out var x));
+        Assert.Equal('x', x);
+        Assert.Equal(1, GeneratedParserCounters.GetCount("x"));
 
-        Assert.Equal('x', parser.Parse("ax"));
-        Assert.Equal(1, DualCountingCharParser.GetGeneratedCount("x"));
-        Assert.Equal(0, DualCountingCharParser.GetRuntimeCount("x"));
-        Assert.Equal(0, DualCountingCharParser.GetGeneratedCount("y"));
-
-        DualCountingCharParser.Reset();
-
-        Assert.Equal('y', parser.Parse("by"));
-        Assert.Equal(1, DualCountingCharParser.GetGeneratedCount("y"));
-        Assert.Equal(0, DualCountingCharParser.GetRuntimeCount("y"));
-        Assert.Equal(0, DualCountingCharParser.GetGeneratedCount("x"));
+        GeneratedParserCounters.Reset();
+        Assert.True(Grammars.TryParseCustomSelect("y", preferX: false, out var y));
+        Assert.Equal('y', y);
+        Assert.Equal(1, GeneratedParserCounters.GetCount("y"));
     }
 
     [Fact]
-    public void GeneratedSelect_UsesGeneratedTargetParserBody()
+    public void Repetition_Stops_When_An_Optional_Inner_Parser_Makes_No_Progress()
     {
-        DualCountingCharParser.Reset();
-
-        var parser = Grammars.Select_UsesGeneratedTargetParser();
-
-        var xContext = new Grammars.SelectTestContext(new Scanner("x")) { PreferX = true };
-        var xResult = new ParseResult<char>();
-        Assert.True(parser.Parse(xContext, ref xResult));
-        Assert.Equal('x', xResult.Value);
-        Assert.Equal(1, DualCountingCharParser.GetGeneratedCount("x"));
-        Assert.Equal(0, DualCountingCharParser.GetRuntimeCount("x"));
-
-        DualCountingCharParser.Reset();
-
-        var yContext = new Grammars.SelectTestContext(new Scanner("y")) { PreferX = false };
-        var yResult = new ParseResult<char>();
-        Assert.True(parser.Parse(yContext, ref yResult));
-        Assert.Equal('y', yResult.Value);
-        Assert.Equal(1, DualCountingCharParser.GetGeneratedCount("y"));
-        Assert.Equal(0, DualCountingCharParser.GetRuntimeCount("y"));
+        Assert.True(Grammars.TryParseZeroOrManyOptional("aaa", out var zeroOrMany));
+        Assert.Equal(3, zeroOrMany.Count);
+        Assert.Equal(['a'], zeroOrMany[0]);
+        Assert.True(Grammars.TryParseOneOrManyOptional("aaa", out var oneOrMany));
+        Assert.Equal(3, oneOrMany.Count);
+        Assert.Equal(['a'], oneOrMany[0]);
+        Assert.False(Grammars.TryParseOneOrManyOptional("", out _));
+        Assert.True(Grammars.TryParseSeparatedOptional("aaa", out var separated));
+        Assert.Equal(3, separated.Count);
+        Assert.Equal(['a'], separated[0]);
+        Assert.False(Grammars.TryParseSeparatedOptional("", out _));
     }
 
     [Fact]
-    public void GeneratedParser_ShouldCancelParsing()
+    public void Generic_Grammar_Helper_Builds_A_User_Owned_Result()
     {
-        var parser = Grammars.CancelSeparatedIntegersParser();
-
-        var cts = new CancellationTokenSource();
-        cts.Cancel();
-
-        Assert.Throws<OperationCanceledException>(() =>
-            parser.Parse("1,2,3,4,5", cts.Token));
+        Assert.True(Grammars.TryParseGenericProperty("1 == LoNg 3", out var node));
+        Assert.Equal(3L, Assert.IsType<BasicNode>(node).Value);
     }
 
     [Fact]
-    public void KeywordParser_Generates_Multiple_Factories_With_Arguments()
+    public void Application_Models_Are_Constructed_By_Generated_Callbacks()
     {
-        var lower = Grammars.FooLowerParser();
-        Assert.Equal("foo", lower.Parse("foo"));
-        Assert.Null(lower.Parse("FOO"));
-
-        var upper = Grammars.FooUpperParser();
-        Assert.Equal("FOO", upper.Parse("FOO"));
-        Assert.Null(upper.Parse("foo"));
+        Assert.True(ExternalTypeGrammars.TryParseSimpleValue("hello", out var value));
+        Assert.Equal(new SimpleValue("hello"), value);
+        Assert.True(ExternalTypeGrammars.TryParseSimpleNumber("123.45", out var number));
+        Assert.Equal(new SimpleNumber(123.45m), number);
     }
 
     [Fact]
-    public void GeneratedParser_TracksSpanCorrectly()
+    public void Class_And_Method_Level_Attributes_Apply_To_Standalone_Factories()
     {
-        // Test that the generated parser correctly tracks start and end positions
-        var parser = Grammars.TermsTextParser();
-        var context = new ParseContext(new Scanner("hello world"));
-        var result = new ParseResult<string>();
-
-        var success = parser.Parse(context, ref result);
-
-        Assert.True(success);
-        Assert.Equal("hello", result.Value);
-        Assert.Equal(0, result.Start);  // Should start at position 0
-        Assert.Equal(5, result.End);    // Should end at position 5 (length of "hello")
-    }
-
-    [Fact]
-    public void GeneratedParser_SpanMatchesRuntimeParser()
-    {
-        // Test that generated parser span tracking matches runtime parser behavior
-        var input = "    hello world";
-        
-        // Test with generated parser
-        var generatedParser = Grammars.TermsTextParser();
-        var generatedContext = new ParseContext(new Scanner(input));
-        var generatedResult = new ParseResult<string>();
-        var generatedSuccess = generatedParser.Parse(generatedContext, ref generatedResult);
-
-        // Test with runtime parser
-        var runtimeParser = Terms.Text("hello");
-        var runtimeContext = new ParseContext(new Scanner(input));
-        var runtimeResult = new ParseResult<string>();
-        var runtimeSuccess = runtimeParser.Parse(runtimeContext, ref runtimeResult);
-
-        Assert.True(generatedSuccess);
-        Assert.True(runtimeSuccess);
-        Assert.Equal(runtimeResult.Value, generatedResult.Value);
-        Assert.Equal(runtimeResult.Start, generatedResult.Start);
-        Assert.Equal(runtimeResult.End, generatedResult.End);
-    }
-
-    [Fact]
-    public void BlockLambdaParser_GeneratesCorrectly()
-    {
-        // Test that block lambdas with multiple statements are generated correctly
-        var parser = Grammars.BlockLambdaParser();
-        var result = parser.Parse("hello");
-
-        Assert.NotNull(result);
-        Assert.Equal("Result: HELLO", result);
-    }
-
-    [Fact]
-    public void GeneratedParser_SpanMatchesInputLength()
-    {
-        // Test that span length matches parsed content
-        var parser = Grammars.TermsIdentifierParser();
-        var context = new ParseContext(new Scanner("identifier123"));
-        var result = new ParseResult<TextSpan>();
-
-        var success = parser.Parse(context, ref result);
-
-        Assert.True(success);
-        var span = result.Value;
-        Assert.Equal("identifier123", span.ToString());
-        Assert.Equal(0, result.Start);
-        Assert.Equal(13, result.End);
-        Assert.Equal(13, result.End - result.Start); // Span should be 13 characters
-    }
-
-    [Fact]
-    public void SimpleValueParser_UsesTypeFromIncludedFile()
-    {
-        // Test that [IncludeFiles] allows using types from separate files
-        var parser = ExternalTypeGrammars.SimpleValueParser();
-        var result = parser.Parse("hello");
-
-        Assert.NotNull(result);
-        Assert.Equal("hello", result.Text);
-    }
-
-    [Fact]
-    public void SimpleNumberParser_UsesTypeFromIncludedFile()
-    {
-        // Test that [IncludeFiles] works with decimal numbers
-        var parser = ExternalTypeGrammars.SimpleNumberParser();
-        var result = parser.Parse("123.45");
-
-        Assert.NotNull(result);
-        Assert.Equal(123.45m, result.Value);
-    }
-
-    [Fact]
-    public void InheritedAttributesParser_UsesClassLevelAttributes()
-    {
-        // Test that class-level [IncludeFiles] and [IncludeUsings] work
-        var parser = ClassLevelAttributeGrammars.InheritedAttributesParser();
-        var result = parser.Parse("test");
-
-        Assert.NotNull(result);
-        Assert.Equal("test", result.Text);
-    }
-
-    [Fact]
-    public void CombinedAttributesParser_CombinesClassAndMethodLevelAttributes()
-    {
-        // Test that method-level attributes combine with class-level attributes
-        var parser = ClassLevelAttributeGrammars.CombinedAttributesParser();
-        var result = parser.Parse("42.5");
-
-        Assert.NotNull(result);
-        Assert.Equal(42.5m, result.Value);
-    }
-
-    [Fact]
-    public void AdditionalUsingsParser_UsesMultipleUsings()
-    {
-        // Test that additional usings from both class and method level are included
-        var parser = ClassLevelAttributeGrammars.AdditionalUsingsParser();
-        var result = parser.Parse("hello");
-
-        Assert.NotNull(result);
-        Assert.Equal("hello", result);
-    }
-
-    [Fact]
-    public void AnyOfDigitsParser_MatchesDigits()
-    {
-        // Test that AnyOf parser with digits works
-        var parser = Grammars.AnyOfDigitsParser();
-        var context = new ParseContext(new Scanner("12345abc"));
-        var result = new ParseResult<TextSpan>();
-
-        var success = parser.Parse(context, ref result);
-
-        Assert.True(success);
-        Assert.Equal("12345", result.Value.ToString());
-    }
-
-    [Fact]
-    public void AnyOfDigitsParser_ReturnsFalseOnNoMatch()
-    {
-        var parser = Grammars.AnyOfDigitsParser();
-        var context = new ParseContext(new Scanner("abc123"));
-        var result = new ParseResult<TextSpan>();
-
-        var success = parser.Parse(context, ref result);
-
-        Assert.False(success);
-    }
-
-    [Fact]
-    public void AnyOfLettersParser_RespectsMinAndMaxSize()
-    {
-        var parser = Grammars.AnyOfLettersParser();
-
-        // Less than minSize (2) should fail
-        var context1 = new ParseContext(new Scanner("a"));
-        var result1 = new ParseResult<TextSpan>();
-        Assert.False(parser.Parse(context1, ref result1));
-
-        // Between min and max should work
-        var context2 = new ParseContext(new Scanner("abc123"));
-        var result2 = new ParseResult<TextSpan>();
-        Assert.True(parser.Parse(context2, ref result2));
-        Assert.Equal("abc", result2.Value.ToString());
-
-        // Should be limited to maxSize (10)
-        var context3 = new ParseContext(new Scanner("abcdefghijklmnop"));
-        var result3 = new ParseResult<TextSpan>();
-        Assert.True(parser.Parse(context3, ref result3));
-        Assert.Equal("abcdefghij", result3.Value.ToString());
-    }
-
-    [Fact]
-    public void NoneOfWhitespaceParser_MatchesNonWhitespace()
-    {
-        var parser = Grammars.NoneOfWhitespaceParser();
-
-        // Match non-whitespace
-        var context1 = new ParseContext(new Scanner("hello world"));
-        var result1 = new ParseResult<TextSpan>();
-        Assert.True(parser.Parse(context1, ref result1));
-        Assert.Equal("hello", result1.Value.ToString());
-
-        // Starts with whitespace should fail
-        var context2 = new ParseContext(new Scanner(" hello"));
-        var result2 = new ParseResult<TextSpan>();
-        Assert.False(parser.Parse(context2, ref result2));
+        Assert.True(ClassLevelAttributeGrammars.TryParseValue("test", out var value));
+        Assert.Equal(new SimpleValue("test"), value);
+        Assert.True(ClassLevelAttributeGrammars.TryParseText("hello", out var text));
+        Assert.Equal("hello", text);
     }
 }

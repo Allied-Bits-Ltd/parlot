@@ -134,12 +134,12 @@ public abstract partial class Parser<T> : IParser<T>
     /// <summary>
     /// Builds a parser that ensures the specified parser matches at the current position without consuming input (positive lookahead).
     /// </summary>
-    public Parser<T> WhenFollowedBy<U>(Parser<U> lookahead) => new WhenFollowedBy<T>(this, lookahead.Then<object>(_ => new object()));
+    public Parser<T> WhenFollowedBy<U>(Parser<U> lookahead) => new WhenFollowedBy<T>(this, lookahead.Then<object>(value: null!));
 
     /// <summary>
     /// Builds a parser that ensures the specified parser does NOT match at the current position without consuming input (negative lookahead).
     /// </summary>
-    public Parser<T> WhenNotFollowedBy<U>(Parser<U> lookahead) => new WhenNotFollowedBy<T>(this, lookahead.Then<object>(_ => new object()));
+    public Parser<T> WhenNotFollowedBy<U>(Parser<U> lookahead) => new WhenNotFollowedBy<T>(this, lookahead.Then<object>(value: null!));
 
     /// <summary>
     /// Builds a parser that selects a target parser based on the previous result.
@@ -150,6 +150,23 @@ public abstract partial class Parser<T> : IParser<T>
     /// Builds a parser that ensures the cursor is at the end of the input.
     /// </summary>
     public Parser<T> Eof() => new Eof<T>(this);
+
+    /// <summary>
+    /// Builds a parser that prevents any parser from moving back before the end of the previous parser's match once it succeeds,
+    /// such that its text is no longer buffered when the input is streamed.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is a cut: use it after a parser that, once matched, can't be followed by another alternative,
+    /// like a statement in a list of statements. A parser that would then move back before it throws a <see cref="ParseException"/>
+    /// when the input is streamed through a compacting buffer. The parser has no effect otherwise.
+    /// </para>
+    /// <para>
+    /// Repetitions, separated lists and alternatives with distinct first chars already release their text,
+    /// see the streaming documentation.
+    /// </para>
+    /// </remarks>
+    public Parser<T> Commit() => new Commit<T>(this);
 
     /// <summary>
     /// Builds a parser that discards the previous result and replaces it by the specified type or value.
@@ -187,7 +204,9 @@ public abstract partial class Parser<T> : IParser<T>
     /// </remarks>
     public Parser<T> Lookup(params ISeekable[] parsers)
     {
-        var canSeek = (parsers ?? throw new ArgumentNullException(nameof(parsers))).Length > 0;
+        ThrowHelper.ThrowIfNull(parsers, nameof(parsers));
+
+        var canSeek = parsers.Length > 0;
 
         foreach (var parser in parsers)
         {

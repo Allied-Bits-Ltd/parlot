@@ -7,19 +7,90 @@ public class Cursor
 {
     public const char NullChar = '\0';
 
-    private readonly int _textLength;
+    private int _textLength;
+
+    // Index of the current char in Buffer. Offset adds _base, the absolute offset of Buffer[0], which is 0 unless
+    // the cursor reads a compacting window of a stream (see ReplaceBuffer).
+    private int _offset;
+#if PARLOT_STRING_ONLY
+    // Generated parsers without a TextReader entry point only parse strings: a constant base keeps the offset arithmetic out of their hot paths.
+    private const int _base = 0;
+#else
+    private int _base;
+#endif
     private int _line;
     private int _column;
 
-    public Cursor(string buffer, in TextPosition position)
+    // HitEndFlag is set unconditionally on the cold end-of-buffer paths; only observable through HitEnd when the buffer is not final.
+    // IsFinal shares the byte so that the cursor, which is allocated for each parse, doesn't grow.
+    private byte _flags;
+    private const byte HitEndFlag = 1;
+    private const byte NotFinalFlag = 2;
+
+    /// <summary>
+    /// Creates a cursor over <paramref name="buffer"/> starting at <paramref name="position"/>.
+    /// </summary>
+    /// <param name="buffer">The text to read.</param>
+    /// <param name="position">The initial position. Its offset indexes into <paramref name="buffer"/>, its line and column are reported as-is.</param>
+    public Cursor(string buffer, in TextPosition position) : this(buffer, position, isFinal: true)
     {
-        Buffer = buffer;
+    }
+
+    /// <summary>
+    /// Creates a cursor over <paramref name="buffer"/> starting at <paramref name="position"/>.
+    /// </summary>
+    /// <param name="buffer">The text to read.</param>
+    /// <param name="position">The initial position. Its offset indexes into <paramref name="buffer"/>, its line and column are reported as-is.</param>
+    /// <param name="isFinal">
+    /// <see langword="false"/> when more text may follow <paramref name="buffer"/>, as when parsing a stream.
+    /// The cursor then records in <see cref="HitEnd"/> whether a decision depended on the end of the buffer.
+    /// </param>
+    public Cursor(string buffer, in TextPosition position, bool isFinal)
+    {
+        Buffer = buffer ?? throw new ArgumentNullException(nameof(buffer));
         _textLength = Buffer.Length;
-        Eof = _textLength == 0;
-        Current = _textLength == 0 ? NullChar : Buffer[position.Offset];
-        Offset = 0;
-        _line = 1;
-        _column = 1;
+
+        if ((uint)position.Offset > (uint)_textLength)
+        {
+            throw new ArgumentOutOfRangeException(nameof(position));
+        }
+
+        _offset = position.Offset;
+        _line = position.Line;
+        _column = position.Column;
+        Eof = _offset == _textLength;
+        _flags = (byte)((isFinal ? 0 : NotFinalFlag) | (Eof ? HitEndFlag : 0));
+        Current = Eof ? NullChar : Buffer[_offset];
+    }
+
+    /// <summary>
+    /// Whether <see cref="Buffer"/> holds the end of the input. <see langword="true"/> unless the cursor was created
+    /// for a window of a larger input, as when parsing a stream.
+    /// </summary>
+    public bool IsFinal => (_flags & NotFinalFlag) == 0;
+
+    /// <summary>
+    /// Whether, since the cursor was created, a read reached or looked past the end of a non-final <see cref="Buffer"/>.
+    /// A parse result obtained while this is <see langword="true"/> may change once more text is available.
+    /// Always <see langword="false"/> when <see cref="IsFinal"/> is <see langword="true"/>.
+    /// </summary>
+    /// <remarks>The flag is sticky: moving the cursor back with <see cref="ResetPosition(in TextPosition)"/> does not clear it.</remarks>
+    public bool HitEnd => _flags == (HitEndFlag | NotFinalFlag);
+
+    /// <summary>
+    /// Records that the current decision depended on text beyond the end of <see cref="Buffer"/>.
+    /// Custom parsers that inspect <see cref="Span"/> or <see cref="Buffer"/> directly must call this when they stop,
+    /// or fail, because the buffer ended rather than because of its content.
+    /// Moving the cursor to the end, <see cref="PeekNext(int)"/> past it and the <c>Match</c> methods already do it.
+    /// </summary>
+    public void MarkHitEnd()
+    {
+        _flags |= HitEndFlag;
+    }
+
+    internal void ResetHitEnd()
+    {
+        _flags = (byte)((_flags & NotFinalFlag) | (Eof ? HitEndFlag : 0));
     }
 
     public Cursor(string buffer) : this(buffer, TextPosition.Start)
@@ -31,12 +102,74 @@ public class Cursor
     /// column is one more than the number of chars between the previous <c>'\n'</c> (or the start of the text) and the
     /// position: every char other than <c>'\n'</c>, <c>'\r'</c> included, occupies one column.
     /// </summary>
-    public TextPosition Position => new(Offset, _line, _column);
+    public TextPosition Position => new(_offset + _base, _line, _column);
 
     /// <summary>
     /// Returns the <see cref="ReadOnlySpan{T}"/> value of the <see cref="Buffer" /> at the current offset.
     /// </summary>
-    public ReadOnlySpan<char> Span => Buffer.AsSpan(Offset);
+    public ReadOnlySpan<char> Span => Buffer.AsSpan(_offset);
+
+    // The absolute offset of the first char of Buffer, 0 unless the input is streamed in compacting mode
+    internal int BufferStart => _base;
+
+    /// <summary>
+    /// Returns the buffered text between the absolute offset <paramref name="start"/> and <c>start + length</c>.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public ReadOnlySpan<char> GetSpan(int start, int length) => Buffer.AsSpan(start - _base, length);
+
+    /// <summary>
+    /// Creates a <see cref="TextSpan"/> over the buffered text between the absolute offset <paramref name="start"/> and <c>start + length</c>.
+    /// </summary>
+    /// <remarks>
+    /// The <see cref="TextSpan.Offset"/> of the result is relative to its <see cref="TextSpan.Buffer"/>, which is the
+    /// current <see cref="Buffer"/>. Parsers must create their <see cref="TextSpan"/> results with this method rather than
+    /// from <see cref="Buffer"/> and an absolute offset, which are only equivalent when the input isn't streamed in compacting mode.
+    /// </remarks>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public TextSpan CreateSpan(int start, int length) => new(Buffer, start - _base, length);
+
+    /// <summary>
+    /// Whether the current position was discarded from the buffer, which only happens after a parser moved the cursor
+    /// back to text it didn't retain in compacting mode.
+    /// </summary>
+    internal bool IsDiscarded => _offset < 0;
+
+    /// <summary>
+    /// The number of chars buffered after the current position.
+    /// </summary>
+    internal int Remaining => _textLength - _offset;
+
+#if !PARLOT_STRING_ONLY
+    /// <summary>
+    /// Replaces <see cref="Buffer"/> with a window of the same input, keeping the absolute position.
+    /// </summary>
+    /// <param name="buffer">The new window.</param>
+    /// <param name="bufferStart">The absolute offset of <paramref name="buffer"/>'s first char. It must not be past the current position.</param>
+    /// <param name="isFinal">Whether <paramref name="buffer"/> ends with the end of the input.</param>
+    internal void ReplaceBuffer(string buffer, int bufferStart, bool isFinal)
+    {
+        var offset = _offset + _base;
+
+        Buffer = buffer;
+        _textLength = buffer.Length;
+        _base = bufferStart;
+        _offset = offset - bufferStart;
+        _flags = (byte)((_flags & HitEndFlag) | (isFinal ? 0 : NotFinalFlag));
+
+        if (_offset >= _textLength)
+        {
+            _offset = _textLength;
+            Eof = true;
+            Current = NullChar;
+        }
+        else
+        {
+            Eof = false;
+            Current = Buffer[_offset];
+        }
+    }
+#endif
 
     /// <summary>
     /// Advances the cursor by one character. Nothing happens when the cursor is already at the end of the text.
@@ -46,12 +179,12 @@ public class Cursor
     {
         var previous = Current;
 
-        Offset++;
+        _offset++;
 
-        if (Offset >= _textLength)
+        if (_offset >= _textLength)
         {
             // Stays at the end of the text when already there, otherwise leaves the last char
-            Offset = _textLength;
+            _offset = _textLength;
 
             if (Eof)
             {
@@ -59,11 +192,12 @@ public class Cursor
             }
 
             Eof = true;
+            _flags |= HitEndFlag;
             Current = NullChar;
         }
         else
         {
-            Current = Buffer[Offset];
+            Current = Buffer[_offset];
         }
 
         // The char that was left either ended its line or occupied a column
@@ -96,17 +230,18 @@ public class Cursor
         }
 #endif
 
-        var end = Offset + count;
+        var end = _offset + count;
 
         // Detect if the cursor will be over Eof
         if (end >= _textLength)
         {
             Eof = true;
+            _flags |= HitEndFlag;
             end = _textLength;
         }
 
         // Keep the loop state in locals and publish them once, as in Sep's block parsers.
-        var offset = Offset;
+        var offset = _offset;
         var line = _line;
         var column = _column;
         var buffer = Buffer;
@@ -127,7 +262,7 @@ public class Cursor
             offset++;
         }
 
-        Offset = offset;
+        _offset = offset;
         _line = line;
         _column = column;
         Current = Eof ? NullChar : buffer[offset];
@@ -136,7 +271,7 @@ public class Cursor
 #if NET8_0_OR_GREATER
     private bool TryAdvanceWithoutNewLines(int count)
     {
-        var offset = Offset;
+        var offset = _offset;
         var end = Math.Min(offset + count, _textLength);
 
         // Only the chars that are left matter, not the one the cursor moves to. Guard overflow too.
@@ -146,11 +281,12 @@ public class Cursor
         }
 
         _column += end - offset;
-        Offset = end;
+        _offset = end;
 
         if (end == _textLength)
         {
             Eof = true;
+            _flags |= HitEndFlag;
             Current = NullChar;
         }
         else
@@ -168,22 +304,23 @@ public class Cursor
     /// </summary>
     public void AdvanceNoNewLines(int offset)
     {
-        var newOffset = Offset + offset;
+        var newOffset = _offset + offset;
         var length = _textLength - 1;
 
         // Detect if the cursor will be over Eof
         if (newOffset > length)
         {
             Eof = true;
+            _flags |= HitEndFlag;
             // Only the chars up to the end are counted, like Advance(int) does
-            _column += _textLength - Offset;
-            Offset = _textLength;
+            _column += _textLength - _offset;
+            _offset = _textLength;
             Current = NullChar;
             return;
         }
 
         Current = Buffer[newOffset];
-        Offset = newOffset;
+        _offset = newOffset;
         _column += offset;
     }
 
@@ -193,7 +330,7 @@ public class Cursor
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void ResetPosition(in TextPosition position)
     {
-        if (position.Offset != Offset)
+        if (position.Offset - _base != _offset)
         {
             ResetPositionNotInlined(position);
         }
@@ -201,20 +338,38 @@ public class Cursor
 
     private void ResetPositionNotInlined(in TextPosition position)
     {
-        Offset = position.Offset;
+        _offset = position.Offset - _base;
         _line = position.Line;
         _column = position.Column;
 
-        // Eof might have been recorded
-        if (Offset >= Buffer.Length)
+        // A single unsigned compare covers both the end of the buffer and, in compacting mode, a discarded position.
+        // Unchecked since the offset is negative for a discarded position, and generated parsers embed this file in
+        // assemblies which can check for arithmetic overflows.
+        if (unchecked((uint)_offset) < (uint)Buffer.Length)
         {
-            Current = NullChar;
-            Eof = true;
+            Current = Buffer[_offset];
+            Eof = false;
         }
         else
         {
-            Current = Buffer[position.Offset];
+            ResetPositionOutsideBuffer();
+        }
+    }
+
+    private void ResetPositionOutsideBuffer()
+    {
+        Current = NullChar;
+
+        if (_offset < 0)
+        {
+            // The text was discarded by a compacting stream: nothing can be read until the cursor moves forward again.
             Eof = false;
+        }
+        else
+        {
+            // Eof might have been recorded
+            Eof = true;
+            _flags |= HitEndFlag;
         }
     }
 
@@ -224,19 +379,28 @@ public class Cursor
     public char Current { get; private set; }
 
     /// <summary>
-    /// Returns the cursor's position in the _buffer.
+    /// Returns the cursor's absolute offset in the input.
     /// </summary>
-    public int Offset { get; private set; }
+    public int Offset
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => _offset + _base;
+    }
 
     /// <summary>
     /// Evaluates a char forward in the _buffer.
     /// </summary>
     public char PeekNext(int index = 1)
     {
-        var nextIndex = Offset + index;
+        var nextIndex = _offset + index;
 
         if (nextIndex >= _textLength || nextIndex < 0)
         {
+            if (nextIndex >= _textLength)
+            {
+                _flags |= HitEndFlag;
+            }
+
             return NullChar;
         }
 
@@ -247,22 +411,23 @@ public class Cursor
     /// Advances the cursor by a precomputed amount, applying known line/column deltas.
     /// </summary>
     /// <param name="consumedLength">How many characters were consumed.</param>
-    /// <param name="newLines">Number of newline characters encountered in the consumed span.</param>
-    /// <param name="trailingSegmentLength">Length of the segment after the last newline (or the full length when there are no newlines).</param>
+    /// <param name="newLines">Number of <c>'\n'</c> characters in the consumed span.</param>
+    /// <param name="trailingSegmentLength">Number of characters after the last <c>'\n'</c> of the consumed span (or the full length when there is none).</param>
     public void AdvanceBy(int consumedLength, int newLines, int trailingSegmentLength)
     {
-        Offset += consumedLength;
+        _offset += consumedLength;
 
-        if (Offset >= Buffer.Length)
+        if (_offset >= Buffer.Length)
         {
             Eof = true;
-            Offset = Buffer.Length;
+            _flags |= HitEndFlag;
+            _offset = Buffer.Length;
             Current = NullChar;
         }
         else
         {
             Eof = false;
-            Current = Buffer[Offset];
+            Current = Buffer[_offset];
         }
 
         if (newLines == 0)
@@ -278,7 +443,12 @@ public class Cursor
 
     public bool Eof { get; private set; }
 
-    public string Buffer { get; }
+    /// <summary>
+    /// The buffered text. When the input is streamed in compacting mode it only holds the text the parser can still read,
+    /// so read it with <see cref="Span"/>, <see cref="GetSpan(int, int)"/> or <see cref="CreateSpan(int, int)"/>, which take absolute offsets,
+    /// rather than by indexing it with an offset.
+    /// </summary>
+    public string Buffer { get; private set; }
 
     /// <summary>
     /// Whether a char is at the current position.
@@ -309,8 +479,9 @@ public class Cursor
     {
         // Equivalent to StringComparison.Ordinal comparison
 
-        if (_textLength < Offset + s.Length)
+        if (_textLength < _offset + s.Length)
         {
+            MarkHitEndIfPrefix(s, StringComparison.Ordinal);
             return false;
         }
 
@@ -323,11 +494,29 @@ public class Cursor
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool Match(ReadOnlySpan<char> s, StringComparison comparisonType)
     {
-        if (_textLength < Offset + s.Length)
+        if (_textLength < _offset + s.Length)
         {
+            MarkHitEndIfPrefix(s, comparisonType);
             return false;
         }
 
         return Span.StartsWith(s, comparisonType);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void MarkHitEndIfPrefix(ReadOnlySpan<char> s, StringComparison comparisonType)
+    {
+        if (IsFinal)
+        {
+            return;
+        }
+
+        // A shorter remainder only proves a mismatch when it already differs from the pattern.
+        // Culture-sensitive comparisons are not prefix-stable, so they always depend on more text.
+        if ((comparisonType != StringComparison.Ordinal && comparisonType != StringComparison.OrdinalIgnoreCase)
+            || s.StartsWith(Span, comparisonType))
+        {
+            _flags |= HitEndFlag;
+        }
     }
 }

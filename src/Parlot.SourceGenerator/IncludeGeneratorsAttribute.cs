@@ -11,6 +11,11 @@ namespace Parlot.SourceGenerator;
 /// that your parser method may depend on. By specifying the generator assembly names, Parlot's
 /// source generator will load and run those generators before emitting the compilation.
 /// </para>
+///
+/// <para>
+/// Included generators execute inside the compiler host. Only include generator assemblies that you trust
+/// as executable build dependencies.
+/// </para>
 /// 
 /// <para>
 /// The assembly names should match the assembly name of the source generator (typically the
@@ -19,7 +24,7 @@ namespace Parlot.SourceGenerator;
 /// 
 /// Example usage:
 /// <code>
-/// [GenerateParser]
+/// [GenerateParser("TryParseExpression")]
 /// [IncludeGenerators("PolySharp")]
 /// public static Parser&lt;Expression&gt; CreateExpressionParser()
 /// {
@@ -29,7 +34,7 @@ namespace Parlot.SourceGenerator;
 /// 
 /// You can specify multiple generator assemblies:
 /// <code>
-/// [GenerateParser]
+/// [GenerateParser("TryParseExpression")]
 /// [IncludeGenerators("PolySharp", "Microsoft.Extensions.Logging.Generators")]
 /// public static Parser&lt;Expression&gt; CreateExpressionParser() =&gt; ...;
 /// </code>
@@ -37,18 +42,19 @@ namespace Parlot.SourceGenerator;
 /// You can apply this attribute to methods or container classes:
 /// <code>
 /// [IncludeGenerators("PolySharp")]
-/// public static class MyParsers
+/// public static partial class MyParsers
 /// {
-///     [GenerateParser]
+///     [GenerateParser("TryParseExpression")]
 ///     public static Parser&lt;Expression&gt; ExpressionParser() =&gt; ...;
 ///     
-///     [GenerateParser]
+///     [GenerateParser("TryParseStatement")]
 ///     [IncludeGenerators("AnotherGenerator")]
 ///     public static Parser&lt;Statement&gt; StatementParser() =&gt; ...;
 /// }
 /// </code>
 /// 
 /// When applied to a class, the generators will be run for all generated parsers within that class.
+/// These factories belong in build-only .parlot.cs files with matching partial parsing declarations.
 /// </remarks>
 [System.AttributeUsage(System.AttributeTargets.Method | System.AttributeTargets.Class, AllowMultiple = false)]
 #if SOURCE_GENERATOR

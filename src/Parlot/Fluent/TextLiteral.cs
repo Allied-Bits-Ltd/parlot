@@ -1,17 +1,18 @@
-using Parlot;
 using Parlot.Rewriting;
-using Parlot.SourceGeneration;
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using Parlot.SourceGeneration;
 
 namespace Parlot.Fluent;
 
-public sealed class TextLiteral : Parser<string>, ISeekable, ISourceable
+public sealed class TextLiteral : Parser<string>, ISeekablePrefixes, ISourceable
 {
     private readonly StringComparison _comparisonType;
     private readonly bool _hasNewLines;
     private readonly bool _returnMatchedText;
+    private readonly bool _returnText;
+    private readonly string[]? _expectedPrefixes;
 
     // The invariant upper case of each char of the BMP, at the index of the char. It is only built for a
     // case-insensitive text which doesn't start with an ASCII char.
@@ -22,8 +23,12 @@ public sealed class TextLiteral : Parser<string>, ISeekable, ISourceable
         Text = text ?? throw new ArgumentNullException(nameof(text));
         _comparisonType = comparisonType;
         _returnMatchedText = returnMatchedText;
-        // The cursor only ends a line on '\n'; '\r' and '\v' are ordinary chars for it
         _hasNewLines = text.AsSpan().IndexOf('\n') >= 0;
+
+        // An ordinal match is the text itself, and case-insensitive matches return the canonical text by default.
+        _returnText = comparisonType == StringComparison.Ordinal || (!returnMatchedText && comparisonType is StringComparison.OrdinalIgnoreCase
+            or StringComparison.CurrentCultureIgnoreCase
+            or StringComparison.InvariantCultureIgnoreCase);
 
         // A culture comparison ignores some chars, like the soft hyphen, and the current culture is the one of the
         // thread that parses, not the one of this thread. The chars such a text can start with are not known, only
@@ -33,6 +38,12 @@ public sealed class TextLiteral : Parser<string>, ISeekable, ISourceable
             ExpectedChars = comparisonType == StringComparison.OrdinalIgnoreCase
                 ? OrdinalIgnoreCaseChars(Text)
                 : [Text[0]];
+
+            // An ordinal comparison only matches the text itself
+            if (comparisonType == StringComparison.Ordinal)
+            {
+                _expectedPrefixes = [Text];
+            }
         }
     }
 
@@ -115,22 +126,66 @@ public sealed class TextLiteral : Parser<string>, ISeekable, ISourceable
 
     public string Text { get; }
 
+    internal StringComparison Comparison => _comparisonType;
+
+    // Whether the text contains '\n', which then needs to be tracked for the line and column
+    internal bool HasNewLines => _hasNewLines;
+
+    // Whether the canonical text is returned rather than the matched one
+    internal bool ReturnsText => _returnText;
+
     public bool CanSeek { get; }
 
     public char[] ExpectedChars { get; } = [];
 
     public bool SkipWhitespace { get; }
 
+    string[]? ISeekablePrefixes.ExpectedPrefixes => _expectedPrefixes;
+
     public override bool Parse(ParseContext context, ref ParseResult<string> result)
     {
+        if (context.IsCompacting)
+        {
+            return context.ParseToken(this, ref result);
+        }
+
         context.EnterParser(this);
 
         var cursor = context.Scanner.Cursor;
-        var start = cursor.Offset;
 
-        if (ParseText(cursor, Text, _comparisonType, _hasNewLines, _returnMatchedText, out var value))
+        var span = Text.AsSpan();
+
+        if (cursor.Match(span, _comparisonType))
         {
-            result.Set(start, cursor.Offset, value);
+            var start = cursor.Offset;
+
+            if (_hasNewLines)
+            {
+                cursor.Advance(Text.Length);
+            }
+            else
+            {
+                cursor.AdvanceNoNewLines(Text.Length);
+            }
+
+            var end = cursor.Offset;
+
+            if (_returnText)
+            {
+                // Return the canonical source text (avoids a second comparison and an allocation).
+                result.Set(start, end, Text);
+            }
+            else
+            {
+                var buffer = cursor.Buffer;
+                var parsedText = cursor.GetSpan(start, end - start);
+
+                result.Set(start, end, parsedText.Equals(Text, StringComparison.Ordinal)
+                    ? Text
+                    : start == cursor.BufferStart && end - start == buffer.Length
+                        ? buffer
+                        : parsedText.ToString());
+            }
 
             context.ExitParser(this);
             return true;
@@ -140,55 +195,14 @@ public sealed class TextLiteral : Parser<string>, ISeekable, ISourceable
         return false;
     }
 
-    private static bool ParseText(Cursor cursor, string text, StringComparison comparisonType, bool hasNewLines, bool returnMatchedText, out string value)
-    {
-        if (cursor.Match(text.AsSpan(), comparisonType))
-        {
-            var start = cursor.Offset;
-
-            if (hasNewLines)
-            {
-                cursor.Advance(text.Length);
-            }
-            else
-            {
-                cursor.AdvanceNoNewLines(text.Length);
-            }
-
-            var end = cursor.Offset;
-
-            var ignoreCase = comparisonType is StringComparison.OrdinalIgnoreCase
-                or StringComparison.CurrentCultureIgnoreCase
-                or StringComparison.InvariantCultureIgnoreCase;
-
-            if (comparisonType == StringComparison.Ordinal || (ignoreCase && !returnMatchedText))
-            {
-                // Default behavior for case-insensitive comparisons: return the canonical source text (avoids allocation).
-                value = text;
-            }
-            else
-            {
-                var buffer = cursor.Buffer;
-                var parsedText = buffer.AsSpan(start, end - start);
-
-                // Prevent an allocation if the text matches exactly or spans the full buffer
-                value = parsedText.Equals(text.AsSpan(), StringComparison.Ordinal)
-                    ? text
-                    : start == 0 && end == buffer.Length
-                        ? buffer
-                        : parsedText.ToString();
-            }
-
-            return true;
-        }
-
-        value = null!;
-        return false;
-    }
-
-    public Parlot.SourceGeneration.SourceResult GenerateSource(Parlot.SourceGeneration.SourceGenerationContext context)
+    public SourceResult GenerateSource(SourceGenerationContext context)
     {
         ThrowHelper.ThrowIfNull(context, nameof(context));
+
+        if (context.IsCompacting)
+        {
+            return context.GenerateToken(this, typeof(string), () => GenerateSource(context));
+        }
 
         var cursorName = context.CursorName;
         var scannerName = context.ScannerName;
@@ -212,19 +226,29 @@ public sealed class TextLiteral : Parser<string>, ISeekable, ISourceable
             valueVariable: "value",
             valueTypeName: valueTypeName);
 
-        result.Body.Add($"if ({cursorName}.Match({textLiteral}, {comparison}))");
+        result.Body.Add($"if ({cursorName}.Match({textLiteral}.AsSpan(), {comparison}))");
         result.Body.Add("{");
-        var shouldReturnMatchedText = isNotOrdinal && (!ignoreCase || _returnMatchedText);
+        var shouldReturnMatchedText = !context.DiscardResult && isNotOrdinal && (!ignoreCase || _returnMatchedText);
         if (shouldReturnMatchedText)
         {
             result.Body.Add($"    var {startName} = {cursorName}.Offset;");
         }
         result.Body.Add($"    {cursorName}.AdvanceBy({lengthLiteral}, {newLines}, {trailingSegmentLength});");
-        
+
         // Default behavior for case-insensitive comparisons is to return the canonical source text (no allocation).
-        if (shouldReturnMatchedText)
+        if (context.DiscardResult)
         {
-            result.Body.Add($"    {result.ValueVariable} = {scannerName}.Buffer.AsSpan({startName}, {lengthLiteral}).ToString();");
+            result.Body.Add($"    {result.ValueVariable} = default;");
+        }
+        else if (shouldReturnMatchedText)
+        {
+            var bufferName = $"buffer{context.NextNumber()}";
+            var parsedTextName = $"parsedText{context.NextNumber()}";
+            result.Body.Add($"    var {bufferName} = {scannerName}.Buffer;");
+            result.Body.Add($"    var {parsedTextName} = {cursorName}.GetSpan({startName}, {lengthLiteral});");
+            result.Body.Add($"    {result.ValueVariable} = {parsedTextName}.SequenceEqual({textLiteral}.AsSpan())");
+            result.Body.Add($"        ? {textLiteral}");
+            result.Body.Add($"        : {lengthLiteral} == {bufferName}.Length ? {bufferName} : {parsedTextName}.ToString();");
         }
         else
         {
@@ -238,13 +262,13 @@ public sealed class TextLiteral : Parser<string>, ISeekable, ISourceable
         return result;
     }
 
-    public override string ToString() => $"Text(\"{Text}\")";
+public override string ToString() => $"Text(\"{Text}\")";
 
-    private static int CountNewLines(string value)
+    // The cursor only ends a line on '\n'; '\r' and '\v' are ordinary chars for it
+    internal static int CountNewLines(string value)
     {
         var count = 0;
 
-        // The cursor only ends a line on '\n'
         foreach (var c in value)
         {
             if (c == '\n')
@@ -256,7 +280,7 @@ public sealed class TextLiteral : Parser<string>, ISeekable, ISourceable
         return count;
     }
 
-    private static int TrailingSegmentLength(string value)
+    internal static int TrailingSegmentLength(string value)
     {
         var lastNewLine = value.LastIndexOf('\n');
 

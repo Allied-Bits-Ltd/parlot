@@ -4,7 +4,7 @@ using System;
 
 namespace Parlot.Fluent;
 
-public sealed class Deferred<T> : Parser<T>, ISeekable, ISourceable
+public sealed class Deferred<T> : Parser<T>, ISeekablePrefixes, ISourceable
 {
 
     private readonly object _lockObject = new();
@@ -30,6 +30,34 @@ public sealed class Deferred<T> : Parser<T>, ISeekable, ISourceable
 
     /// <inheritdoc />
     public bool SkipWhitespace => Resolve().SkipWhitespace;
+
+    string[]? ISeekablePrefixes.ExpectedPrefixes
+    {
+        get
+        {
+            // The same guard as Resolve(): a parser that reaches itself gives no prefixes
+            lock (SeekableResolution.SyncRoot)
+            {
+                var parser = _parser;
+
+                if (parser is null || _resolving)
+                {
+                    return null;
+                }
+
+                _resolving = true;
+
+                try
+                {
+                    return SeekableHints.Prefixes(parser);
+                }
+                finally
+                {
+                    _resolving = false;
+                }
+            }
+        }
+    }
 
     private (bool CanSeek, char[] ExpectedChars, bool SkipWhitespace) Resolve()
     {
@@ -155,14 +183,9 @@ public sealed class Deferred<T> : Parser<T>, ISeekable, ISourceable
 
         var result = context.CreateResult(typeof(T));
         var ctx = context.ParseContextName;
-        var cursorName = context.CursorName;
-        var valueTypeName = SourceGenerationContext.GetTypeName(typeof(T));
 
-        // Track position for backtracking on failure
-        var startName = $"start{context.NextNumber()}";
-        result.Body.Add($"var {startName} = {cursorName}.Position;");
-
-        // Generate a call to the helper method
+        // Generate a call to the helper method. Like every generated parser it leaves the cursor where it
+        // started when it fails, so the caller doesn't capture the position.
         if (context.DiscardResult)
         {
             result.Body.Add($"{result.SuccessVariable} = {methodName}({ctx}, out _);");
@@ -171,12 +194,6 @@ public sealed class Deferred<T> : Parser<T>, ISeekable, ISourceable
         {
             result.Body.Add($"{result.SuccessVariable} = {methodName}({ctx}, out {result.ValueVariable});");
         }
-
-        // Reset position if the deferred parser failed
-        result.Body.Add($"if (!{result.SuccessVariable})");
-        result.Body.Add("{");
-        result.Body.Add($"    {cursorName}.ResetPosition({startName});");
-        result.Body.Add("}");
 
         return result;
     }

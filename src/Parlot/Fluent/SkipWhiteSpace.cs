@@ -1,11 +1,10 @@
-using Parlot;
 using Parlot.Rewriting;
 using System;
 using Parlot.SourceGeneration;
 
 namespace Parlot.Fluent;
 
-public sealed class SkipWhiteSpace<T> : Parser<T>, ISeekable, ISourceable
+public sealed class SkipWhiteSpace<T> : Parser<T>, ISeekablePrefixes, ISourceable
 {
     public Parser<T> Parser { get; }
 
@@ -26,6 +25,8 @@ public sealed class SkipWhiteSpace<T> : Parser<T>, ISeekable, ISourceable
 
     public bool SkipWhitespace { get; } = true;
 
+    string[]? ISeekablePrefixes.ExpectedPrefixes => SeekableHints.Prefixes(Parser);
+
     public override bool Parse(ParseContext context, ref ParseResult<T> result)
     {
         context.EnterParser(this);
@@ -33,7 +34,7 @@ public sealed class SkipWhiteSpace<T> : Parser<T>, ISeekable, ISourceable
         var cursor = context.Scanner.Cursor;
 
         // Shortcut for common scenario
-        if (context.WhiteSpaceParser is null && !Character.IsWhiteSpaceOrNewLine(cursor.Current))
+        if (!context.MaySkipWhiteSpace(cursor.Current))
         {
             context.ExitParser(this);
             return Parser.Parse(context, ref result);
@@ -56,36 +57,20 @@ public sealed class SkipWhiteSpace<T> : Parser<T>, ISeekable, ISourceable
         return false;
     }
 
-    
-    public Parlot.SourceGeneration.SourceResult GenerateSource(Parlot.SourceGeneration.SourceGenerationContext context)
+    public SourceResult GenerateSource(SourceGenerationContext context)
     {
         ThrowHelper.ThrowIfNull(context, nameof(context));
 
         var result = context.CreateResult(typeof(T));
         var ctx = context.ParseContextName;
 
-        if (Parser is not Parlot.SourceGeneration.ISourceable sourceable)
+        if (Parser is not ISourceable sourceable)
         {
-            result.Body.Add($"{result.SuccessVariable} = false;");
-            return result;
+            throw new NotSupportedException("SkipWhiteSpace requires a source-generatable parser.");
         }
 
         // Register helper for the inner parser
-        static Type GetParserValueType(object parser)
-        {
-            var type = parser.GetType();
-            while (type != null)
-            {
-                if (type.IsGenericType && type.GetGenericTypeDefinition().FullName == "Parlot.Fluent.Parser`1")
-                {
-                    return type.GetGenericArguments()[0];
-                }
-                type = type.BaseType!;
-            }
-            throw new InvalidOperationException("Unable to determine parser value type.");
-        }
-
-        var valueTypeName = SourceGenerationContext.GetTypeName(GetParserValueType(sourceable));
+        var valueTypeName = SourceGenerationContext.GetTypeName(typeof(T));
         var helperName = context.Helpers
             .GetOrCreate(sourceable, $"{context.MethodNamePrefix}_SkipWS", valueTypeName, () => sourceable.GenerateSource(context))
             .MethodName;
@@ -94,7 +79,9 @@ public sealed class SkipWhiteSpace<T> : Parser<T>, ISeekable, ISourceable
         var shortcutName = $"shortcut{context.NextNumber()}";
         var contentStartOffsetName = $"contentStart{context.NextNumber()}";
 
-        result.Body.Add($"var {shortcutName} = {ctx}.WhiteSpaceParser is null && !global::Parlot.Character.IsWhiteSpaceOrNewLine({cursorName}.Current);");
+        // The check of ParseContext.MaySkipWhiteSpace. Every set is part of the default one, whose constant mask tells most
+        // chars apart in generated code, which measured faster there than reading the set's bit first
+        result.Body.Add($"var {shortcutName} = {ctx}.WhiteSpaceParser is null && (!global::Parlot.Character.IsWhiteSpaceOrNewLine({cursorName}.Current) || !global::Parlot.Character.HasMask({cursorName}.Current, {ctx}._skipMask));");
         result.Body.Add($"var {contentStartOffsetName} = {cursorName}.Offset;");
 
         result.Body.Add($"if (!{shortcutName})");

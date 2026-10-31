@@ -14,20 +14,26 @@ public static partial class Character
     internal static readonly SearchValues<char> _newLines = SearchValues.Create(NewLines);
     internal static readonly SearchValues<char> _whiteSpaces = SearchValues.Create(WhiteSpaces);
     internal static readonly SearchValues<char> _whiteSpaceOrNewLines = SearchValues.Create(WhiteSpaceOrNewLines);
+    internal static readonly SearchValues<char> _asciiWhiteSpaces = SearchValues.Create(AsciiWhiteSpaces);
+    internal static readonly SearchValues<char> _asciiWhiteSpaceOrNewLines = SearchValues.Create(AsciiWhiteSpaceOrNewLines);
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static bool IsDecimalDigit(char ch) => char.IsAsciiDigit(ch);
+    // The chars of a white space mask, see GetWhiteSpaceMask
+    internal static SearchValues<char> GetWhiteSpaceSearchValues(byte mask) => mask switch
+    {
+        (byte)CharacterMask.WhiteSpace => _whiteSpaces,
+        (byte)CharacterMask.WhiteSpaceOrNewLine => _whiteSpaceOrNewLines,
+        (byte)CharacterMask.AsciiWhiteSpace => _asciiWhiteSpaces,
+        _ => _asciiWhiteSpaceOrNewLines,
+    };
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static bool IsDecimalDigitOrUnderscore(char ch) => _decimalDigitsAndUnderscore.Contains(ch);
+    // _decimalDigits and _hexDigits are still used for span-wide IndexOfAnyExcept scans in Scanner,
+    // which is what SearchValues is good at. The single-char predicates live in Character.cs and use
+    // the BCL's char.IsAscii* instead -- see the comment there.
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool IsIdentifierStart(char ch) => _identifierStart.Contains(ch);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool IsIdentifierPart(char ch) => _identifierPart.Contains(ch);
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static bool IsHexDigit(char ch) => char.IsAsciiHexDigit(ch);
 }
 #endif

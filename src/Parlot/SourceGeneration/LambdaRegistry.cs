@@ -1,9 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Reflection;
-using System.Threading;
-using Parlot;
 
 namespace Parlot.SourceGeneration;
 
@@ -28,6 +25,36 @@ public static class LambdaPointer
     [ThreadStatic]
     private static int _currentPointer;
 
+    [ThreadStatic]
+    private static bool _isRegistering;
+
+    [ThreadStatic]
+    private static bool _hasEagerCapture;
+
+    /// <summary>
+    /// Whether a callback attempted to use captured state while constructing the current parser graph.
+    /// </summary>
+    public static bool HasEagerCapture => _hasEagerCapture;
+
+    /// <summary>
+    /// Records prohibited callback execution and creates its exception. The generator also checks
+    /// the recorded state in case factory code catches the exception.
+    /// </summary>
+    public static InvalidOperationException CreateEagerCaptureException()
+    {
+        _hasEagerCapture = true;
+        return new InvalidOperationException("Callbacks capturing factory state cannot be executed while building the parser graph.");
+    }
+
+    /// <summary>
+    /// Whether a deferred callback is being inspected for source generation rather than executed.
+    /// </summary>
+    public static bool IsRegistering
+    {
+        get => _isRegistering;
+        internal set => _isRegistering = value;
+    }
+
     /// <summary>
     /// Gets or sets the current lambda pointer.
     /// This is set by rewritten lambdas at the start of their execution.
@@ -44,6 +71,7 @@ public static class LambdaPointer
     public static void Reset()
     {
         _currentPointer = -1;
+        _hasEagerCapture = false;
     }
 
     /// <summary>
@@ -120,11 +148,17 @@ public sealed class LambdaRegistry
     /// </summary>
     private static int TryInvokeForPointer(Delegate @delegate)
     {
+        // A span can't be boxed for DynamicInvoke
+        if (@delegate is Fluent.SpanScanner scanner)
+        {
+            return TryInvokeForPointer(scanner);
+        }
+
         try
         {
             var method = @delegate.Method;
             var parameters = method.GetParameters();
-            
+
             // Build default arguments for each parameter
             var args = new object?[parameters.Length];
             for (int i = 0; i < parameters.Length; i++)
@@ -132,9 +166,9 @@ public sealed class LambdaRegistry
                 var paramType = parameters[i].ParameterType;
                 args[i] = GetDefaultValue(paramType);
             }
-            
-            // Invoke the delegate - this will set LambdaPointer.CurrentPointer
-            // We ignore the return value and any exceptions from the original body
+
+            var wasRegistering = LambdaPointer.IsRegistering;
+            LambdaPointer.IsRegistering = true;
             try
             {
                 @delegate.DynamicInvoke(args);
@@ -144,7 +178,11 @@ public sealed class LambdaRegistry
                 // Ignore exceptions from the original lambda body
                 // The pointer should still be set even if the body fails
             }
-            
+            finally
+            {
+                LambdaPointer.IsRegistering = wasRegistering;
+            }
+
             // Read the pointer that was set by the rewritten lambda
             return LambdaPointer.CurrentPointer;
         }
@@ -154,17 +192,38 @@ public sealed class LambdaRegistry
         }
     }
 
+    private static int TryInvokeForPointer(Fluent.SpanScanner scanner)
+    {
+        var wasRegistering = LambdaPointer.IsRegistering;
+        LambdaPointer.IsRegistering = true;
+        try
+        {
+            scanner(default);
+        }
+        catch
+        {
+            // Ignore exceptions from the original lambda body
+        }
+        finally
+        {
+            LambdaPointer.IsRegistering = wasRegistering;
+        }
+
+        return LambdaPointer.CurrentPointer;
+    }
+
     /// <summary>
     /// Gets a default value for the given type that can be used for lambda invocation.
     /// </summary>
-#if AOT_COMPILATION
+#if NET8_0_OR_GREATER
     [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2067", Justification = "Only value types are instantiated, which always have a default value.")]
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Only used by the source generator at build time, and only to create arrays of value types.")]
 #endif
     private static object? GetDefaultValue(Type type)
     {
         if (type.IsValueType)
         {
-            return Activator.CreateInstance(type);
+            return Array.CreateInstance(type, 1).GetValue(0);
         }
         
         // For reference types, try some common cases

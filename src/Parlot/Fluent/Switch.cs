@@ -1,7 +1,6 @@
 using Parlot.Rewriting;
 using Parlot.SourceGeneration;
 using System;
-using System.Linq;
 
 namespace Parlot.Fluent;
 
@@ -9,7 +8,7 @@ namespace Parlot.Fluent;
 /// <summary>
 /// Routes the parsing based on a custom delegate.
 /// </summary>
-public sealed class Switch<T, U> : Parser<U>, ISourceable, ISeekable
+public sealed class Switch<T, U> : Parser<U>, ISeekablePrefixes, ISourceable
 {
     private readonly Parser<T> _previousParser;
     private readonly Parser<U>[] _parsers;
@@ -48,11 +47,14 @@ public sealed class Switch<T, U> : Parser<U>, ISourceable, ISeekable
     /// <inheritdoc />
     public bool SkipWhitespace { get; }
 
+    string[]? ISeekablePrefixes.ExpectedPrefixes => SeekableHints.Prefixes(_previousParser);
+
     public override bool Parse(ParseContext context, ref ParseResult<U> result)
     {
         context.EnterParser(this);
 
         var previousResult = new ParseResult<T>();
+
         var start = context.Scanner.Cursor.Position;
 
         if (!_previousParser.Parse(context, ref previousResult))
@@ -66,6 +68,7 @@ public sealed class Switch<T, U> : Parser<U>, ISourceable, ISeekable
         if ((uint)index >= (uint)_parsers.Length)
         {
             context.Scanner.Cursor.ResetPosition(start);
+
             context.ExitParser(this);
             return false;
         }
@@ -82,11 +85,12 @@ public sealed class Switch<T, U> : Parser<U>, ISourceable, ISeekable
             return true;
         }
 
+        // The previous parser matched, its text is read again by the next alternative
         context.Scanner.Cursor.ResetPosition(start);
+
         context.ExitParser(this);
         return false;
     }
-
 
     public SourceResult GenerateSource(SourceGenerationContext context)
     {
@@ -111,16 +115,17 @@ public sealed class Switch<T, U> : Parser<U>, ISourceable, ISeekable
         var valueTypeName = SourceGenerationContext.GetTypeName(typeof(U));
 
         // Use helper instead of inlining
-        var helperName = context.Helpers
+        var helperName = context.WithDiscardResult(false, () => context.Helpers
             .GetOrCreate(sourceable, $"{context.MethodNamePrefix}_Switch", previousValueTypeName, () => sourceable.GenerateSource(context))
-            .MethodName;
+            .MethodName);
 
         // Register the selector lambda
         var selectorLambda = context.RegisterLambda(_selector);
 
-        var startName = $"start{context.NextNumber()}";
         var previousValueName = $"previousValue{context.NextNumber()}";
         var indexName = $"index{context.NextNumber()}";
+
+        var startName = $"start{context.NextNumber()}";
 
         result.Body.Add($"var {startName} = {context.CursorName}.Position;");
         result.Body.Add($"if ({helperName}({ctx}, out var {previousValueName}))");
@@ -150,12 +155,10 @@ public sealed class Switch<T, U> : Parser<U>, ISourceable, ISeekable
         }
 
         result.Body.Add("    }");
-        result.Body.Add("}");
-
-        // The cursor is restored when the selection or the target parser fails
-        result.Body.Add($"if (!{result.SuccessVariable})");
-        result.Body.Add("{");
-        result.Body.Add($"    {context.CursorName}.ResetPosition({startName});");
+        result.Body.Add($"    if (!{result.SuccessVariable})");
+        result.Body.Add("    {");
+        result.Body.Add($"        {context.CursorName}.ResetPosition({startName});");
+        result.Body.Add("    }");
         result.Body.Add("}");
 
         return result;

@@ -1,4 +1,3 @@
-using System;
 using System.Linq;
 using System.Threading.Tasks;
 using Parlot.Fluent;
@@ -13,7 +12,7 @@ namespace Parlot.Tests;
 /// </summary>
 public class DeferredSeekTests
 {
-    private const char OtherSeekableChar = Parlot.Fluent.OneOf<string>.OtherSeekableChar;
+    private const char OtherSeekableChar = Fluent.OneOf<string>.OtherSeekableChar;
 
     [Fact]
     public void DeferredShouldNotSeekUntilItsParserIsSet()

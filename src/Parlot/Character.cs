@@ -10,6 +10,21 @@ public static partial class Character
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool IsInRange(char ch, char min, char max) => ch - (uint)min <= max - (uint)min;
 
+    // DecimalDigits and HexDigits are exactly the ASCII digit and ASCII hex-digit sets, so the BCL
+    // predicates are equivalent and compile to arithmetic instead of a SearchValues probe. See
+    // CharacterSetsBenchmarks: 0.19 ns -> 0.02 ns for digits, 0.12-0.21 ns -> ~0 ns for hex digits.
+    // IsIdentifierStart/IsIdentifierPart have no such BCL equivalent and keep using SearchValues,
+    // which the same benchmark shows is the fastest option for those sets.
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool IsDecimalDigit(char ch) => char.IsAsciiDigit(ch);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool IsDecimalDigitOrUnderscore(char ch) => char.IsAsciiDigit(ch) || ch == '_';
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool IsHexDigit(char ch) => char.IsAsciiHexDigit(ch);
+
     public static char ScanHexEscape(string text, int index, out int length)
     {
         return ScanHexEscape(text.AsSpan(index), out length);
@@ -108,11 +123,11 @@ public static partial class Character
                         case 't': c = '\t'; break;
                         case 'v': c = '\v'; break;
                         case 'u':
-                            c = Character.ScanHexEscape(span[i..], out var length);
+                            c = ScanHexEscape(span.Slice(i), out var length);
                             i += length;
                             break;
                         case 'x':
-                            c = Character.ScanHexEscape(span[i..], out length);
+                            c = ScanHexEscape(span.Slice(i), out length);
                             i += length;
                             break;
                     }
@@ -121,7 +136,7 @@ public static partial class Character
                 buffer[dataIndex++] = c;
             }
 
-            return buffer[..dataIndex].ToString();
+            return buffer.Slice(0, dataIndex).ToString();
         }
         finally
         {
@@ -166,15 +181,60 @@ public static partial class Character
 
     private static int HexValue(char ch) => HexConverter.FromChar(ch);
 
+    /// <summary>
+    /// Whether a char is white space, but not a new line, in the default set: one of <see cref="WhiteSpaces"/>.
+    /// </summary>
     public static bool IsWhiteSpace(char ch)
     {
         return (_characterData[ch] & (byte)CharacterMask.WhiteSpace) != 0;
     }
 
+    /// <summary>
+    /// Whether a char is white space or a new line in the default set: one of <see cref="WhiteSpaceOrNewLines"/>, the chars
+    /// <see cref="char.IsWhiteSpace(char)"/> accepts.
+    /// </summary>
     public static bool IsWhiteSpaceOrNewLine(char ch)
     {
         return (_characterData[ch] & (byte)CharacterMask.WhiteSpaceOrNewLine) != 0;
     }
 
-    public static bool IsNewLine(char ch) => ch is '\n' or '\r' or '\v';
+    /// <summary>
+    /// Whether a char is white space, but not a new line, in a given set.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool IsWhiteSpace(char ch, WhiteSpaceSet set)
+    {
+        return (_characterData[ch] & GetWhiteSpaceMask(set)) != 0;
+    }
+
+    /// <summary>
+    /// Whether a char is white space or a new line in a given set.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool IsWhiteSpaceOrNewLine(char ch, WhiteSpaceSet set)
+    {
+        return (_characterData[ch] & GetWhiteSpaceOrNewLineMask(set)) != 0;
+    }
+
+    // The bit of a set's white space in _characterData. The bit of its white space or new lines is the next one.
+    internal static byte GetWhiteSpaceMask(WhiteSpaceSet set) => set switch
+    {
+        WhiteSpaceSet.Default => (byte)CharacterMask.WhiteSpace,
+        WhiteSpaceSet.Ascii => (byte)CharacterMask.AsciiWhiteSpace,
+        _ => ThrowInvalidWhiteSpaceSet(set),
+    };
+
+    internal static byte GetWhiteSpaceOrNewLineMask(WhiteSpaceSet set) => (byte)(GetWhiteSpaceMask(set) << 1);
+
+    // Whether a char has one of the bits of a mask in _characterData
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static bool HasMask(char ch, byte mask) => (_characterData[ch] & mask) != 0;
+
+    private static byte ThrowInvalidWhiteSpaceSet(WhiteSpaceSet set)
+        => throw new ArgumentOutOfRangeException(nameof(set), set, "Unknown white space set.");
+
+    /// <summary>
+    /// Whether a char is a new line of the default set: one of <see cref="NewLines"/>.
+    /// </summary>
+    public static bool IsNewLine(char ch) => ch is '\n' or '\r' or '\v' or '\u0085' or '\u2028' or '\u2029';
 }

@@ -1,12 +1,5 @@
 using System;
-using System.Diagnostics.Tracing;
 using BenchmarkDotNet.Attributes;
-using BenchmarkDotNet.Configs;
-using BenchmarkDotNet.Diagnosers;
-using BenchmarkDotNet.Jobs;
-using BenchmarkDotNet.Running;
-using Microsoft.Diagnostics.NETCore.Client;
-using Microsoft.Diagnostics.Tracing.Parsers;
 using Parlot.Tests.Sql;
 
 namespace Parlot.Benchmarks;
@@ -39,14 +32,27 @@ public class SqlParserBenchmarks
     )]
     public string Sql { get; set; } = string.Empty;
 
-    [Benchmark]
-    public bool ParseExpression()
+    [Benchmark(Baseline = true)]
+    public bool Runtime()
     {
         var result = SqlParser.TryParse(Sql, out var statementList, out var error);
 
         if (statementList is null || error is not null)
         {
             throw new InvalidOperationException($"Parsing failed: {error}");
+        }
+
+        return result;
+    }
+
+    [Benchmark]
+    public bool Generated()
+    {
+        var result = SqlParser.TryParse(Sql, out var statementList);
+
+        if (statementList is null)
+        {
+            throw new InvalidOperationException("Generated parsing failed.");
         }
 
         return result;

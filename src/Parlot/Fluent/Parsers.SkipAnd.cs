@@ -1,4 +1,4 @@
-namespace Parlot.Fluent;
+﻿namespace Parlot.Fluent;
 
 public static partial class Parsers
 {

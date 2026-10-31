@@ -1,35 +1,17 @@
 namespace Parlot.SourceGenerator;
 
 /// <summary>
-/// Marks a parser descriptor method for Parlot source generation using interceptors.
-/// The annotated method must be static, parameterless, and return Parlot.Fluent.Parser&lt;T&gt;.
-/// 
-/// When applied, the source generator will:
-/// 1. Execute the method at compile time to build the parser graph
-/// 2. Generate optimized source code from the parser using ISourceable
-/// 3. Use C# interceptors to replace calls to this method with the source-generated version
+/// Marks a factory in a build-only .parlot.cs file for source generation.
+/// The factory must be static, non-generic, and return Parlot.Fluent.Parser&lt;T&gt;.
+/// The analyzer executes it during compilation and implements the named partial parsing method
+/// without a Parlot runtime assembly dependency.
 /// </summary>
 /// <remarks>
-/// Example usage:
-/// <code>
-/// [GenerateParser]
-/// public static Parser&lt;string&gt; HelloParser()
-/// {
-///     return Terms.Text("hello");
-/// }
-/// 
-/// // Later usage - this call will be intercepted and replaced with the generated parser
-/// var parser = HelloParser();
-/// </code>
-/// 
-/// If you need different parser variants with different configurations, create separate methods:
-/// <code>
-/// [GenerateParser]
-/// public static Parser&lt;string&gt; FooLowerParser() =&gt; Terms.Text("foo");
-/// 
-/// [GenerateParser]
-/// public static Parser&lt;string&gt; FooUpperParser() =&gt; Terms.Text("FOO");
-/// </code>
+/// The entry point is a static partial bool method in the same class, taking a string input,
+/// the factory's by-value configuration arguments, optionally an additional
+/// System.Threading.CancellationToken for cooperative cancellation, and an out T result.
+/// The additional cancellation token is not a factory parameter.
+/// Configuration arguments may only be used in supported parse-time callbacks.
 /// </remarks>
 [System.AttributeUsage(System.AttributeTargets.Method)]
 #if SOURCE_GENERATOR
@@ -40,8 +22,20 @@ public
 sealed class GenerateParserAttribute : System.Attribute
 {
     /// <summary>
-    /// Marks the method for source generation. Calls to this method will be intercepted
-    /// and replaced with a source-generated parser implementation.
+    /// Marks the factory for generation of the named partial parsing method.
     /// </summary>
-    public GenerateParserAttribute() { }
+    /// <param name="entryPoint">The name of the partial parsing method in the same class.</param>
+    public GenerateParserAttribute(string entryPoint)
+    {
+        EntryPoint = entryPoint;
+    }
+
+    /// <summary>
+    /// Gets the name of the application-facing partial parsing method.
+    /// </summary>
+    public string EntryPoint { get; }
+
+    /// <summary>Gets or sets whether to emit replay diagnostics for the parser explorer.</summary>
+    /// <remarks>Enable only in diagnostic builds. Disabled parsers contain no tracing calls.</remarks>
+    public bool Diagnostics { get; set; }
 }

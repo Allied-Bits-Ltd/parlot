@@ -10,7 +10,7 @@ public sealed class DeferredRegistry
 {
     private readonly Dictionary<object, (string MethodName, string? ParserName)> _methods = new();
 
-#if AOT_COMPILATION
+#if NET8_0_OR_GREATER
     [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2075", Justification = "Only used to read the optional public Name property; null is used when it is trimmed.")]
 #endif
     public string GetOrCreateMethodName(object parser, string suggestedName)
@@ -18,7 +18,7 @@ public sealed class DeferredRegistry
         if (!_methods.TryGetValue(parser, out var entry))
         {
             var methodName = $"{suggestedName}_{_methods.Count}";
-            
+
             // Try to get the parser's Name property via reflection
             string? parserName = null;
             var nameProp = parser.GetType().GetProperty("Name");
@@ -26,7 +26,7 @@ public sealed class DeferredRegistry
             {
                 parserName = nameProp.GetValue(parser) as string;
             }
-            
+
             entry = (methodName, parserName);
             _methods[parser] = entry;
         }

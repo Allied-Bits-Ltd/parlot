@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
 using System.Linq;
 using System.IO;
 using System.Reflection;
@@ -9,28 +10,20 @@ using System.Text;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
-using Microsoft.CodeAnalysis.Text;
 using Parlot.SourceGeneration;
 using RoslynCompilation = Microsoft.CodeAnalysis.Compilation;
 
 namespace Parlot.SourceGenerator;
 
 /// <summary>
-/// Incremental source generator for Parlot grammars using C# interceptors.
-///
-/// It looks for static methods annotated with <see cref="GenerateParserAttribute"/> that:
-///   - are static
-///   - return Parlot.Fluent.Parser&lt;T&gt;
-/// It then:
-///   - finds all invocation sites of these methods,
-///   - builds a temporary compilation including those methods,
-///   - executes the descriptor methods to obtain Parser&lt;T&gt; instances,
-///   - invokes ISourceable.GenerateSource on those instances,
-///   - and emits interceptor methods that return the source-generated Parser&lt;T&gt;.
+/// Compiles build-only Parlot grammars into partial parsing methods and assembly-local support code.
 /// </summary>
 [Generator]
-public sealed class ParserSourceGenerator : IIncrementalGenerator
+public sealed partial class ParserSourceGenerator : IIncrementalGenerator
 {
+    private static readonly char[] _invalidLineDirectivePathCharacters = ['\r', '\n', '\u2028', '\u2029'];
+    private const int EntryCoreInliningStatementLimit = 24;
+
     #region Diagnostic Descriptors
 
     private static readonly DiagnosticDescriptor ClassNotPartialDescriptor = new(
@@ -51,14 +44,31 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
         isEnabledByDefault: true,
         description: "Methods marked with [GenerateParser] must be static.");
 
-    private static readonly DiagnosticDescriptor MethodHasParametersDescriptor = new(
+    private static readonly DiagnosticDescriptor UnsupportedFactorySignatureDescriptor = new(
         "PARLOT009",
-        "Method must be parameterless",
-        "[GenerateParser] method '{0}' must not have parameters",
+        "Unsupported parser factory signature",
+        "[GenerateParser] method '{0}' must be non-generic and use only ordinary by-value configuration parameters",
         "Parlot.SourceGenerator",
         DiagnosticSeverity.Error,
         isEnabledByDefault: true,
-        description: "Methods marked with [GenerateParser] must be parameterless.");
+        description: "Generic factories, generic containing types, by-reference parameters, ref-like types, pointers, and function pointers are not supported.");
+
+    private static readonly DiagnosticDescriptor InvalidFactoryParameterUseDescriptor = new(
+        "PARLOT021",
+        "Factory parameter must be deferred",
+        "Parameter '{1}' in [GenerateParser] method '{0}' may only be read inside supported parse-time callbacks and must not be reassigned or passed by reference",
+        "Parlot.SourceGenerator",
+        DiagnosticSeverity.Error,
+        isEnabledByDefault: true,
+        description: "Use If or Select to describe every branch at compile time. Configuration arguments are supplied at parse time, not used to build the parser graph.");
+
+    private static readonly DiagnosticDescriptor EagerCallbackDescriptor = new(
+        "PARLOT022",
+        "Captured callback executed during generation",
+        "Callbacks capturing factory state in method '{0}' cannot be executed while building the parser graph",
+        "Parlot.SourceGenerator",
+        DiagnosticSeverity.Error,
+        isEnabledByDefault: true);
 
     private static readonly DiagnosticDescriptor InvalidReturnTypeDescriptor = new(
         "PARLOT010",
@@ -78,15 +88,6 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
         isEnabledByDefault: true,
         description: "Lambdas used in parsers must be defined inline in the [GenerateParser] method so that the source generator can extract and emit them.");
 
-    private static readonly DiagnosticDescriptor GenerationSucceededDescriptor = new(
-        "PARLOT000",
-        "Parser source generation succeeded",
-        "Successfully generated source for parser '{0}' with {1} intercepted call site(s)",
-        "Parlot.SourceGenerator",
-        DiagnosticSeverity.Info,
-        isEnabledByDefault: true,
-        description: "The source generator successfully generated code for this parser.");
-
     private static readonly DiagnosticDescriptor EmitFailedDescriptor = new(
         "PARLOT001",
         "Compilation emit failed",
@@ -95,21 +96,56 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
         DiagnosticSeverity.Error,
         isEnabledByDefault: true);
 
-    private static readonly DiagnosticDescriptor GenerationErrorDescriptor = new(
-        "PARLOT005",
-        "Error generating parser source",
-        "An error occurred while generating parser source for method '{0}': {1}",
+    internal static readonly DiagnosticDescriptor IncludeFileNotFoundDescriptor = new(
+        "PARLOT006",
+        "Include file not found",
+        "[IncludeFiles] entry {0} matched no files for method '{1}'",
         "Parlot.SourceGenerator",
         DiagnosticSeverity.Error,
         isEnabledByDefault: true);
 
-    private static readonly DiagnosticDescriptor IncludeFileNotFoundDescriptor = new(
-        "PARLOT006",
-        "Include file not found",
-        "Could not find included file '{0}' for method '{1}'",
+    internal static readonly DiagnosticDescriptor InvalidIncludeFileDescriptor = new(
+        "PARLOT016",
+        "Invalid include file path",
+        "[IncludeFiles] entry {0} for method '{1}' was rejected: {2}",
         "Parlot.SourceGenerator",
-        DiagnosticSeverity.Warning,
+        DiagnosticSeverity.Error,
+        isEnabledByDefault: true,
+        description: "IncludeFiles paths must be relative C# paths that remain within the project root.");
+
+    internal static readonly DiagnosticDescriptor IncludeFileSymlinkDescriptor = new(
+        "PARLOT017",
+        "Include file path uses a symbolic link",
+        "[IncludeFiles] entry {0} for method '{1}' was rejected because it traverses a symbolic link",
+        "Parlot.SourceGenerator",
+        DiagnosticSeverity.Error,
+        isEnabledByDefault: true,
+        description: "IncludeFiles does not follow symbolic links because their targets can escape the project root.");
+
+    internal static readonly DiagnosticDescriptor IncludeFileLimitDescriptor = new(
+        "PARLOT018",
+        "Include file limit exceeded",
+        "[IncludeFiles] entry {0} for method '{1}' exceeded the {2} limit",
+        "Parlot.SourceGenerator",
+        DiagnosticSeverity.Error,
         isEnabledByDefault: true);
+
+    internal static readonly DiagnosticDescriptor IncludeFileReadDescriptor = new(
+        "PARLOT019",
+        "Include file could not be read",
+        "[IncludeFiles] entry {0} for method '{1}' could not be read ({2})",
+        "Parlot.SourceGenerator",
+        DiagnosticSeverity.Error,
+        isEnabledByDefault: true);
+
+    internal static readonly DiagnosticDescriptor ProjectRootUnavailableDescriptor = new(
+        "PARLOT020",
+        "Project root unavailable",
+        "[IncludeFiles] for method '{0}' requires the MSBuild project directory",
+        "Parlot.SourceGenerator",
+        DiagnosticSeverity.Error,
+        isEnabledByDefault: true,
+        description: "The Parlot build-transitive props expose MSBuildProjectDirectory to enforce project-root containment.");
 
     private static readonly DiagnosticDescriptor MethodNotFoundDescriptor = new(
         "PARLOT011",
@@ -121,15 +157,12 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
 
     private static readonly DiagnosticDescriptor ClosureNotSupportedDescriptor = new(
         "PARLOT015",
-        "Closures are not supported in source generation",
-        "Lambda in method '{0}' captures variable '{1}' from the enclosing scope. Source generation only supports static lambdas without captured variables. To pass state to lambdas, use a custom ParseContext subclass or store state in static fields.",
+        "Unsupported lambda capture",
+        "Lambda in method '{0}' captures variable '{1}' from the enclosing scope. Source generation only supports captures of that factory's parameters. Pass application state through a factory parameter instead.",
         "Parlot.SourceGenerator",
         DiagnosticSeverity.Error,
         isEnabledByDefault: true,
-        description: "Lambdas used in source-generated parsers cannot capture variables from their enclosing scope (closures). " +
-                     "The generated code creates static methods that don't have access to captured state. " +
-                     "To pass custom state to lambda functions, create a custom ParseContext subclass with properties for your state, " +
-                     "or use static fields/properties that can be accessed from static lambda expressions.");
+        description: "Factory parameters are supplied to generated parsing methods. Other captured locals or parameters are not supported.");
 
     #endregion
 
@@ -140,129 +173,7 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
     /// <param name="context">The generator initialization context.</param>
     public void Initialize(IncrementalGeneratorInitializationContext context)
     {
-        // 1. Find candidate methods syntactically (methods with attributes).
-        var methodDeclarations = context.SyntaxProvider.CreateSyntaxProvider(
-            static (node, _) => IsCandidateMethod(node),
-            static (syntaxContext, _) => GetMethodToGenerate(syntaxContext))
-            .Where(static m => m is not null)!;
-
-        // 2. Find invocations of methods (potential calls to [GenerateParser] methods).
-        var invocations = context.SyntaxProvider.CreateSyntaxProvider(
-            static (node, _) => node is InvocationExpressionSyntax,
-            static (syntaxContext, ct) => GetInvocationToIntercept(syntaxContext, ct))
-            .Where(static i => i is not null)!;
-
-        // 3. Capture target framework information and build context for the current compilation.
-        // These are provided by MSBuild and differ per target in multi-target builds.
-        var targetFramework = context.AnalyzerConfigOptionsProvider
-            .Select(static (options, _) =>
-            {
-                options.GlobalOptions.TryGetValue("build_property.TargetFramework", out var tfm);
-                options.GlobalOptions.TryGetValue("build_property.TargetFrameworkIdentifier", out var identifier);
-                options.GlobalOptions.TryGetValue("build_property.TargetFrameworkVersion", out var version);
-                options.GlobalOptions.TryGetValue("build_property.DesignTimeBuild", out var designTimeBuild);
-                options.GlobalOptions.TryGetValue("build_property.BuildingProject", out var buildingProject);
-                options.GlobalOptions.TryGetValue("build_property.BuildingInsideVisualStudio", out var buildingInsideVisualStudio);
-
-                return (
-                    tfm: tfm ?? "",
-                    identifier: identifier ?? "",
-                    version: version ?? "",
-                    isDesignTimeBuild: IsDesignTimeOrIdeContext(designTimeBuild, buildingProject, buildingInsideVisualStudio));
-            });
-
-        // 4. Combine the collected methods with invocations, Compilation, and TFM.
-        var combinedData = context.CompilationProvider
-            .Combine(targetFramework)
-            .Combine(methodDeclarations.Collect())
-            .Combine(invocations.Collect());
-
-        // 5. Register for source output.
-        context.RegisterSourceOutput(combinedData, static (spc, source) =>
-        {
-            var (((compilation, tfmInfo), methods), invocationList) = source;
-
-            // In IDE/design-time contexts, source generation should be a no-op.
-            if (tfmInfo.isDesignTimeBuild)
-            {
-                return;
-            }
-
-            // Always output a debug file to confirm this runs
-            spc.AddSource("ParlotDebugInfo.g.cs", SourceText.From(
-                "// <auto-generated />\n" +
-                "// TargetFramework: " + (string.IsNullOrEmpty(tfmInfo.tfm) ? "<unknown>" : tfmInfo.tfm) + "\n" +
-                "// TargetFrameworkIdentifier: " + (string.IsNullOrEmpty(tfmInfo.identifier) ? "<unknown>" : tfmInfo.identifier) + "\n" +
-                "// TargetFrameworkVersion: " + (string.IsNullOrEmpty(tfmInfo.version) ? "<unknown>" : tfmInfo.version) + "\n" +
-                "// Methods count: " + (methods.IsDefaultOrEmpty ? "0" : methods.Length.ToString(System.Globalization.CultureInfo.InvariantCulture)) + "\n" +
-                "// Invocations count: " + (invocationList.IsDefaultOrEmpty ? "0" : invocationList.Length.ToString(System.Globalization.CultureInfo.InvariantCulture)) + "\n" +
-                "namespace Parlot.SourceGenerator.Internal;\n" +
-                "internal static class DebugInfo { }\n", Encoding.UTF8));
-
-            if (methods.IsDefaultOrEmpty)
-            {
-                return;
-            }
-
-            // Build a lookup of method symbols to their invocations
-            var invocationsByMethod = new Dictionary<string, List<InvocationInfo>>(StringComparer.Ordinal);
-            if (!invocationList.IsDefaultOrEmpty)
-            {
-                foreach (var inv in invocationList)
-                {
-                    if (inv is null) continue;
-                    var key = inv.Value.TargetMethodKey;
-                    if (!invocationsByMethod.TryGetValue(key, out var list))
-                    {
-                        list = new List<InvocationInfo>();
-                        invocationsByMethod[key] = list;
-                    }
-                    list.Add(inv.Value);
-                }
-            }
-
-            foreach (var m in methods)
-            {
-                if (m is null)
-                {
-                    continue;
-                }
-
-                // Report any validation errors first
-                if (m.Value.ValidationErrors is not null && m.Value.ValidationArgs is not null)
-                {
-                    for (int i = 0; i < m.Value.ValidationErrors.Length; i++)
-                    {
-                        spc.ReportDiagnostic(Diagnostic.Create(
-                            m.Value.ValidationErrors[i],
-                            m.Value.AttributeLocation ?? m.Value.Method.Locations.FirstOrDefault(),
-                            m.Value.ValidationArgs[i]));
-                    }
-                    // Skip generation if there are validation errors
-                    continue;
-                }
-
-                try
-                {
-                    // Get invocations for this method
-                    var methodKey = GetMethodKey(m.Value.Method);
-                    invocationsByMethod.TryGetValue(methodKey, out var methodInvocations);
-
-                    var targetFrameworkInfo = TargetFrameworkInfo.FromMsBuildProperties(tfmInfo.identifier, tfmInfo.version);
-
-                    GenerateForMethod(spc, compilation, targetFrameworkInfo, m.Value, methodInvocations ?? new List<InvocationInfo>(), tfmInfo.isDesignTimeBuild);
-                }
-                catch (Exception ex)
-                {
-                    spc.ReportDiagnostic(Diagnostic.Create(
-                        GenerationErrorDescriptor,
-                        m.Value.Method.Locations.FirstOrDefault(),
-                        m.Value.Method.Name,
-                        ex.Message));
-                    continue;
-                }
-            }
-        });
+        InitializeStandalone(context);
     }
 
     private static bool IsDesignTimeOrIdeContext(string? designTimeBuild, string? buildingProject, string? buildingInsideVisualStudio)
@@ -298,65 +209,22 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
 
     private static string GetMethodKey(IMethodSymbol method)
     {
-        return method.ContainingType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat) + "." + method.Name;
-    }
-
-
-    private static InvocationInfo? GetInvocationToIntercept(GeneratorSyntaxContext context, System.Threading.CancellationToken ct)
-    {
-        var invocation = (InvocationExpressionSyntax)context.Node;
-        var semanticModel = context.SemanticModel;
-        
-        // Get the method being called
-        var symbolInfo = semanticModel.GetSymbolInfo(invocation, ct);
-        if (symbolInfo.Symbol is not IMethodSymbol methodSymbol)
-        {
-            return null;
-        }
-
-        // Check if the method has [GenerateParser] attribute
-        var generateParserAttrSymbol = semanticModel.Compilation.GetTypeByMetadataName("Parlot.SourceGenerator.GenerateParserAttribute");
-        if (generateParserAttrSymbol is null)
-        {
-            return null;
-        }
-
-        var hasGenerateParserAttr = methodSymbol.GetAttributes()
-            .Any(a => SymbolEqualityComparer.Default.Equals(a.AttributeClass, generateParserAttrSymbol));
-        
-        if (!hasGenerateParserAttr)
-        {
-            return null;
-        }
-
-        // Only intercept parameterless method calls
-        if (invocation.ArgumentList.Arguments.Count > 0)
-        {
-            return null;
-        }
-
-        // Get the interceptable location using Roslyn's API
-        var interceptableLocation = semanticModel.GetInterceptableLocation(invocation, ct);
-        if (interceptableLocation is null)
-        {
-            return null;
-        }
-
-        var methodKey = methodSymbol.ContainingType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat) + "." + methodSymbol.Name;
-        
-        return new InvocationInfo(
-            methodKey,
-            interceptableLocation.GetInterceptsLocationAttributeSyntax(),
-            invocation.GetLocation());
+        return method.OriginalDefinition.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat
+            .WithMemberOptions(SymbolDisplayMemberOptions.IncludeContainingType
+                | SymbolDisplayMemberOptions.IncludeParameters
+                | SymbolDisplayMemberOptions.IncludeExplicitInterface)
+            .WithParameterOptions(SymbolDisplayParameterOptions.IncludeType | SymbolDisplayParameterOptions.IncludeParamsRefOut)
+            .WithGenericsOptions(SymbolDisplayGenericsOptions.IncludeTypeParameters));
     }
 
     private static bool IsCandidateMethod(SyntaxNode node)
         => node is MethodDeclarationSyntax m && m.AttributeLists.Count > 0;
 
     private static MethodToGenerate? GetMethodToGenerate(GeneratorSyntaxContext context)
+        => GetMethodToGenerate((MethodDeclarationSyntax)context.Node, context.SemanticModel);
+
+    private static MethodToGenerate? GetMethodToGenerate(MethodDeclarationSyntax methodDecl, SemanticModel semanticModel)
     {
-        var methodDecl = (MethodDeclarationSyntax)context.Node;
-        var semanticModel = context.SemanticModel;
         var methodSymbol = semanticModel.GetDeclaredSymbol(methodDecl) as IMethodSymbol;
         if (methodSymbol is null)
         {
@@ -382,6 +250,7 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
         var attrLocation = methodSymbol.GetAttributes()
             .FirstOrDefault(attr => SymbolEqualityComparer.Default.Equals(attr.AttributeClass, generateParserAttrSymbol))
             ?.ApplicationSyntaxReference?.GetSyntax().GetLocation();
+        attrLocation = GrammarDiagnosticLocation(attrLocation);
 
         // Collect validation errors - we want to report them all, not just the first one
         var validationErrors = new List<DiagnosticDescriptor>();
@@ -390,11 +259,11 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
         // Check if class is partial
         var containingType = methodSymbol.ContainingType;
         var typeDeclaration = containingType.DeclaringSyntaxReferences
-            .Select(r => r.GetSyntax())
+            .Select(static reference => reference.GetSyntax())
             .OfType<TypeDeclarationSyntax>()
-            .FirstOrDefault();
-        
-        if (typeDeclaration is not null && !typeDeclaration.Modifiers.Any(m => m.IsKind(SyntaxKind.PartialKeyword)))
+            .FirstOrDefault(static declaration => !declaration.Modifiers.Any(SyntaxKind.PartialKeyword));
+
+        if (typeDeclaration is not null)
         {
             validationErrors.Add(ClassNotPartialDescriptor);
             validationArgs.Add(new object?[] { containingType.Name, methodSymbol.Name });
@@ -407,10 +276,14 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
             validationArgs.Add(new object?[] { methodSymbol.Name });
         }
 
-        // Method must be parameterless
-        if (methodSymbol.Parameters.Length > 0)
+        if (methodSymbol.IsGenericMethod
+            || methodSymbol.ContainingType.IsGenericType
+            || methodSymbol.Parameters.Any(static parameter =>
+                parameter.RefKind != RefKind.None
+                || parameter.Type.IsRefLikeType
+                || parameter.Type.TypeKind is TypeKind.Pointer or TypeKind.FunctionPointer))
         {
-            validationErrors.Add(MethodHasParametersDescriptor);
+            validationErrors.Add(UnsupportedFactorySignatureDescriptor);
             validationArgs.Add(new object?[] { methodSymbol.Name });
         }
 
@@ -439,7 +312,7 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
                         .Select(v => (string)v.Value!));
                 }
             }
-            
+
             // Then check method-level attribute (which can add more files)
             var methodIncludeFilesAttr = methodSymbol.GetAttributes()
                 .FirstOrDefault(attr => SymbolEqualityComparer.Default.Equals(attr.AttributeClass, includeFilesAttrSymbol));
@@ -473,7 +346,7 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
                         .Select(v => (string)v.Value!));
                 }
             }
-            
+
             // Then check method-level attribute (which can add more usings)
             var methodIncludeUsingsAttr = methodSymbol.GetAttributes()
                 .FirstOrDefault(attr => SymbolEqualityComparer.Default.Equals(attr.AttributeClass, includeUsingsAttrSymbol));
@@ -507,7 +380,7 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
                         .Select(v => (string)v.Value!));
                 }
             }
-            
+
             // Then check method-level attribute (which can add more generators)
             var methodIncludeGeneratorsAttr = methodSymbol.GetAttributes()
                 .FirstOrDefault(attr => SymbolEqualityComparer.Default.Equals(attr.AttributeClass, includeGeneratorsAttrSymbol));
@@ -524,9 +397,9 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
         }
 
         return new MethodToGenerate(
-            methodSymbol, 
-            attrLocation, 
-            additionalFiles.ToArray(), 
+            methodSymbol,
+            attrLocation,
+            additionalFiles.ToArray(),
             additionalUsings.ToArray(),
             additionalGenerators.ToArray(),
             validationErrors.Count > 0 ? validationErrors.ToArray() : null,
@@ -534,14 +407,13 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
     }
 
     private readonly record struct MethodToGenerate(
-        IMethodSymbol Method, 
-        Location? AttributeLocation, 
+        IMethodSymbol Method,
+        Location? AttributeLocation,
         string[] AdditionalFiles,
         string[] AdditionalUsings,
         string[] AdditionalGenerators,
         DiagnosticDescriptor[]? ValidationErrors,
         object?[][]? ValidationArgs);
-    private readonly record struct InvocationInfo(string TargetMethodKey, string InterceptsLocationAttribute, Location Location);
 
     private static bool IsParserReturnType(ITypeSymbol returnType)
     {
@@ -562,8 +434,10 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
         RoslynCompilation hostCompilation,
         TargetFrameworkInfo targetFramework,
         MethodToGenerate methodInfo,
-        List<InvocationInfo> invocations,
-        bool isDesignTimeBuild)
+        string projectDirectory,
+        bool isDesignTimeBuild,
+        StandaloneEntryPoint standalone,
+        ISet<string> entryPointKeys)
     {
         var methodSymbol = methodInfo.Method;
 
@@ -575,7 +449,7 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
         }
         var originalSyntaxTree = methodSyntaxRef.SyntaxTree;
         var methodSyntax = methodSyntaxRef.GetSyntax() as MethodDeclarationSyntax;
-        
+
         if (methodSyntax is null)
         {
             return;
@@ -583,36 +457,35 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
 
         // Get semantic model for the syntax tree
         var semanticModel = hostCompilation.GetSemanticModel(originalSyntaxTree);
-        
+
         // Use LambdaRewriter to rewrite lambdas into stubs for execution
         // The rewriter replaces each lambda/method group with a stub that contains a unique pointer
         // When the rewritten code executes, LambdaRegistry can extract the pointer and map it
         // back to the original source code
-        var rewriter = new LambdaRewriter(semanticModel);
-        var rewrittenRoot = rewriter.Visit(originalSyntaxTree.GetRoot());
-
-        // Check for captured variables (closures) - these are not supported in source generation
-        if (rewriter.CapturedVariables.Count > 0)
+        var invalidParameterUses = FactoryParameterUsage.FindInvalidUses(methodSymbol, methodSyntax, semanticModel).ToList();
+        if (invalidParameterUses.Count > 0)
         {
-            // Report an error for each captured variable
-            foreach (var captured in rewriter.CapturedVariables)
+            foreach (var use in invalidParameterUses)
             {
                 context.ReportDiagnostic(Diagnostic.Create(
-                    ClosureNotSupportedDescriptor,
-                    captured.Location,
+                    InvalidFactoryParameterUseDescriptor,
+                    GrammarDiagnosticLocation(use.Location),
                     methodSymbol.Name,
-                    captured.VariableName));
+                    use.ParameterName));
             }
             return;
         }
-        
+
+        var rewriter = new LambdaRewriter(semanticModel, methodSymbol);
+        var rewrittenRoot = rewriter.Visit(originalSyntaxTree.GetRoot());
+
         // Create a new syntax tree with the rewritten code
         var parseOptions = (CSharpParseOptions)originalSyntaxTree.Options;
         var rewrittenTree = CSharpSyntaxTree.Create(
             (CSharpSyntaxNode)rewrittenRoot,
             parseOptions,
             originalSyntaxTree.FilePath);
-        
+
         // Get the source code map from pointers to original lambda source
         var lambdaSourceMap = rewriter.Lambdas.ToDictionary(
             kv => kv.Key,
@@ -622,6 +495,30 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
         // This allows us to execute the parser with lambda stubs while keeping all other files intact
         var tempCompilation = hostCompilation
             .ReplaceSyntaxTree(originalSyntaxTree, rewrittenTree);
+
+        tempCompilation = StubStandaloneEntryPoints(tempCompilation, entryPointKeys);
+
+        if (methodInfo.AdditionalFiles.Length > 0)
+        {
+            if (!IncludeFilesResolver.TryLoad(
+                context,
+                methodInfo.Method,
+                methodInfo.AttributeLocation,
+                methodInfo.AdditionalFiles,
+                originalSyntaxTree,
+                projectDirectory,
+                parseOptions,
+                tempCompilation.SyntaxTrees,
+                out var includedTrees))
+            {
+                return;
+            }
+
+            if (includedTrees.Count > 0)
+            {
+                tempCompilation = tempCompilation.AddSyntaxTrees(includedTrees);
+            }
+        }
 
         // Run additional source generators if specified via [IncludeGenerators] attribute
         if (methodInfo.AdditionalGenerators.Length > 0)
@@ -634,7 +531,7 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
         // If emit fails with CS8795/CS0759, rewrite the affected partial methods in-memory into non-partial stubs and retry once.
         List<string>? partialBypassedMethods = null;
 
-        using var peStream = new System.IO.MemoryStream();
+        using var peStream = new MemoryStream();
         var emitResult = tempCompilation.Emit(peStream);
 
         if (!emitResult.Success && emitResult.Diagnostics.Any(d => d.Severity == DiagnosticSeverity.Error && (d.Id == "CS8795" || d.Id == "CS0759")))
@@ -654,20 +551,20 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
                 .Where(d => d.Severity == DiagnosticSeverity.Error &&
                             (d.Id == "CS0246" || d.Id == "CS0234" || d.Id == "CS8795" || d.Id == "CS0759"))
                 .ToList();
-            
+
             // Output a diagnostic about emit failure with the error messages
             var errorMessages = string.Join("; ", emitResult.Diagnostics
                 .Where(d => d.Severity == DiagnosticSeverity.Error)
                 .Take(5)
-                .Select(d => 
+                .Select(d =>
                 {
                     var location = d.Location;
                     var lineSpan = location.GetLineSpan();
                     var fileName = Path.GetFileName(lineSpan.Path);
                     var line = lineSpan.StartLinePosition.Line + 1;
-                    return $"{fileName}({line}): {d.GetMessage(System.Globalization.CultureInfo.InvariantCulture)}";
+                    return $"{fileName}({line}): {d.GetMessage(CultureInfo.InvariantCulture)}";
                 }));
-            
+
             if (missingGeneratorOutputErrors.Count > 0)
             {
                 var detail = errorMessages;
@@ -679,13 +576,13 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
 
                 context.ReportDiagnostic(Diagnostic.Create(
                     EmitFailedDescriptor,
-                    methodSymbol.Locations.FirstOrDefault(), methodSymbol.Name, detail));
+                    GrammarDiagnosticLocation(methodSymbol.Locations.FirstOrDefault()), methodSymbol.Name, detail));
             }
             else
             {
                 context.ReportDiagnostic(Diagnostic.Create(
                     EmitFailedDescriptor,
-                    methodSymbol.Locations.FirstOrDefault(), methodSymbol.Name, errorMessages));
+                    GrammarDiagnosticLocation(methodSymbol.Locations.FirstOrDefault()), methodSymbol.Name, errorMessages));
             }
             return;
         }
@@ -697,7 +594,7 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
         var assemblyPaths = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var pendingCompilationRefs = new List<(string Name, RoslynCompilation Compilation)>();
         var loadedAssemblies = new Dictionary<string, Assembly>(StringComparer.OrdinalIgnoreCase);
-        
+
         // Debug: collect reference info
         var refDebugInfo = new List<string>();
 
@@ -708,7 +605,7 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
             {
                 var assemblyName = Path.GetFileNameWithoutExtension(peRef.FilePath);
                 var filePath = peRef.FilePath;
-                
+
                 // If this is a ref assembly (in obj/*/ref/), try to find the actual assembly
                 // Ref assemblies are metadata-only and can't be loaded at runtime
                 if (filePath.Contains(Path.DirectorySeparatorChar + "ref" + Path.DirectorySeparatorChar) ||
@@ -754,7 +651,7 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
                         }
                     }
                 }
-                
+
                 if (!assemblyPaths.ContainsKey(assemblyName))
                 {
                     assemblyPaths[assemblyName] = filePath;
@@ -790,7 +687,7 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
             {
                 // Return the Parlot assembly that this generator is already using
                 // This ensures ISourceable and other types have the same identity
-                return typeof(Parlot.Fluent.Parser<>).Assembly;
+                return typeof(Fluent.Parser<>).Assembly;
             }
 
             // Try to return pre-loaded assembly from project references (CompilationReference)
@@ -804,7 +701,7 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
             {
                 try
                 {
-                    var asm = Assembly.LoadFrom(path);
+                    var asm = Assembly.Load(File.ReadAllBytes(path));
                     loadedAssemblies[requestedName.Name] = asm;
                     return asm;
                 }
@@ -838,15 +735,15 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
                     {
                         context.ReportDiagnostic(Diagnostic.Create(
                             new DiagnosticDescriptor("PARLOT098", "Assembly load failed", "Failed to load '{0}': {1}", "Parlot.SourceGenerator", DiagnosticSeverity.Warning, true),
-                            methodSymbol.Locations.FirstOrDefault(), refAssemblyName, ex.Message));
+                            GrammarDiagnosticLocation(methodSymbol.Locations.FirstOrDefault()), refAssemblyName, ex.Message));
                     }
                 }
                 else
                 {
-                    var errors = string.Join("; ", refEmitResult.Diagnostics.Where(d => d.Severity == DiagnosticSeverity.Error).Take(3).Select(d => d.GetMessage(System.Globalization.CultureInfo.InvariantCulture)));
+                    var errors = string.Join("; ", refEmitResult.Diagnostics.Where(d => d.Severity == DiagnosticSeverity.Error).Take(3).Select(d => d.GetMessage(CultureInfo.InvariantCulture)));
                     context.ReportDiagnostic(Diagnostic.Create(
                         new DiagnosticDescriptor("PARLOT097", "Emit failed for ref", "Failed to emit '{0}': {1}", "Parlot.SourceGenerator", DiagnosticSeverity.Warning, true),
-                        methodSymbol.Locations.FirstOrDefault(), refAssemblyName, errors));
+                        GrammarDiagnosticLocation(methodSymbol.Locations.FirstOrDefault()), refAssemblyName, errors));
                 }
             }
         }
@@ -873,23 +770,28 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
                 return;
             }
 
-            var method = type.GetMethod(
-                methodSymbol.Name,
-                BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+            var method = type.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.DeclaredOnly)
+                .SingleOrDefault(candidate => MatchesFactoryMethod(candidate, methodSymbol));
 
             if (method is null)
             {
                 context.ReportDiagnostic(Diagnostic.Create(
                     MethodNotFoundDescriptor,
-                    methodSymbol.Locations.FirstOrDefault(), methodSymbol.Name, containingTypeName));
+                    GrammarDiagnosticLocation(methodSymbol.Locations.FirstOrDefault()), methodSymbol.Name, containingTypeName));
                 return;
             }
 
-            // Invoke the parameterless method to get the parser instance
+            // Parameters may only be read by deferred callbacks, so placeholders cannot affect the graph.
             object? parserInstance;
+            LambdaPointer.Reset();
             try
             {
-                parserInstance = method.Invoke(null, null);
+                var arguments = method.GetParameters()
+                    .Select(static parameter => parameter.ParameterType.IsValueType
+                        ? Array.CreateInstance(parameter.ParameterType, 1).GetValue(0)
+                        : null)
+                    .ToArray();
+                parserInstance = method.Invoke(null, arguments);
             }
             catch (TargetInvocationException ex)
             {
@@ -922,6 +824,11 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
                 return;
             }
 
+            if (ReportEagerCapture(context, methodInfo))
+            {
+                return;
+            }
+
             if (parserInstance is null)
             {
                 context.ReportDiagnostic(Diagnostic.Create(
@@ -946,7 +853,7 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
             // a different type identity than the one referenced by the source generator
             var sourceableInterface = parserInstance.GetType().GetInterfaces()
                 .FirstOrDefault(i => i.FullName == "Parlot.SourceGeneration.ISourceable");
-            
+
             if (sourceableInterface is null)
             {
                 context.ReportDiagnostic(Diagnostic.Create(
@@ -955,7 +862,7 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
                         "Parser does not implement ISourceable",
                         "Parser type '{0}' does not implement ISourceable. Implemented interfaces: {1}",
                         "Parlot.SourceGenerator",
-                        DiagnosticSeverity.Warning,
+                        DiagnosticSeverity.Error,
                         isEnabledByDefault: true),
                     methodInfo.AttributeLocation ?? methodSymbol.Locations.FirstOrDefault(),
                     parserInstance.GetType().FullName,
@@ -973,7 +880,7 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
                         "ISourceable.GenerateSource not found",
                         "Parser type '{0}' implements ISourceable but GenerateSource method not found",
                         "Parlot.SourceGenerator",
-                        DiagnosticSeverity.Warning,
+                        DiagnosticSeverity.Error,
                         isEnabledByDefault: true),
                     methodInfo.AttributeLocation ?? methodSymbol.Locations.FirstOrDefault(),
                     parserInstance.GetType().FullName));
@@ -983,7 +890,7 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
             static int GetCSharpLanguageMajorVersion(IMethodSymbol symbol)
             {
                 var syntaxRef = symbol.DeclaringSyntaxReferences.FirstOrDefault();
-                if (syntaxRef?.SyntaxTree.Options is not Microsoft.CodeAnalysis.CSharp.CSharpParseOptions csharpOptions)
+                if (syntaxRef?.SyntaxTree.Options is not CSharpParseOptions csharpOptions)
                 {
                     return 0;
                 }
@@ -991,7 +898,7 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
                 var lv = csharpOptions.LanguageVersion;
 
                 // Normalize common Roslyn values to a major integer.
-                if (lv == Microsoft.CodeAnalysis.CSharp.LanguageVersion.Latest || lv == Microsoft.CodeAnalysis.CSharp.LanguageVersion.Preview)
+                if (lv == LanguageVersion.Latest || lv == LanguageVersion.Preview)
                 {
                     return int.MaxValue;
                 }
@@ -1009,14 +916,17 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
 
             var sgContext = new SourceGenerationContext(
                 parseContextName: "context",
-                methodNamePrefix: methodSymbol.Name,
+                methodNamePrefix: GetEntryIdentifier(methodSymbol, standalone),
                 targetFramework: targetFramework,
                 csharpLanguageMajorVersion: GetCSharpLanguageMajorVersion(methodSymbol));
-            
+
             // Set the lambda source map before invoking GenerateSource
             // This allows the LambdaRegistry to map runtime lambda pointers back to their original source
             sgContext.SetLambdaSourceMap(lambdaSourceMap);
-            
+
+            // A TextReader entry point reads a compacting stream buffer
+            sgContext.IsCompacting = standalone.IsReader;
+
             // Invoke GenerateSource via reflection
             object? sourceResultObj;
             try
@@ -1056,55 +966,43 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
             }
 
             // Generate C# code using the new pointer-based lambda system
-            var (sourceText, failedLambdas) = GenerateParserWrapperAndCore(methodSymbol, valueType, sourceResult, sgContext, lambdaSourceMap, rewriter.Lambdas, invocations, methodInfo.AdditionalUsings);
+            var (sourceText, failedLambdas, capturedVariables) = GenerateParserCore(methodSymbol, valueType, sourceResult, sgContext, lambdaSourceMap, rewriter.Lambdas, methodInfo.AdditionalUsings, standalone);
+
+            if (ReportEagerCapture(context, methodInfo))
+            {
+                return;
+            }
+
+            foreach (var captured in capturedVariables)
+            {
+                context.ReportDiagnostic(Diagnostic.Create(
+                    ClosureNotSupportedDescriptor,
+                    GrammarDiagnosticLocation(captured.Location),
+                    methodSymbol.Name,
+                    captured.VariableName));
+            }
 
             // Report errors for lambdas that couldn't be extracted
             foreach (var failedLambda in failedLambdas)
             {
                 context.ReportDiagnostic(Diagnostic.Create(
                     LambdaExtractionFailedDescriptor,
-                    methodSymbol.Locations.FirstOrDefault(),
+                    GrammarDiagnosticLocation(methodSymbol.Locations.FirstOrDefault()),
                     methodSymbol.Name,
                     failedLambda));
             }
 
             // Only report success and add source if there were no failed lambdas
-            if (failedLambdas.Count > 0)
+            if (failedLambdas.Count > 0 || capturedVariables.Count > 0)
             {
                 return;
             }
 
-            // Generate diagnostics file with compilation information
-            var diagnosticsText = GenerateDiagnosticsFile(
-                methodSymbol,
-                tempCompilation,
-                partialBypassedMethods);
-
-            var hintName = $"{methodSymbol.ContainingType.Name}_{methodSymbol.Name}.Parlot.g.cs";
-            var diagnosticsHintName = $"{methodSymbol.ContainingType.Name}_{methodSymbol.Name}.Diagnostics.g.cs";
-            
-            // Add generated source to compilation output
-            context.AddSource(hintName, SourceText.From(sourceText, Encoding.UTF8));
-            
-            // Add diagnostics as a commented C# file so it appears in generated files without breaking compilation
-            var commentedDiagnostics = "/*\n" + diagnosticsText + "\n*/";
-            context.AddSource(diagnosticsHintName, SourceText.From(commentedDiagnostics, Encoding.UTF8));
-            
-            // Also write to dump directory if specified
-            var dumpDirectory = Environment.GetEnvironmentVariable("PARLOT_DUMP_GEN_DIR");
-            if (!string.IsNullOrEmpty(dumpDirectory))
+            if (standalone.Diagnostics)
             {
-                Directory.CreateDirectory(dumpDirectory);
-                File.WriteAllText(Path.Combine(dumpDirectory, hintName), sourceText);
-                File.WriteAllText(Path.Combine(dumpDirectory, diagnosticsHintName.Replace(".g.cs", ".txt")), diagnosticsText);
+                sourceText = DiagnosticsRewriter.Rewrite(sourceText, parseOptions, standalone.Method.Name);
             }
-            
-            // Report success with the number of intercepted call sites
-            context.ReportDiagnostic(Diagnostic.Create(
-                GenerationSucceededDescriptor,
-                methodInfo.AttributeLocation ?? methodSymbol.Locations.FirstOrDefault(),
-                methodSymbol.Name,
-                invocations.Count));
+            standalone.Source = StandaloneRuntimeSources.RewriteGeneratedSource(sourceText, parseOptions);
         }
         finally
         {
@@ -1112,37 +1010,40 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
         }
     }
 
-    private static (string SourceText, List<string> FailedLambdas) GenerateParserWrapperAndCore(
+    private static (string SourceText, List<string> FailedLambdas, List<LambdaRewriter.CapturedVariableInfo> CapturedVariables) GenerateParserCore(
         IMethodSymbol methodSymbol,
         Type valueType,
         SourceResult result,
         SourceGenerationContext sgContext,
         Dictionary<int, string> lambdaSourceMap,
         IReadOnlyDictionary<int, LambdaRewriter.LambdaInfo> lambdaInfoMap,
-        List<InvocationInfo> invocations,
-        string[] additionalUsings)
+        string[] additionalUsings,
+        StandaloneEntryPoint standalone)
     {
         var ns = methodSymbol.ContainingNamespace.IsGlobalNamespace
             ? null
             : methodSymbol.ContainingNamespace.ToDisplayString();
 
-        var typeName = methodSymbol.ContainingType.Name;
-        var methodName = methodSymbol.Name;
+        var typeName = EscapeIdentifier(methodSymbol.ContainingType.Name);
+        var methodName = GetEntryIdentifier(methodSymbol, standalone);
         var valueTypeName = TypeNameHelper.GetTypeName(valueType);
         var coreName = methodName + "_Core";
         var wrapperName = "GeneratedParser_" + methodName;
+        var hasParameters = methodSymbol.Parameters.Length > 0;
+        var staticModifier = hasParameters ? "" : "static ";
+        var parameterList = GetFactoryParameterList(methodSymbol);
 
         // First pass: process all deferred parsers to collect all lambdas
         // We need to do this before emitting lambda fields
         var deferredMethods = new List<(string MethodName, string ValueTypeName, SourceResult Result, string? ParserName)>();
         var processedDeferred = new HashSet<object>();
         var deferredToProcess = sgContext.Deferred.Enumerate().ToList();
-        
+
         while (deferredToProcess.Count > 0)
         {
             var (parser, deferredMethodName, deferredParserName) = deferredToProcess[0];
             deferredToProcess.RemoveAt(0);
-            
+
             if (processedDeferred.Contains(parser))
             {
                 continue;
@@ -1156,7 +1057,7 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
 
             // Get the parser type to determine how to process it
             var parserType = parser.GetType();
-            
+
             // Find the result type from Parser<T> base class
             Type? deferredValueType = null;
             var currentType = parserType;
@@ -1201,7 +1102,7 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
 
                 // Generate source for the inner parser
                 deferredResult = innerSourceable.GenerateSource(sgContext);
-                
+
                 // If the deferred parser has no name, try to get the name from the inner parser
                 if (string.IsNullOrEmpty(deferredParserName))
                 {
@@ -1217,9 +1118,9 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
                 // For other deferred parsers (like Unary), generate source directly
                 deferredResult = sourceable.GenerateSource(sgContext);
             }
-            
+
             deferredMethods.Add((deferredMethodName, deferredValueTypeName, deferredResult, deferredParserName));
-            
+
             // Check for new deferred parsers that were added
             foreach (var newDeferred in sgContext.Deferred.Enumerate())
             {
@@ -1238,7 +1139,7 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
         sb.AppendLine("// <auto-generated />");
         sb.AppendLine("#nullable enable annotations");
         sb.AppendLine("#nullable disable warnings");
-        
+
         // Default usings
         var defaultUsings = new HashSet<string>
         {
@@ -1247,12 +1148,12 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
             "Parlot",
             "Parlot.Fluent"
         };
-        
+
         sb.AppendLine("using System;");
         sb.AppendLine("using System.Linq;");
         sb.AppendLine("using Parlot;");
         sb.AppendLine("using Parlot.Fluent;");
-        
+
         // Add additional usings from [IncludeUsings] attribute (excluding duplicates)
         if (additionalUsings.Length > 0)
         {
@@ -1260,24 +1161,14 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
                 .Where(u => !string.IsNullOrWhiteSpace(u) && !defaultUsings.Contains(u))
                 .Distinct()
                 .OrderBy(u => u);
-                
+
             foreach (var usingNamespace in uniqueAdditionalUsings)
             {
                 sb.Append("using ").Append(usingNamespace).AppendLine(";");
             }
         }
-        
+
         sb.AppendLine();
-        
-        // File-local InterceptsLocationAttribute to avoid conflicts with other generators
-        sb.AppendLine("namespace System.Runtime.CompilerServices");
-        sb.AppendLine("{");
-        sb.AppendLine("    [global::System.AttributeUsage(global::System.AttributeTargets.Method, AllowMultiple = true)]");
-        sb.AppendLine("    file sealed class InterceptsLocationAttribute : global::System.Attribute");
-        sb.AppendLine("    {");
-        sb.AppendLine("        public InterceptsLocationAttribute(int version, string data) { }");
-        sb.AppendLine("    }");
-        sb.AppendLine("}");
 
         if (!string.IsNullOrEmpty(ns))
         {
@@ -1289,20 +1180,77 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
         sb.AppendLine($"    partial class {typeName}");
         sb.AppendLine("    {");
 
+        if (hasParameters)
+        {
+            sb.AppendLine($"        private sealed class {wrapperName} : global::Parlot.Fluent.ParseContext");
+            sb.AppendLine("        {");
+            foreach (var parameter in methodSymbol.Parameters)
+            {
+                // Mutable structs must remain addressable, just like a variable captured by a closure.
+                var readOnly = parameter.Type is INamedTypeSymbol { IsValueType: true, IsReadOnly: false } ? "" : "readonly ";
+                sb.AppendLine($"            private {readOnly}{GetParameterTypeName(parameter)} {FactoryParameterUsage.GetFieldName(parameter)};");
+            }
+            sb.AppendLine();
+            var scannerParameter = "__parlotScanner";
+            while (methodSymbol.Parameters.Any(parameter => parameter.Name == scannerParameter))
+            {
+                scannerParameter += "_";
+            }
+            var cancellationParameter = "__parlotCancellationToken";
+            while (methodSymbol.Parameters.Any(parameter => parameter.Name == cancellationParameter))
+            {
+                cancellationParameter += "_";
+            }
+            var cancellationDeclaration = standalone.CancellationTokenParameter is not null
+                ? $", global::System.Threading.CancellationToken {cancellationParameter}"
+                : "";
+            var cancellationArgument = standalone.CancellationTokenParameter is not null ? $", {cancellationParameter}" : "";
+            sb.AppendLine($"            public {wrapperName}(global::Parlot.Scanner {scannerParameter}{cancellationDeclaration}, {parameterList}) : base({scannerParameter}{cancellationArgument})");
+            sb.AppendLine("            {");
+            foreach (var parameter in methodSymbol.Parameters)
+            {
+                sb.AppendLine($"                this.{FactoryParameterUsage.GetFieldName(parameter)} = {EscapeIdentifier(parameter.Name)};");
+            }
+            sb.AppendLine("            }");
+            sb.AppendLine();
+        }
+        else if (deferredMethods.Count > 0)
+        {
+            // The context carries the per-parse state of the deferred parsers (see the deferred helpers below),
+            // so the entry point creates this subclass. The parser methods remain static.
+            var cancellationDeclaration = standalone.CancellationTokenParameter is not null
+                ? ", global::System.Threading.CancellationToken __parlotCancellationToken"
+                : "";
+            var cancellationArgument = standalone.CancellationTokenParameter is not null ? ", __parlotCancellationToken" : "";
+            sb.AppendLine($"        private sealed class {wrapperName} : global::Parlot.Fluent.ParseContext");
+            sb.AppendLine("        {");
+            sb.AppendLine($"            public {wrapperName}(global::Parlot.Scanner __parlotScanner{cancellationDeclaration}) : base(__parlotScanner{cancellationArgument})");
+            sb.AppendLine("            {");
+            sb.AppendLine("            }");
+            sb.AppendLine();
+        }
+        else
+        {
+            // Isolate helper names (including custom emitters) between factories in the same partial class.
+            sb.AppendLine($"        private static class {wrapperName}");
+            sb.AppendLine("        {");
+        }
+
         // ==== NEW POINTER-BASED LAMBDA EMISSION ====
         // Each lambda was rewritten to a stub that captures a unique pointer.
         // The LambdaRegistry extracted these pointers during execution and mapped them to IDs.
         // Now we use the pointer to look up the original source code directly.
-        
+
         var registeredLambdas = sgContext.Lambdas.Enumerate().OrderBy(x => x.Id).ToList();
         var failedLambdas = new List<string>();
+        var capturedVariables = new List<LambdaRewriter.CapturedVariableInfo>();
 
         foreach (var (id, del) in registeredLambdas)
         {
             var fieldName = sgContext.GetLambdaFieldName(id);
             var delegateType = del.GetType();
             var invokeMethod = delegateType.GetMethod("Invoke");
-            
+
             if (invokeMethod is null)
             {
                 failedLambdas.Add($"Lambda {id}: could not get Invoke method");
@@ -1311,22 +1259,29 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
 
             // Get the pointer for this lambda
             var pointer = sgContext.Lambdas.GetPointer(id);
-            
+
             if (pointer >= 0 && lambdaSourceMap.TryGetValue(pointer, out var originalSource))
             {
                 // Success! We have the original source code for this lambda.
                 // Also get the lambda info for additional metadata if available.
                 lambdaInfoMap.TryGetValue(pointer, out var lambdaInfo);
                 var isMethodGroup = lambdaInfo?.IsMethodGroup ?? !originalSource.Contains("=>");
-                
+
+                if (lambdaInfo is not null && lambdaInfo.CapturedVariables.Count > 0)
+                {
+                    capturedVariables.AddRange(lambdaInfo.CapturedVariables);
+                    continue;
+                }
+
                 // Generate a method from the original source with #line directive for debugging
                 var methodSource = GenerateLambdaMethod(
-                    fieldName, 
-                    invokeMethod, 
-                    originalSource, 
+                    fieldName,
+                    invokeMethod,
+                    originalSource,
                     isMethodGroup,
                     lambdaInfo?.FilePath,
-                    lambdaInfo?.StartLine ?? 0);
+                    lambdaInfo?.StartLine ?? 0,
+                    isStatic: !hasParameters);
                 sb.AppendLine(methodSource);
             }
             else
@@ -1336,15 +1291,14 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
                 var paramTypeNames = invokeMethod.GetParameters().Select(p => p.ParameterType.Name).ToList();
                 var errorMsg = $"Lambda {id} (pointer: {pointer}, param count: {paramCount}, types: {string.Join(", ", paramTypeNames)})";
                 failedLambdas.Add(errorMsg);
-                
+
                 sb.AppendLine($"        // ERROR: Lambda {id} could not be extracted from source.");
                 sb.AppendLine($"        // Pointer: {pointer}, which was not found in the source map.");
                 sb.AppendLine($"        // To fix: define the parser inline in the [GenerateParser] method.");
-                
+
                 // Generate a throwing method for error cases
                 var errorReturnTypeName = TypeNameHelper.GetTypeName(invokeMethod.ReturnType);
                 var errorParamList = GenerateParameterListWithStandardNames(invokeMethod);
-                sb.AppendLine($"        [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]");
                 sb.AppendLine($"        private static {errorReturnTypeName} {fieldName}({errorParamList}) => throw new global::System.InvalidOperationException(\"Lambda could not be extracted from source\");");
             }
         }
@@ -1360,49 +1314,54 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
             }
         }
 
-        sb.AppendLine($"        private sealed class {wrapperName} : Parser<{valueTypeName}>");
-        sb.AppendLine("        {");
-        sb.AppendLine($"            public override bool Parse(ParseContext context, ref ParseResult<{valueTypeName}> result)");
-        sb.AppendLine("            {");
-        sb.AppendLine($"                return {coreName}(context, ref result);");
-        sb.AppendLine("            }");
-        sb.AppendLine("        }");
+        if (hasParameters)
+        {
+            sb.AppendLine($"            public bool Parse(global::Parlot.Fluent.ParseContext context, ref global::Parlot.ParseResult<{valueTypeName}> result)");
+            sb.AppendLine("            {");
+            sb.AppendLine($"                return {coreName}(context, ref result);");
+            sb.AppendLine("            }");
+        }
         sb.AppendLine();
-        sb.AppendLine($"        internal static bool {coreName}(ParseContext context, ref ParseResult<{valueTypeName}> result)");
+        // Only the entry core gets a hint. Internal helpers must retain JIT-budgeted inlining boundaries.
+        if (result.Locals.Count + result.Body.Count <= EntryCoreInliningStatementLimit)
+        {
+            sb.AppendLine("        [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]");
+        }
+        sb.AppendLine($"        internal {staticModifier}bool {coreName}(global::Parlot.Fluent.ParseContext context, ref global::Parlot.ParseResult<{valueTypeName}> result)");
         sb.AppendLine("        {");
         sb.AppendLine("            context.CheckCancellation();");
         sb.AppendLine("            var scanner = context.Scanner;");
         sb.AppendLine("            var cursor = scanner.Cursor;");
-        
+
         // Always capture initial offset for parsers that don't skip whitespace
         if (result.ContentStartOffsetVariable == null)
         {
             sb.AppendLine("            var startOffset = cursor.Offset;");
         }
-        
+
         sb.AppendLine();
 
         // Check if the parser body uses early returns (optimized literals)
         var coreBodyContainsReturn = result.Body.Any(stmt => stmt.TrimStart().StartsWith("return ", StringComparison.Ordinal));
-        
+
         if (coreBodyContainsReturn)
         {
             // Parsers with early returns need special handling in Core:
             // 1. Declare the value variable they reference
             // 2. Convert "return true" to set result and return
             // 3. Convert "return false" to just return false
-            
+
             sb.AppendLine($"            {valueTypeName} {result.ValueVariable} = default;");
-            
+
             var startOffsetExpr = result.ContentStartOffsetVariable ?? "startOffset";
-            
+
             foreach (var stmt in result.Body)
             {
                 var trimmed = stmt.TrimStart();
                 if (trimmed == "return true;")
                 {
                     // Convert early success return to set result and return
-                    sb.AppendLine($"            result = new ParseResult<{valueTypeName}>({startOffsetExpr}, cursor.Offset, {result.ValueVariable});");
+                    sb.AppendLine($"            result = new global::Parlot.ParseResult<{valueTypeName}>({startOffsetExpr}, cursor.Offset, {result.ValueVariable});");
                     sb.AppendLine("            return true;");
                 }
                 else if (trimmed == "return false;")
@@ -1430,12 +1389,12 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
             sb.AppendLine();
             sb.AppendLine($"            if ({result.SuccessVariable})");
             sb.AppendLine("            {");
-            
+
             // Use ContentStartOffsetVariable if available (for parsers that skip whitespace),
             // otherwise use the captured startOffset
             var startOffsetExpr = result.ContentStartOffsetVariable ?? "startOffset";
-            
-            sb.AppendLine($"                result = new ParseResult<{valueTypeName}>({startOffsetExpr}, cursor.Offset, {result.ValueVariable});");
+
+            sb.AppendLine($"                result = new global::Parlot.ParseResult<{valueTypeName}>({startOffsetExpr}, cursor.Offset, {result.ValueVariable});");
             sb.AppendLine("                return true;");
             sb.AppendLine("            }");
             sb.AppendLine();
@@ -1444,15 +1403,48 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
         sb.AppendLine("        }");
 
         // Emit helper methods for deferred parsers (already processed earlier)
+        if (deferredMethods.Count > 0)
+        {
+            sb.AppendLine();
+            sb.AppendLine("        // The offset at which each deferred parser is active, -1 when it isn't. Within one invocation the cursor");
+            sb.AppendLine("        // never moves before its entry offset, so a nested entry at that same offset is left recursion, which");
+            sb.AppendLine("        // fails instead of overflowing the stack. The runtime's Deferred detects the same cycle.");
+            for (var i = 0; i < deferredMethods.Count; i++)
+            {
+                sb.AppendLine($"        private int __parlotDeferred{i} = -1;");
+            }
+        }
+
+        var deferredIndex = 0;
         foreach (var (deferredMethodName, deferredValueTypeName, deferredResult, deferredParserName) in deferredMethods)
         {
+            var stateField = $"__parlotDeferred{deferredIndex++}";
+            var stateExpression = hasParameters ? "this" : $"(({wrapperName})context)";
             sb.AppendLine();
             // Add parser name as comment if available
             if (!string.IsNullOrEmpty(deferredParserName))
             {
                 sb.AppendLine($"        // {deferredParserName}");
             }
-            sb.AppendLine($"        private static bool {deferredMethodName}(ParseContext context, out {deferredValueTypeName} value)");
+            // The recursion depth limit can't be set on a generated entry point, so the core is called directly
+            sb.AppendLine($"        private {staticModifier}bool {deferredMethodName}(global::Parlot.Fluent.ParseContext context, out {deferredValueTypeName} value)");
+            sb.AppendLine("        {");
+            sb.AppendLine($"            var state = {stateExpression};");
+            sb.AppendLine("            var offset = context.Scanner.Cursor.Offset;");
+            sb.AppendLine($"            if (state.{stateField} == offset)");
+            sb.AppendLine("            {");
+            sb.AppendLine("                value = default!;");
+            sb.AppendLine("                return false;");
+            sb.AppendLine("            }");
+            sb.AppendLine();
+            sb.AppendLine($"            var previous = state.{stateField};");
+            sb.AppendLine($"            state.{stateField} = offset;");
+            sb.AppendLine($"            var success = {deferredMethodName}_Core(context, out value);");
+            sb.AppendLine($"            state.{stateField} = previous;");
+            sb.AppendLine("            return success;");
+            sb.AppendLine("        }");
+            sb.AppendLine();
+            sb.AppendLine($"        private {staticModifier}bool {deferredMethodName}_Core(global::Parlot.Fluent.ParseContext context, out {deferredValueTypeName} value)");
             sb.AppendLine("        {");
             sb.AppendLine("            context.CheckCancellation();");
             sb.AppendLine("            var scanner = context.Scanner;");
@@ -1489,7 +1481,17 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
             {
                 sb.AppendLine($"        // {helperParserName}");
             }
-            sb.AppendLine($"        private static bool {helperMethodName}(ParseContext context, out {helperValueTypeName} value)");
+            var implementationName = helperMethodName;
+            if (hasParameters)
+            {
+                // Static whitespace adapters recover this call's state from the existing execution context.
+                implementationName += "_Core";
+                sb.AppendLine($"        private static bool {helperMethodName}(global::Parlot.Fluent.ParseContext context, out {helperValueTypeName} value)");
+                sb.AppendLine("        {");
+                sb.AppendLine($"            return (({wrapperName})context).{implementationName}(context, out value);");
+                sb.AppendLine("        }");
+            }
+            sb.AppendLine($"        private {staticModifier}bool {implementationName}(global::Parlot.Fluent.ParseContext context, out {helperValueTypeName} value)");
             sb.AppendLine("        {");
             sb.AppendLine("            context.CheckCancellation();");
             sb.AppendLine("            var scanner = context.Scanner;");
@@ -1518,30 +1520,10 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
         }
         sb.AppendLine();
 
-        // Generate a static field to hold the cached parser instance
-        var parserFieldName = $"_generated_{methodName}";
-        sb.AppendLine($"        private static readonly Parlot.Fluent.Parser<{valueTypeName}> {parserFieldName} = new {wrapperName}();");
+        sb.AppendLine("        }");
         sb.AppendLine();
-        
-        // Generate interceptor methods for each invocation site
-        if (invocations.Count > 0)
-        {
-            sb.AppendLine("        // Interceptor methods that redirect calls to the source-generated parser");
-            for (int i = 0; i < invocations.Count; i++)
-            {
-                var inv = invocations[i];
-                // Note: InterceptsLocationAttribute already includes brackets from GetInterceptsLocationAttributeSyntax()
-                sb.AppendLine($"        {inv.InterceptsLocationAttribute}");
-                sb.AppendLine($"        internal static Parlot.Fluent.Parser<{valueTypeName}> {methodName}_Interceptor_{i}() => {parserFieldName};");
-                sb.AppendLine();
-            }
-        }
-        else
-        {
-            // No invocations found - emit a comment and keep a public accessor for manual use
-            sb.AppendLine("        // No invocations found to intercept. You can access the generated parser via this property.");
-            sb.AppendLine($"        public static Parlot.Fluent.Parser<{valueTypeName}> {methodName}_Generated => {parserFieldName};");
-        }
+
+        AppendStandaloneEntryPoint(sb, standalone, wrapperName, coreName, wrapperIsContext: deferredMethods.Count > 0);
 
         // Generate helper methods if needed (e.g., CreateCharMap for ListOfChars on netstandard)
         // Note: Currently no helper methods are needed since we use HashSet<char> and SearchValues<char>
@@ -1554,46 +1536,174 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
             sb.AppendLine("}");
         }
 
-        return (sb.ToString(), failedLambdas);
+        return (sb.ToString(), failedLambdas, capturedVariables);
     }
+
+    // The string and TextReader entry points of a factory are generated separately
+    private static string GetEntryIdentifier(IMethodSymbol method, StandaloneEntryPoint standalone)
+        => standalone.IsReader ? GetGeneratedIdentifier(method) + "_Reader" : GetGeneratedIdentifier(method);
+
+    private static string GetGeneratedIdentifier(IMethodSymbol method)
+    {
+        var identifier = $"__Parlot_{method.Name.Length}_{method.Name}";
+        var overloads = method.ContainingType.GetMembers(method.Name).OfType<IMethodSymbol>()
+            .OrderBy(GetMethodKey, StringComparer.Ordinal).ToArray();
+        if (overloads.Length > 1)
+        {
+            identifier += "_Overload" + Array.FindIndex(overloads, candidate =>
+                SymbolEqualityComparer.Default.Equals(candidate, method)).ToString(CultureInfo.InvariantCulture);
+        }
+        var candidate = identifier;
+        var suffix = 0;
+
+        while (HasGeneratedMemberCollision(method.ContainingType, candidate))
+        {
+            candidate = identifier + "_" + (++suffix).ToString(CultureInfo.InvariantCulture);
+        }
+
+        return candidate;
+    }
+
+    private static string GetFactoryParameterList(IMethodSymbol method)
+        => string.Join(", ", method.Parameters.Select(static parameter =>
+            $"{GetParameterTypeName(parameter)} {EscapeIdentifier(parameter.Name)}"));
+
+    private static bool ReportEagerCapture(SourceProductionContext context, MethodToGenerate method)
+    {
+        if (!LambdaPointer.HasEagerCapture)
+        {
+            return false;
+        }
+
+        context.ReportDiagnostic(Diagnostic.Create(
+            EagerCallbackDescriptor,
+            method.AttributeLocation ?? method.Method.Locations.FirstOrDefault(),
+            method.Method.Name));
+        return true;
+    }
+
+    private static string GetParameterTypeName(IParameterSymbol parameter)
+        => parameter.Type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat.WithMiscellaneousOptions(
+            SymbolDisplayFormat.FullyQualifiedFormat.MiscellaneousOptions | SymbolDisplayMiscellaneousOptions.IncludeNullableReferenceTypeModifier));
+
+    private static bool MatchesFactoryMethod(MethodInfo candidate, IMethodSymbol method)
+    {
+        if (candidate.Name != method.MetadataName || candidate.IsGenericMethod)
+        {
+            return false;
+        }
+
+        var parameters = candidate.GetParameters();
+        return parameters.Length == method.Parameters.Length
+            && parameters.Select((parameter, index) => MatchesParameterType(parameter.ParameterType, method.Parameters[index].Type)).All(static match => match);
+    }
+
+    private static bool MatchesParameterType(Type type, ITypeSymbol symbol)
+    {
+        if (symbol is IArrayTypeSymbol array)
+        {
+            return type.IsArray && type.GetArrayRank() == array.Rank && MatchesParameterType(type.GetElementType()!, array.ElementType);
+        }
+
+        if (symbol is IDynamicTypeSymbol)
+        {
+            return type == typeof(object);
+        }
+
+        if (symbol is not INamedTypeSymbol named)
+        {
+            return false;
+        }
+
+        if (named.IsTupleType)
+        {
+            named = named.TupleUnderlyingType!;
+        }
+
+        var typeNames = new Stack<string>();
+        var typeArguments = new List<ITypeSymbol>();
+        for (var current = named; current is not null; current = current.ContainingType)
+        {
+            typeNames.Push(current.MetadataName);
+            typeArguments.InsertRange(0, current.TypeArguments);
+        }
+
+        var namespaceName = named.ContainingNamespace.IsGlobalNamespace ? "" : named.ContainingNamespace.ToDisplayString() + ".";
+        var metadataName = namespaceName + string.Join("+", typeNames);
+        var definition = type.IsGenericType ? type.GetGenericTypeDefinition() : type;
+        return definition.FullName == metadataName
+            && (!type.IsGenericType || type.GetGenericArguments()
+                .Select((argument, index) => MatchesParameterType(argument, typeArguments[index])).All(static match => match));
+    }
+
+    private static bool HasGeneratedMemberCollision(INamedTypeSymbol containingType, string identifier)
+    {
+        var generatedPrefix = identifier + "_";
+        var generatedFieldPrefix = "_" + generatedPrefix;
+        var wrapperName = "GeneratedParser_" + identifier;
+        var parserFieldName = "_generated_" + identifier;
+
+        foreach (var member in containingType.GetMembers())
+        {
+            var name = member.Name;
+            if (name == identifier
+                || name.StartsWith(generatedPrefix, StringComparison.Ordinal)
+                || name.StartsWith(generatedFieldPrefix, StringComparison.Ordinal)
+                || name == wrapperName
+                || name == parserFieldName)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static string EscapeIdentifier(string identifier)
+        => IsReservedKeyword(identifier) ? "@" + identifier : identifier;
+
+    private static bool IsReservedKeyword(string identifier)
+        => SyntaxFacts.GetKeywordKind(identifier) != SyntaxKind.None;
 
     /// <summary>
     /// Generates a method from a lambda source or method group.
     /// Transforms "static x => x.ToUpper()" into "private static string MethodName(TextSpan x) => x.ToUpper();"
     /// Transforms "char.IsLetterOrDigit" into "private static bool MethodName(char arg0) => char.IsLetterOrDigit(arg0);"
-    /// 
+    ///
     /// For lambdas, preserves original parameter names and body verbatim to enable proper debugging.
     /// Emits #line directives to map breakpoints back to the original source location.
     /// </summary>
     private static string GenerateLambdaMethod(
-        string methodName, 
-        System.Reflection.MethodInfo invokeMethod, 
-        string lambdaSource, 
+        string methodName,
+        MethodInfo invokeMethod,
+        string lambdaSource,
         bool isMethodGroup,
         string? originalFilePath,
-        int originalLine)
+        int originalLine,
+        bool isStatic)
     {
         var sb = new StringBuilder();
+        var staticModifier = isStatic ? "static " : "";
         var returnTypeName = TypeNameHelper.GetTypeName(invokeMethod.ReturnType);
         var parameters = invokeMethod.GetParameters();
 
         // Emit #line directive for debugging if we have location info
-        var hasLineInfo = !string.IsNullOrEmpty(originalFilePath) && originalLine > 0;
-        
+        var hasLineInfo = !string.IsNullOrEmpty(originalFilePath)
+            && originalLine > 0
+            && CanEmitLineDirective(originalFilePath!);
+
         if (isMethodGroup)
         {
             // For method groups like "char.IsLetterOrDigit", generate a call with standard param names
             // private static bool _lambda0(char arg0) => char.IsLetterOrDigit(arg0);
             var paramList = GenerateParameterListWithStandardNames(invokeMethod);
-            
-            sb.Append("        [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]\n");
-            
+
             if (hasLineInfo)
             {
-                sb.Append($"#line {originalLine} \"{originalFilePath}\"\n");
+                AppendLineDirective(sb, originalLine, originalFilePath!);
             }
-            
-            sb.Append($"        private static {returnTypeName} {methodName}({paramList}) => ");
+
+            sb.Append($"        private {staticModifier}{returnTypeName} {methodName}({paramList}) => ");
             sb.Append(lambdaSource);
             sb.Append('(');
             for (int i = 0; i < parameters.Length; i++)
@@ -1602,7 +1712,7 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
                 sb.Append(GetParameterName(i));
             }
             sb.Append(");");
-            
+
             if (hasLineInfo)
             {
                 sb.Append("\n#line default");
@@ -1610,150 +1720,99 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
         }
         else
         {
-            // For lambdas, preserve original parameter names and body verbatim for debugging
-            // "static x => x.ToUpper()" becomes "private static string _lambda0(TextSpan x) => x.ToUpper();"
-            var source = lambdaSource.TrimStart();
-            if (source.StartsWith("static ", StringComparison.Ordinal))
+            if (SyntaxFactory.ParseExpression(lambdaSource) is not LambdaExpressionSyntax lambda || lambda.ContainsDiagnostics)
             {
-                source = source.Substring(7).TrimStart();
+                throw new NotSupportedException("The callback could not be parsed as a C# lambda.");
             }
-            
-            var arrowIndex = source.IndexOf("=>", StringComparison.Ordinal);
-            if (arrowIndex >= 0)
+
+            var originalParamNames = lambda switch
             {
-                var body = source.Substring(arrowIndex + 2).Trim();
-                var paramPart = source.Substring(0, arrowIndex).Trim();
-                
-                // Extract original parameter names and generate param list with original names
-                var originalParamNames = ExtractParameterNames(paramPart);
-                var paramList = GenerateParameterListWithOriginalNames(invokeMethod, originalParamNames);
-                
-                // Check if it's a block lambda (body starts with {)
-                var isBlockLambda = body.StartsWith("{", StringComparison.Ordinal);
-                
-                // Handle tuple deconstruction pattern - single param but multiple names like (a, b)
-                var isTupleDeconstruction = parameters.Length == 1 && originalParamNames.Length > 1;
-                
-                if (isTupleDeconstruction)
+                SimpleLambdaExpressionSyntax simple => new[] { simple.Parameter.Identifier.Text },
+                ParenthesizedLambdaExpressionSyntax parenthesized => parenthesized.ParameterList.Parameters
+                    .Select(static parameter => parameter.Identifier.Text).ToArray(),
+                _ => throw new NotSupportedException("Unsupported lambda syntax.")
+            };
+            var paramList = GenerateParameterListWithOriginalNames(invokeMethod, ReplaceDiscards(originalParamNames));
+            var body = lambda.Body.ToFullString().Trim();
+            var asyncModifier = lambda.Modifiers.Any(SyntaxKind.AsyncKeyword) ? "async " : "";
+
+            if (lambda.Body is BlockSyntax)
+            {
+                sb.Append($"        private {staticModifier}{asyncModifier}{returnTypeName} {methodName}({paramList})\n");
+                sb.Append("        ");
+                if (hasLineInfo)
                 {
-                    // For tuple deconstruction, we need to use a standard param name and add deconstruction
-                    paramList = GenerateParameterListWithStandardNames(invokeMethod);
-                    var deconstructNames = string.Join(", ", originalParamNames);
-                    
-                    if (isBlockLambda)
-                    {
-                        // Insert deconstruction after opening brace
-                        var braceIndex = body.IndexOf('{');
-                        if (braceIndex >= 0)
-                        {
-                            var deconstructLine = $"\n            var ({deconstructNames}) = arg0;";
-                            body = body.Insert(braceIndex + 1, deconstructLine);
-                        }
-                    }
-                    else
-                    {
-                        // Convert expression to block with deconstruction
-                        body = $"{{\n            var ({deconstructNames}) = arg0;\n            return {body};\n        }}";
-                        isBlockLambda = true;
-                    }
-                }
-                
-                if (isBlockLambda)
-                {
-                    // Block lambda - generate a method with body
-                    // Add #line directive for each line to enable debugging on any line
-                    sb.Append($"        private static {returnTypeName} {methodName}({paramList})\n");
-                    
-                    if (hasLineInfo)
-                    {
-                        // For block lambdas, add #line directive before each line of the body
-                        var bodyWithLineDirectives = AddLineDirectivesToBody(body, originalLine, originalFilePath!);
-                        sb.Append("        ");
-                        sb.Append(bodyWithLineDirectives);
-                        sb.Append("\n#line default");
-                    }
-                    else
-                    {
-                        sb.Append("        ");
-                        sb.Append(body);
-                    }
+                    sb.Append(AddLineDirectivesToBody(body, originalLine, originalFilePath!));
+                    sb.Append("\n#line default");
                 }
                 else
                 {
-                    // Expression lambda - use expression-bodied method with body verbatim
-                    sb.Append("        [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]\n");
-                    
-                    if (hasLineInfo)
-                    {
-                        sb.Append($"#line {originalLine} \"{originalFilePath}\"\n");
-                    }
-                    
-                    sb.Append($"        private static {returnTypeName} {methodName}({paramList}) => ");
                     sb.Append(body);
-                    if (!body.EndsWith(";", StringComparison.Ordinal))
-                    {
-                        sb.Append(';');
-                    }
-                    
-                    if (hasLineInfo)
-                    {
-                        sb.Append("\n#line default");
-                    }
                 }
             }
             else
             {
-                var paramList = GenerateParameterListWithStandardNames(invokeMethod);
-                sb.Append("        [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]\n");
-                sb.Append($"        private static {returnTypeName} {methodName}({paramList}) => default!;");
+                if (hasLineInfo)
+                {
+                    AppendLineDirective(sb, originalLine, originalFilePath!);
+                }
+                sb.Append($"        private {staticModifier}{asyncModifier}{returnTypeName} {methodName}({paramList}) => ");
+                sb.Append(body);
+                sb.Append(';');
+                if (hasLineInfo)
+                {
+                    sb.Append("\n#line default");
+                }
             }
         }
-        
+
         return sb.ToString();
     }
 
     /// <summary>
-    /// Extracts parameter names from the lambda parameter part.
-    /// Handles various formats:
-    /// - Simple: "x", "(x)", "(x, y)"
-    /// - Typed: "(int x)", "(string a, int b)"
-    /// - Mixed: "(ParseContext ctx, decimal value)"
+    /// Replaces discard parameters by unique names. A lambda such as "(_, _) => 0" is valid C#,
+    /// but a method with two parameters named "_" is not. A single "_" is a regular parameter the
+    /// body may reference and is kept.
     /// </summary>
-    private static string[] ExtractParameterNames(string paramPart)
+    private static string[] ReplaceDiscards(string[] originalNames)
     {
-        paramPart = paramPart.Trim();
-        
-        // Remove parentheses if present
-        if (paramPart.StartsWith("(", StringComparison.Ordinal) && paramPart.EndsWith(")", StringComparison.Ordinal))
+        if (originalNames.Count(static name => name == "_") < 2)
         {
-            paramPart = paramPart.Substring(1, paramPart.Length - 2).Trim();
+            return originalNames;
         }
-        
-        if (string.IsNullOrEmpty(paramPart))
+
+        var names = (string[])originalNames.Clone();
+        var next = 0;
+
+        for (var i = 0; i < names.Length; i++)
         {
-            return Array.Empty<string>();
+            if (names[i] != "_")
+            {
+                continue;
+            }
+
+            string candidate;
+            do
+            {
+                candidate = "_" + next++;
+            }
+            while (Array.IndexOf(originalNames, candidate) >= 0);
+
+            names[i] = candidate;
         }
-        
-        // Split by comma and extract just the name (last word) from each parameter
-        return paramPart.Split(',').Select(p =>
-        {
-            var trimmed = p.Trim();
-            // If there's a space, it's a typed parameter like "int x" or "ParseContext ctx"
-            // Take the last word as the parameter name
-            var lastSpace = trimmed.LastIndexOf(' ');
-            return lastSpace >= 0 ? trimmed.Substring(lastSpace + 1) : trimmed;
-        }).ToArray();
+
+        return names;
     }
 
     /// <summary>
     /// Generates a parameter list using original parameter names from the lambda.
     /// For "x => x.Length" generates "TextSpan x".
     /// </summary>
-    private static string GenerateParameterListWithOriginalNames(System.Reflection.MethodInfo invokeMethod, string[] originalNames)
+    private static string GenerateParameterListWithOriginalNames(MethodInfo invokeMethod, string[] originalNames)
     {
         var parameters = invokeMethod.GetParameters();
         var sb = new StringBuilder();
-        
+
         for (int i = 0; i < parameters.Length; i++)
         {
             if (i > 0) sb.Append(", ");
@@ -1763,19 +1822,19 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
             // Use original name if available, otherwise fall back to standard name
             sb.Append(i < originalNames.Length ? originalNames[i] : GetParameterName(i));
         }
-        
+
         return sb.ToString();
     }
-    
+
     /// <summary>
     /// Generates a parameter list with standard names like "TextSpan arg0, char arg1".
     /// Used for method groups and fallback cases.
     /// </summary>
-    private static string GenerateParameterListWithStandardNames(System.Reflection.MethodInfo invokeMethod)
+    private static string GenerateParameterListWithStandardNames(MethodInfo invokeMethod)
     {
         var parameters = invokeMethod.GetParameters();
         var sb = new StringBuilder();
-        
+
         for (int i = 0; i < parameters.Length; i++)
         {
             if (i > 0) sb.Append(", ");
@@ -1784,10 +1843,10 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
             sb.Append(' ');
             sb.Append(GetParameterName(i));
         }
-        
+
         return sb.ToString();
     }
-    
+
     /// <summary>
     /// Gets a standard parameter name for index i.
     /// </summary>
@@ -1802,150 +1861,52 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
         if (lines.Length <= 1)
         {
             // Single line - just add one directive
-            return $"#line {startLine} \"{filePath}\"\n{body}";
+            return $"#line {startLine} {LiteralHelper.StringToLiteral(filePath)}\n{body}";
         }
 
         var sb = new StringBuilder();
         var currentLine = startLine;
-        
+
         for (int i = 0; i < lines.Length; i++)
         {
             var line = lines[i];
             var trimmedLine = line.TrimStart();
-            
+
             // Only add #line directive for non-empty lines that contain actual code
             // Skip adding directives for lines that are just whitespace or closing braces
-            var isSignificantLine = !string.IsNullOrWhiteSpace(trimmedLine) && 
-                                    trimmedLine != "{" && 
+            var isSignificantLine = !string.IsNullOrWhiteSpace(trimmedLine) &&
+                                    trimmedLine != "{" &&
                                     trimmedLine != "}";
-            
+
             if (isSignificantLine)
             {
-                sb.Append($"#line {currentLine} \"{filePath}\"\n");
+                AppendLineDirective(sb, currentLine, filePath);
             }
-            
+
             sb.Append(line);
-            
+
             if (i < lines.Length - 1)
             {
                 sb.Append('\n');
             }
-            
+
             // Increment line number for each line in the original source
             currentLine++;
         }
-        
+
         return sb.ToString();
     }
 
-    /// <summary>
-    /// Generates a diagnostics file containing compilation information for debugging.
-    /// </summary>
-    private static string GenerateDiagnosticsFile(
-        IMethodSymbol methodSymbol,
-        RoslynCompilation compilation,
-        List<string>? partialBypassedMethods)
-    {
-        var sb = new StringBuilder();
-        sb.AppendLine("=================================================================");
-        sb.AppendLine($"Parlot Source Generator Diagnostics");
-        sb.AppendLine($"Generated: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
-        sb.AppendLine("=================================================================");
-        sb.AppendLine();
-        
-        sb.AppendLine($"Method: {methodSymbol.ContainingType.ToDisplayString()}.{methodSymbol.Name}");
-        sb.AppendLine($"Return Type: {methodSymbol.ReturnType.ToDisplayString()}");
-        sb.AppendLine();
-        
-        sb.AppendLine("=================================================================");
-        sb.AppendLine("COMPILATION USED");
-        sb.AppendLine("=================================================================");
-        sb.AppendLine("Using full host compilation with lambda-rewritten parser method.");
-        sb.AppendLine("All project files and references are included.");
-        sb.AppendLine("The syntax tree containing the [GenerateParser] method is rewritten to use lambda stubs.");
-        sb.AppendLine($"Partial methods rewritten into stubs (CS8795/CS0759 bypass): {partialBypassedMethods?.Count ?? 0}");
-        sb.AppendLine();
-        
-        sb.AppendLine("=================================================================");
-        sb.AppendLine("SYNTAX TREES IN COMPILATION");
-        sb.AppendLine("=================================================================");
-        var trees = compilation.SyntaxTrees.ToList();
-        sb.AppendLine($"Total files: {trees.Count}");
-        
-        var sourceFiles = trees.Where(t => !string.IsNullOrEmpty(t.FilePath) && 
-            !t.FilePath.Contains("/obj/", StringComparison.OrdinalIgnoreCase) &&
-            !t.FilePath.Contains("\\obj\\", StringComparison.OrdinalIgnoreCase)).ToList();
-        var generatedFiles = trees.Where(t => !string.IsNullOrEmpty(t.FilePath) &&
-            (t.FilePath.Contains("/obj/", StringComparison.OrdinalIgnoreCase) ||
-             t.FilePath.Contains("\\obj\\", StringComparison.OrdinalIgnoreCase))).ToList();
-        var noPathFiles = trees.Where(t => string.IsNullOrEmpty(t.FilePath)).ToList();
-        
-        sb.AppendLine($"Source files: {sourceFiles.Count}");
-        foreach (var tree in sourceFiles.OrderBy(t => t.FilePath))
-        {
-            var lineCount = tree.GetRoot().GetText().Lines.Count;
-            sb.AppendLine($"  - {tree.FilePath} ({lineCount} lines)");
-        }
-        sb.AppendLine();
+    private static void AppendLineDirective(StringBuilder builder, int line, string filePath)
+        => builder
+            .Append("#line ")
+            .Append(line)
+            .Append(' ')
+            .Append(LiteralHelper.StringToLiteral(filePath))
+            .Append('\n');
 
-        if (partialBypassedMethods is { Count: > 0 })
-        {
-            sb.AppendLine("=================================================================");
-            sb.AppendLine("PARTIAL METHODS REWRITTEN INTO STUBS (CS8795/CS0759 BYPASS)");
-            sb.AppendLine("=================================================================");
-            foreach (var name in partialBypassedMethods.OrderBy(p => p, StringComparer.Ordinal))
-            {
-                sb.AppendLine($"  - {name}");
-            }
-            sb.AppendLine();
-        }
-        
-        sb.AppendLine($"Generated files (in obj/): {generatedFiles.Count}");
-        foreach (var tree in generatedFiles.OrderBy(t => t.FilePath))
-        {
-            var lineCount = tree.GetRoot().GetText().Lines.Count;
-            sb.AppendLine($"  - {tree.FilePath} ({lineCount} lines)");
-        }
-        sb.AppendLine();
-        
-        sb.AppendLine($"Files without paths (from source generators): {noPathFiles.Count}");
-        foreach (var tree in noPathFiles)
-        {
-            var lineCount = tree.GetRoot().GetText().Lines.Count;
-            var lines = tree.GetRoot().GetText().Lines;
-            var firstLine = lines.Count > 0 ? lines[0].ToString() : "";
-            if (firstLine.Length > 100) firstLine = firstLine.Substring(0, 100) + "...";
-            sb.AppendLine($"  - [No Path] {lineCount} lines, starts with: {firstLine}");
-        }
-        sb.AppendLine();
-        
-        sb.AppendLine("=================================================================");
-        sb.AppendLine("REFERENCES");
-        sb.AppendLine("=================================================================");
-        sb.AppendLine($"Total references: {compilation.References.Count()}");
-        foreach (var reference in compilation.References.OrderBy(r => r.Display))
-        {
-            if (reference is PortableExecutableReference peRef && !string.IsNullOrEmpty(peRef.FilePath))
-            {
-                sb.AppendLine($"  - {Path.GetFileName(peRef.FilePath)} ({peRef.FilePath})");
-            }
-            else if (reference is CompilationReference compRef)
-            {
-                sb.AppendLine($"  - [Project] {compRef.Compilation.AssemblyName}");
-            }
-            else
-            {
-                sb.AppendLine($"  - {reference.Display}");
-            }
-        }
-        sb.AppendLine();
-        
-        sb.AppendLine("=================================================================");
-        sb.AppendLine("END OF DIAGNOSTICS");
-        sb.AppendLine("=================================================================");
-        
-        return sb.ToString();
-    }
+    private static bool CanEmitLineDirective(string filePath)
+        => filePath.IndexOfAny(_invalidLineDirectivePathCharacters) < 0;
 
     /// <summary>
     /// Runs additional source generators specified via [IncludeGenerators] attribute on the compilation.
@@ -1953,13 +1914,13 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
     /// </summary>
     /// <remarks>
     /// <para>
-    /// <strong>IDE/Design-Time Limitation:</strong> This method only runs during actual builds, not in 
-    /// design-time builds (IDE IntelliSense, code analysis). When running in design-time contexts, 
+    /// <strong>IDE/Design-Time Limitation:</strong> This method only runs during actual builds, not in
+    /// design-time builds (IDE IntelliSense, code analysis). When running in design-time contexts,
     /// dynamically loading generator assemblies via Assembly.LoadFrom can cause assembly version conflicts.
     /// </para>
     /// <para>
-    /// For example, a generator like PolySharp may be compiled against Microsoft.CodeAnalysis 4.3.0, but 
-    /// Visual Studio hosts Roslyn with a different version (e.g., 4.8.0 or newer). When attempting to load 
+    /// For example, a generator like PolySharp may be compiled against Microsoft.CodeAnalysis 4.3.0, but
+    /// Visual Studio hosts Roslyn with a different version (e.g., 4.8.0 or newer). When attempting to load
     /// the generator assembly, .NET's assembly resolution fails because:
     /// <list type="bullet">
     ///   <item>The exact referenced version isn't available in the IDE's hosting context</item>
@@ -1971,9 +1932,9 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
     /// This results in errors like: "Could not load file or assembly 'Microsoft.CodeAnalysis, Version=4.3.0.0'".
     /// </para>
     /// <para>
-    /// <strong>Workaround:</strong> IntelliSense and error reporting still work correctly because the IDE 
-    /// runs the actual referenced generators normally. The [IncludeGenerators] feature only affects the 
-    /// internal compilation used by Parlot's source generator to emit code, so skipping it in design-time 
+    /// <strong>Workaround:</strong> IntelliSense and error reporting still work correctly because the IDE
+    /// runs the actual referenced generators normally. The [IncludeGenerators] feature only affects the
+    /// internal compilation used by Parlot's source generator to emit code, so skipping it in design-time
     /// builds has no user-visible impact on the editing experience.
     /// </para>
     /// </remarks>
@@ -1988,7 +1949,7 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
     {
         // Skip running additional generators in design-time builds to avoid assembly loading conflicts.
         // During design-time builds (IDE IntelliSense, code analysis), MSBuild sets DesignTimeBuild=true.
-        // Dynamically loading generator assemblies compiled against different Microsoft.CodeAnalysis 
+        // Dynamically loading generator assemblies compiled against different Microsoft.CodeAnalysis
         // versions causes "Could not load file or assembly" errors in these contexts.
         // See the XML remarks on this method for details.
         if (isDesignTimeBuild)
@@ -2009,13 +1970,13 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
 
         // Build a map of analyzer assembly paths from the compilation's references
         var analyzerPaths = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        
+
         foreach (var reference in csharpCompilation.References)
         {
             if (reference is PortableExecutableReference peRef && peRef.FilePath is not null)
             {
                 var assemblyName = Path.GetFileNameWithoutExtension(peRef.FilePath);
-                
+
                 // Check if this might be an analyzer/generator assembly
                 // Analyzers are typically referenced from packages/analyzers folders
                 var filePath = peRef.FilePath;
@@ -2032,7 +1993,7 @@ public sealed class ParserSourceGenerator : IIncrementalGenerator
         // Also look for analyzer paths in common NuGet package locations
         // Try to find analyzer assemblies from the project's NuGet packages
         var searchPaths = new List<string>();
-        
+
         // Add common NuGet package cache locations
         var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         if (!string.IsNullOrEmpty(userProfile))

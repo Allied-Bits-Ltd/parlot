@@ -15,6 +15,7 @@
 
 Recursive grammars can limit the nesting depth accepted from untrusted input by setting
 `maxRecursionDepth` on the `ParseContext`. The default value is `0`, which applies no limit.
+The limit applies to both runtime and source-generated parsers.
 
 ```c#
 var context = new ParseContext(new Scanner(input), maxRecursionDepth: 128);
@@ -24,6 +25,24 @@ if (!parser.TryParse(context, out var result, out var error))
     // error reports when the configured recursion limit was exceeded
 }
 ```
+
+## Associative operators
+
+`LeftAssociative` groups from the left (`10 - 4 - 2` is `(10 - 4) - 2`); `RightAssociative` groups from the right (`10 - 4 - 2` is `10 - (4 - 2)`). Both accept an ordered array of operator parsers returning a common value and a shared factory that receives `(left, right, operation)`:
+
+```csharp
+var add = Terms.Char('+').Then(static _ => 1);
+var subtract = Terms.Char('-').Then(static _ => -1);
+var number = Terms.Decimal();
+
+var expression = number.LeftAssociative(
+    [add, subtract],
+    static (left, right, operation) => operation == 1 ? left + right : left - right);
+
+expression.Parse("10 - 4 - 2"); // 4
+```
+
+Replace `LeftAssociative` with `RightAssociative` to obtain `8` for the same input. The factory can also receive `ParseContext` as its first argument: `(context, left, right, operation)`. Existing overloads accepting `(operatorParser, factory)` tuples remain available when each operator needs a distinct factory. Both forms try the operators through a `OneOf`, so only the operators that can start with the next char are tried, in order, and white space is skipped once when they all skip it. If an operator matches but the next operand does not, the operator is rolled back and the expression parsed so far is returned.
 
 ## Terms and Literals
 
@@ -37,19 +56,19 @@ Terms and Literals are accessed using the `Terms` and `Literals` properties from
 
 #### Literals.WhiteSpace()
 
-Matches blank spaces, optionally including new lines. Returns a `TextSpan` with the matched spaces. 
+Matches blank spaces, optionally including new lines. Returns a `TextSpan` with the matched spaces. The blank spaces are the
+chars of the context's white space set, see [WithWhiteSpaceSet](#withwhitespaceset).
 
 ```c#
 Parser<TextSpan> WhiteSpace(bool includeNewLines = false)
 ```
 
-Usage</summary>
+Usage:
 
 ```c#
 var input = "   \thello world  ";
 var parser = Literals.WhiteSpace();
 ```
-
 Result:
 
 ```
@@ -78,31 +97,9 @@ parser.Parse("helloworld"); // failure
 
 ### NonWhiteSpace
 
-Matches any non-blank spaces, optionally including new lines. Returns a `TextSpan` with the matched characters.  
+Matches any non-blank spaces, optionally including new lines. Returns a `TextSpan` with the matched characters. The blank
+spaces are the chars of the context's white space set, see [WithWhiteSpaceSet](#withwhitespaceset).
 
-### Select
-
-Selects the parser to execute at runtime. Use it when the next parser depends on mutable state or a custom `ParseContext` implementation.
-
-```c#
-Parser<T> Select<T>(Func<ParseContext, Parser<T>> selector)
-Parser<T> Select<C, T>(Func<C, Parser<T>> selector) where C : ParseContext
-```
-
-Usage:
-
-```c#
-var parser = Select<CustomContext, string>(context =>
-{
-    return context.PreferYes ? Literals.Text("yes") : Literals.Text("no");
-});
-
-var result = parser.Parse(new CustomContext(new Scanner("yes")) { PreferYes = true });
-```
-`CustomContext` is an application-defined type that derives from `ParseContext` and exposes additional configuration.
-
-
-If the selector returns `null`, the `Select` parser fails without consuming any input. Capture additional state through closures or custom `ParseContext` properties when needed.
 
 ```c#
 Parser<TextSpan> NonWhiteSpace(bool includeNewLines = false)
@@ -121,15 +118,46 @@ Result:
 "hello"
 ```
 
+### Select
+
+Selects the parser to execute at runtime. Use it when the next parser depends on mutable state or a custom `ParseContext` implementation.
+
+```c#
+Parser<T> Select<T>(Func<int> selector, params Parser<T>[] parsers)
+Parser<T> Select<T>(Func<ParseContext, int> selector, params Parser<T>[] parsers)
+Parser<T> Select<C, T>(Func<C, int> selector, params Parser<T>[] parsers) where C : ParseContext
+```
+
+Usage:
+
+```c#
+var yes = Literals.Text("yes");
+var no = Literals.Text("no");
+
+var parser = Select<CustomContext, string>(context => context.PreferYes ? 0 : 1, yes, no);
+
+var result = parser.Parse(new CustomContext(new Scanner("yes")) { PreferYes = true });
+```
+`CustomContext` is an application-defined type that derives from `ParseContext` and exposes additional configuration.
+
+The selector is evaluated once per parse, before any branch skips whitespace. Only the selected parser runs; its failure does not try another branch. If the selector returns an out-of-range index, the `Select` parser fails without consuming any input. Capture additional state through closures or custom `ParseContext` properties when needed.
+
 ### Text
 
 Matches a given string, optionally in a case insensitive way.
 
 ```c#
-Parser<string> Text(string text, bool caseInsensitive = false)
+Parser<string> Text(string text, bool caseInsensitive = false, bool returnMatchedText = false)
 ```
 
+When `caseInsensitive` is `true`, the default behavior is to return the **requested** text (the canonical literal you passed in), not the input slice. This avoids allocating a new string for case-insensitive matches.
+
 The case-insensitive comparison is ordinal. It doesn't depend on the current culture, neither when the parser is built nor when it parses: `Text("id", caseInsensitive: true)` matches `ID` under a Turkish culture too.
+
+If you need to preserve the original casing from the input, set `returnMatchedText: true`.
+An exact-case match returns the requested text without allocating; if the matched text
+has different casing but covers the entire input, the input string itself is returned.
+Only a differently cased substring needs a new string.
 
 Usage:
 
@@ -142,6 +170,22 @@ Result:
 
 ```
 "hello"
+
+Case-insensitive example:
+
+```c#
+var parser = Terms.Text("hello", caseInsensitive: true);
+var result = parser.Parse(" HELLO world");
+// result == "hello" (no allocation)
+```
+
+Opt-in to return the matched input text:
+
+```c#
+var parser = Terms.Text("hello", caseInsensitive: true, returnMatchedText: true);
+var result = parser.Parse(" HELLO world");
+// result == "HELLO"
+```
 ```
 
 ### Char
@@ -170,8 +214,12 @@ Result:
 Matches a keyword string, ensuring the following character is not a letter. This prevents partial matches of identifiers that start with the keyword text.
 
 ```c#
-Parser<string> Keyword(string text, bool caseInsensitive = false)
+Parser<string> Keyword(string text, bool caseInsensitive = false, bool returnMatchedText = false)
+Parser<string> Keyword(string text, ReadOnlySpan<char> identifierPart, bool caseInsensitive = false, bool returnMatchedText = false)
+Parser<string> Keyword(string text, string identifierPart, bool caseInsensitive = false, bool returnMatchedText = false)
 ```
+
+Like `Text`, when `caseInsensitive` is `true` the default behavior is to return the canonical keyword text you requested (e.g. passing "if" returns "if" even if the input is "IF"). Set `returnMatchedText: true` to preserve the matched input casing; exact-case matches reuse the keyword, and whole-input matches can reuse the input string.
 
 This is useful when parsing programming language constructs like `if`, `while`, `return`, etc., where you want to match the exact keyword but not as part of a longer identifier.
 
@@ -198,6 +246,20 @@ var result = parser.Parse(input); // Returns null - failure
 ```
 
 Any non-letter is considered valid after a keyword (non-letters): `(`, `)`, `;`, `,`, whitespace, digits, `_`, `$`, etc.
+
+When the identifiers of a language contain other chars, pass them as `identifierPart`: the keyword then fails when it is followed by one of these chars, which replace the default ASCII letters. For instance, to also reject a keyword followed by a digit, `_` or `-`:
+
+```c#
+const string identifierPart = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-";
+var parser = Terms.Keyword("in", identifierPart);
+
+parser.Parse("in (1..3)"); // "in"
+parser.Parse("in1");       // null - failure
+parser.Parse("in_x");      // null - failure
+parser.Parse("in-x");      // null - failure
+```
+
+The set is checked with a bitset for ASCII chars, and any other char is looked up in the set, so it has the cost of the default check. The `string` overload lets factories compiled for .NET Framework or .NET Standard 2.0 pass a string literal. A large source-generated choice of keywords only uses the [keyword lookup](keyword-lookups.md) when none of them has custom identifier chars.
 
 ### Integer
 
@@ -264,20 +326,47 @@ Result:
 -12345.6
 ```
 
+This version of Parlot adds the following to `Number`:
+
+- `NumberOptions.AllowUnderscore` accepts underscores between the digits, e.g. `1_000_000`. They are removed before the number is converted.
+- The optional `secondDecimalSeparator` argument is an alternative decimal separator, which is useful for human input where the same key
+  can enter `.` or `,` depending on the keyboard layout. If it is the same char as the group separator, then this char is a decimal separator only.
+- `NumberOptions.RequireFractionalPartForDecimals` leaves a decimal separator that isn't followed by digits out of the number, e.g. `1.` is read as `1`
+  and the `.` is available to the next parser. Without this option the separator is consumed.
+
+```c#
+var parser = Terms.Number<decimal>(NumberOptions.Number | NumberOptions.AllowUnderscore, decimalSeparator: '.', groupSeparator: '_', secondDecimalSeparator: ',');
+// "1_000.5" and "1_000,5" both return 1000.5
+```
+
+### Hexadecimal, Octal and Binary
+
+Match integer digits in a specific radix and return any integer .NET type. These parsers don't consume
+a radix prefix or a leading sign.
+
+```c#
+Parser<T> Hexadecimal<T>() where T : IBinaryInteger<T>
+Parser<T> Octal<T>() where T : IBinaryInteger<T>
+Parser<T> Binary<T>() where T : IBinaryInteger<T>
+```
+
+Prefixes can be composed independently:
+
+```c#
+var hexadecimal = Terms.Text("0x").SkipAnd(Literals.Hexadecimal<int>());
+var octal = Terms.Text("0o").SkipAnd(Literals.Octal<int>());
+var binary = Terms.Text("0b").SkipAnd(Literals.Binary<int>());
+```
+
 ### String
 
 Matches a quoted string literal with escape sequences. Use this parser to parse strings from a programming language.
 
-The opening quote character can be escaped, including backticks and custom quotes supplied to
-`new StringLiteral(quote)`. For example, `` `a\`b` `` produces `` a`b `` and `|a\|b|` produces `a|b`.
-An unterminated string or an unsupported escape still fails without consuming input.
-
-When decoding unquoted text directly, `Character.DecodeString` preserves a final lone backslash
-instead of throwing. This does not change the requirement for a closing quote when parsing string literals.
-
 ```c#
-Parser<TextSpan> String(StringLiteralQuotes quotes = StringLiteralQuotes.SingleOrDouble)
+Parser<TextSpan> String(StringLiteralQuotes quotes = StringLiteralQuotes.SingleOrDouble, bool returnDecoded = true)
 ```
+
+This version of Parlot lets `returnDecoded: false` return the text between the quotes as it is, without decoding the escape sequences.
 
 Usage:
 
@@ -335,6 +424,87 @@ Result:
 abab
 ```
 
+### Scan
+
+Matches a token whose rules are written by hand, as a function that receives the remaining text and returns the
+length of the token at its start. Use it instead of a custom `Parser<TextSpan>` when a token can't be expressed
+quickly with other parsers.
+
+```c#
+delegate int SpanScanner(ReadOnlySpan<char> span)
+
+Parser<TextSpan> Scan(SpanScanner scanner, ReadOnlySpan<char> startChars = default)
+```
+
+The scanner returns:
+
+- the number of chars of the token, between `1` and `span.Length`;
+- `0` when there is no token;
+- a negative value when there is no token because `span` ended, such that more text could make one.
+
+`startChars` lists the chars a token can start with, such that `OneOf` can skip the parser. Leave it empty when they
+are not known.
+
+Parlot handles the rest of the parser contract: the cursor doesn't move on failure, lines and columns are tracked when
+the token contains new lines, and the token is scanned again with more text when parsing a stream. When parsing a
+stream, `span` can end before the input does: a token reaching the end of `span` is scanned again, so a scanner that
+looks at the chars following its token must include them when they are missing, or return a negative value.
+
+Usage, the identifiers of Liquid templates, which can contain dashes but not end with one that starts a `-}}` or `-%}`
+delimiter, and need a char other than a digit:
+
+```c#
+static int LiquidIdentifier(ReadOnlySpan<char> span)
+{
+    var size = 0;
+    var nonDigits = 0;
+
+    while (size < span.Length)
+    {
+        var c = span[size];
+
+        if (char.IsAsciiLetter(c) || c == '_' || (c == '-' && size > 0))
+        {
+            nonDigits++;
+        }
+        else if (!char.IsAsciiDigit(c))
+        {
+            break;
+        }
+
+        size++;
+    }
+
+    // At the end of the span the dash is kept, then scanned again with more text
+    if (size > 1 && size < span.Length && span[size - 1] == '-' && span[size] is '%' or '}')
+    {
+        size--;
+        nonDigits--;
+    }
+
+    if (nonDigits == 0)
+    {
+        // Only digits, more text could add a letter
+        return size == span.Length ? -1 : 0;
+    }
+
+    return size;
+}
+
+var input = "page-title-}}";
+var parser = Terms.Scan(LiquidIdentifier, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_");
+```
+
+Result:
+
+```
+page-title
+```
+
+Source generated parsers call the scanner directly. It must be a method group or a lambda that captures nothing,
+not even the factory's parameters (`PARLOT015`, `PARLOT021`). At runtime a delegate to a static method goes through a thunk; a `static` lambda calling
+it is slightly faster.
+
 ### AnyOf
 
 Matches any chars from a list of chars.
@@ -390,6 +560,24 @@ Result:
 ```
 abab
 ```
+
+## Operators
+
+The combinators below are also available as C# operators on `Parser<T>`. Each one builds the same parser as the method
+it stands for, so both forms can be mixed. See the [README](../README.md#operator-syntax) for the precedence rules.
+
+| Operator | Equivalent |
+|---|---|
+| `a + b` | [And](#and) |
+| `a \| b` | [Or](#or) |
+| `a >> b` | [SkipAnd](#skipand) |
+| `a << b` | [AndSkip](#andskip) |
+| `a - b` | `Not(b).SkipAnd(a)`, see [Not](#not) |
+| `a % b` | [Separated](#separated)`(b, a)` |
+| `!a` | [Not](#not) |
+| `-a` | [Optional](#optional) |
+| `+a` | [OneOrMany](#oneormany) |
+| `~a` | [ZeroOrMany](#zeroormany) |
 
 ## Combining parsers
 
@@ -535,10 +723,10 @@ Assert.Equal(12, result.Item2);
 
 ### ZeroOrOne
 
-Makes an existing parser optional. The method can also be be post-fixed.
+Matches zero or one occurrence and returns an empty list or a single-item list. The method can also be post-fixed.
 
 ```c#
-Parser<T> ZeroOrOne<T>(Parser<T> parser)
+Parser<IReadOnlyList<T>> ZeroOrOne<T>(Parser<T> parser)
 ```
 
 Usage:
@@ -546,16 +734,25 @@ Usage:
 ```c#
 var parser = ZeroOrOne(Terms.Text("hello"));
 // or Terms.Text("hello").ZeroOrOne()
-parser.Parse("hello");
-parser.Parse(""); // returns null but with a successful state
+parser.Parse("hello"); // ["hello"]
+parser.Parse(""); // [] with a successful state
 ```
 
 Result:
 
 ```
-"hello"
-null
+["hello"]
+[]
 ```
+
+`ZeroOrOne(parser, defaultValue)` is no longer available. For a scalar value with a fallback, use
+`Optional()` and project its `Option<T>` result:
+
+```c#
+var scalar = Terms.Text("hello").Optional().Then(static option => option.OrSome("world"));
+```
+
+For any number of matches, use `ZeroOrMany(parser)`.
 
 ### Optional
 
@@ -577,10 +774,11 @@ Use the `OrSome<T>()` method to provide a default value if the `Option<T>` insta
 
 ### ZeroOrMany
 
-Executes a parser as long as it's successful. The result is a list of all individual results. The method can also be post-fixed.
+Executes a parser as long as it's successful. The result is a list of all individual results. The method can also be post-fixed. An optional `max` limits the number of matches; `0` (the default) means unlimited.
 
 ```c#
-Parser<IReadOnlyList<T> ZeroOrMany<T>(Parser<T> parser)
+Parser<IReadOnlyList<T>> ZeroOrMany<T>(Parser<T> parser)
+Parser<IReadOnlyList<T>> ZeroOrMany<T>(Parser<T> parser, int max)
 ```
 
 Usage:
@@ -590,6 +788,7 @@ var parser = ZeroOrMany(Terms.Text("hello"));
 // or Terms.Text("hello").ZeroOrMany()
 parser.Parse("hello hello");
 parser.Parse("");
+ZeroOrMany(Literals.Char('x'), max: 2).Parse("xxx"); // Returns two items; leaves the last x unconsumed
 ```
 
 Result:
@@ -601,10 +800,11 @@ Result:
 
 ### OneOrMany
 
-Executes a parser as long as it's successful, and is successful if at least one occurrence is found. The result is a list of all individual results. The method can also be post-fixed.
+Executes a parser as long as it's successful, and is successful if at least one occurrence is found. The result is a list of all individual results. The method can also be post-fixed. An optional `max` limits the number of matches; `0` (the default) means unlimited.
 
 ```c#
-Parser<IReadOnlyList<T> OneOrMany<T>(Parser<T> parser)
+Parser<IReadOnlyList<T>> OneOrMany<T>(Parser<T> parser)
+Parser<IReadOnlyList<T>> OneOrMany<T>(Parser<T> parser, int max)
 ```
 
 Usage:
@@ -650,10 +850,22 @@ null // success
 
 ### Separated
 
-Matches all occurrences of a parser that are separated by another one. If a separator is not followed by a value, it is not consumed.
+Matches one or more values separated by another parser. By default, a separator
+not followed by a value is not consumed. An explicit `min: 0` accepts an empty
+list, and `max: 0` means unlimited. At the maximum, the next separator and
+value remain unconsumed.
 
-```
-Parser<IReadOnlyList<T> Separated<U, T>(Parser<U> separator, Parser<T> parser)
+```c#
+Parser<IReadOnlyList<T>> Separated<U, T>(Parser<U> separator, Parser<T> parser, int min = 1, int max = 0)
+Parser<IReadOnlyList<T>> Separated<U, T>(
+    Parser<U> separator,
+    Parser<T> parser,
+    bool removeEmptyEntries = false,
+    bool allowLeadingSeparator = false,
+    bool allowTrailingSeparator = false)
+Parser<IReadOnlyList<T>> Separated<U, T>(
+    Parser<U> separator, Parser<T> parser, int min, int max,
+    bool removeEmptyEntries, bool allowLeadingSeparator, bool allowTrailingSeparator)
 ```
 
 Usage:
@@ -662,6 +874,7 @@ Usage:
 var parser = Separated(Terms.Text(","), Terms.Integer());
 parser.Parse("1, 2, 3");
 parser.Parse("1,2;3");
+Separated(Literals.Char(','), Literals.Char('x'), min: 0, max: 2).Parse("x,x,x"); // Returns two items; leaves ",x"
 ```
 
 Result:
@@ -670,6 +883,29 @@ Result:
 [1, 2, 3]
 [1, 2]
 ```
+
+Set `removeEmptyEntries: true` to skip successive separators **between**
+values, so `1,,2` returns `[1, 2]`. It does not permit a leading or trailing
+separator on its own. Enable `allowLeadingSeparator` to accept `,1,2`, or
+`allowTrailingSeparator` to consume `1,2,`. Each boundary accepts only one
+separator unless `removeEmptyEntries` is also set, in which case it accepts
+a run:
+
+```c#
+var parser = Separated(Terms.Char(','), Terms.Integer(),
+    removeEmptyEntries: true,
+    allowLeadingSeparator: true,
+    allowTrailingSeparator: true);
+
+parser.Eof().Parse(",,1,,2,,"); // [1, 2]
+```
+
+At least one value must match by default: empty input and input containing only
+separators fail. With explicit `min: 0`, an empty list succeeds without consuming
+leading separators if no value matches. Without `allowTrailingSeparator`, a run
+of separators not followed by another value is left untouched for the next parser.
+Negative bounds or a positive `max` less than `min` throw `ArgumentOutOfRangeException`
+when the parser is built. Attach `.Eof()` to reject any extra input.
 
 ### Between
 
@@ -762,6 +998,76 @@ outer.Parse("a.b-c");  // Inner uses '.', outer uses '-' as whitespace
 ```
 
 > Note: The custom whitespace parser must return a `TextSpan`. Use `Capture()` to wrap parsers that don't return `TextSpan`.
+
+### WithWhiteSpaceSet
+
+Selects the chars that are white space for the inner parser, then restores the previous set. It applies to every `Terms` parser,
+to `SkipWhiteSpace`, to `Literals.WhiteSpace()` and `NonWhiteSpace()`, and to the white space of `WithComments`.
+
+```c#
+Parser<T> WithWhiteSpaceSet<T>(this Parser<T> parser, WhiteSpaceSet whiteSpaceSet)
+```
+
+| Set | White space | New lines |
+|---|---|---|
+| `WhiteSpaceSet.Default` | `\t`, `\f`, space, U+00A0, U+1680, U+2000-U+200A, U+202F, U+205F, U+3000 (`Character.WhiteSpaces`) | `\n`, `\r`, `\v`, U+0085, U+2028, U+2029 (`Character.NewLines`) |
+| `WhiteSpaceSet.Ascii` | `\t`, `\f`, space (`Character.AsciiWhiteSpaces`) | `\n`, `\r`, `\v` (`Character.AsciiNewLines`) |
+
+`Default` is the Unicode `White_Space` property: the chars `char.IsWhiteSpace` and the `\s` of .NET regular expressions accept.
+Its new lines are the line breaks, including the next line char U+0085 and the line and paragraph separators U+2028 and
+U+2029. As with the other new lines, `Terms` parsers skip them unless `UseNewLines` is set. Positions only start a new line at
+`\n`, so like `\r` and `\v` these count as a column, and single line comments end at `\n` only.
+
+> **Changed after Parlot 2.1.** The default set used to be `\t`, `\f`, space, U+00A0, U+1680, U+180E, U+2000-U+200A, U+202F,
+> U+205F, U+3000 and U+FEFF, with `\n`, `\r` and `\v` as new lines. It now follows Unicode:
+>
+> - U+FEFF, the byte order mark, is no longer white space. A text that starts with one now fails to parse with a `Terms`
+>   parser. `File.ReadAllText` and `StreamReader` remove it, but `Encoding.UTF8.GetString` keeps it: decode with a
+>   `StreamReader`, or remove it with `text.TrimStart('\uFEFF')`.
+> - U+180E, the Mongolian vowel separator, is no longer white space, as in Unicode since version 6.3.
+> - U+0085, U+2028 and U+2029 are new lines of the set: `Terms` parsers skip them, unless `UseNewLines` is set.
+> - `Character.WhiteSpaces`, `Character.NewLines` and `Character.WhiteSpaceOrNewLines` changed accordingly, and so did
+>   `Character.IsWhiteSpace(char)`, `Character.IsWhiteSpaceOrNewLine(char)` and `Character.IsNewLine(char)`. The constants are
+>   compiled into the assemblies that use them, which keep the previous values until they are rebuilt.
+>
+> The `Ascii` set didn't change. Its new lines are in the new `Character.AsciiNewLines`.
+
+`Ascii` is the white space of C's `isspace` and Ruby's `\s`: a no-break space or another Unicode space is then a char like any
+other, which a grammar can match or reject.
+
+Usage:
+
+```c#
+var list = Separated(Terms.Char(','), Terms.Integer());
+
+list.Parse("1,\u00A02");                                         // [1, 2]
+list.WithWhiteSpaceSet(WhiteSpaceSet.Ascii).Parse("1,\u00A02");  // [1], the no-break space is not skipped
+list.WithWhiteSpaceSet(WhiteSpaceSet.Ascii).Parse("1,\n\t2");     // [1, 2]
+```
+
+The set can also be selected for a whole parse with `ParseContext.WhiteSpaceSet`, for instance from
+`StreamParseOptions.ContextFactory`:
+
+```c#
+var context = new ParseContext(new Scanner(text)) { WhiteSpaceSet = WhiteSpaceSet.Ascii };
+```
+
+New lines follow `UseNewLines` as with the default set: when it is `true` the `Terms` parsers skip `\t`, `\f` and space only.
+`Literals.WhiteSpace(includeNewLines: true)` and `NonWhiteSpace(includeNewLines: true)` include the new lines of the set.
+
+Unlike a `WithWhiteSpaceParser` that would match the same chars, a set keeps the white space fast path: skipping is still one
+table lookup per char, and `OneOf` still skips white space once for all its alternatives. A `WhiteSpaceParser`, when one is set,
+is used instead of the set to skip white space, but the `Literals.WhiteSpace()` it contains reads the set. To skip ASCII white
+space and comments:
+
+```c#
+var parser = grammar
+    .WithComments(builder => builder.WithWhiteSpaceOrNewLine().WithSingleLine("#"))
+    .WithWhiteSpaceSet(WhiteSpaceSet.Ascii);
+```
+
+`WithWhiteSpaceSet` is part of the grammar, so a [source-generated](source-generation.md) parser honors it too.
+Use `WithWhiteSpaceParser` for any other set of chars.
 
 ### WithComments
 
@@ -931,7 +1237,7 @@ Result:
 "Parsed 'hello' at offset 0, length 5"
 ```
 
-> **Note:** The start and end parameters are integer offsets (positions in the input buffer), not `TextPosition` objects. For `Literals` parsers, these offsets correspond exactly to where the parser matched. For `Terms` parsers (which skip whitespace), the behavior differs slightly between compiled and non-compiled modes due to how whitespace skipping is handled in the compilation process.
+> **Note:** The start and end parameters are integer offsets (positions in the input buffer), not `TextPosition` objects.
 
 ### Else
 
@@ -1094,41 +1400,64 @@ parser.Parse("42:"); // failure, lookahead matches
 
 The lookahead parser is checked at the current position but doesn't consume input. If the lookahead succeeds, the entire parser fails and the cursor is reset to the beginning.
 
-### If (Deprecated)
-
-NB: This parser can be rewritten using `Select` (and `Fail`) which is more flexible and simpler to understand.
+### If
 
 Executes a parser only if a condition is true.
 
 ```c#
-Parser<T> If<TContext, TState, T>(Func<ParseContext, TState, bool> predicate, TState state, Parser<T> parser)
+Parser<T> If<T>(Func<bool> condition, Parser<T> parser)
+Parser<T> If<T>(Func<ParseContext, bool> condition, Parser<T> parser)
+Parser<T> If<C, T>(Func<C, bool> condition, Parser<T> parser) where C : ParseContext
 ```
 
-To evaluate a condition before a parser is executed use the `If` parser instead.
+The condition is evaluated once per parse, at the current cursor position before any branch skips whitespace.
+When it is false, the two-argument form fails without consuming input or changing the result.
+When it is true, the parser succeeds only if the selected child succeeds.
+
+When every branch is seekable and they agree on skipping whitespace, `If` declares the chars any branch can start
+with, so a `OneOf` only tries it, and only evaluates the condition, for one of these chars. When the branches skip
+whitespace the `OneOf` skips it once before the condition is evaluated. `Select` declares its branches the same way.
+
+Provide an else parser to select between two fixed branches:
+
+```c#
+Parser<T> If<T>(Func<bool> condition, Parser<T> thenParser, Parser<T> elseParser)
+Parser<T> If<T>(Func<ParseContext, bool> condition, Parser<T> thenParser, Parser<T> elseParser)
+Parser<T> If<C, T>(Func<C, bool> condition, Parser<T> thenParser, Parser<T> elseParser) where C : ParseContext
+
+var allowWhiteSpace = true;
+var parser = If(() => allowWhiteSpace, Terms.Integer(), Literals.Integer());
+```
+
+Only the selected branch executes. If it fails, the cursor is restored and `If` fails;
+it never falls back to the other branch. Conditions and selectors should not consume input.
+To validate a parsed value instead, use `When`.
+
+The obsolete overloads taking a separate state argument and the `If<C, S, T>` type have been removed
+in this major version. Capture state in the condition or read it from a custom `ParseContext`.
 
 ### Switch
 
 Returns a parser using custom logic based on previous results.
 
 ```c#
-Parser<U> Switch<U>(Func<ParseContext, T, Parser<U>> action)
+Parser<U> Switch<U>(Func<ParseContext, T, int> selector, params Parser<U>[] parsers)
 ```
 
 Usage:
 
 ```c#
-var parser = Terms.Integer().Switch((context, i) =>
-        {
-            // Valid entries: "1 is odd", "2 is even"
-            // Invalid: "7 is even"
+var odd = Terms.Text("is odd");
+var even = Terms.Text("is even");
 
-            return i % 2 == 0
-            ? Terms.Text("is odd")
-            : Terms.Text("is even");
-        });
+var parser = Terms.Integer().Switch(
+    (context, i) => i % 2 == 0 ? 1 : 0,
+    odd,
+    even
+);
 ```
 
-For performance reasons it is recommended to return a singleton (or static) Parser instance. Otherwise each `Parse` execution will allocate a new Parser instance.
+This signature prevents allocating new parsers in the selector.
 
 `Switch` declares the chars of the parser it is applied to, so a `OneOf` only tries it for one of them.
 
@@ -1159,7 +1488,7 @@ parser.Parse("42a"); // Throws ParseException at (1:3).
 
 In contrast, `Terms.Integer().Eof().ElseError("Unexpected trailing input")` reports (1:1) because
 the entire integer-and-EOF parser rolls back before `ElseError` reports the failure.
-Both forms support expression-tree compilation.
+Both forms support source generation and streaming.
 
 ### Discard
 

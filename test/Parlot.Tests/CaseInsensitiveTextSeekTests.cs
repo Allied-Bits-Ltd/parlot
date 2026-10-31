@@ -73,10 +73,9 @@ public class CaseInsensitiveTextSeekTests
         // the dotless 'i' (U+0131)
         using (new Culture(culture))
         {
-            // The matched text is returned, otherwise the text of the parser is
-            lower = Literals.Text("id", caseInsensitive: true, returnMatchedText: true).Or(Literals.Text("x"));
-            upper = Literals.Text("ID", caseInsensitive: true, returnMatchedText: true).Or(Literals.Text("x"));
-            keyword = Literals.Keyword("if", caseInsensitive: true, returnMatchedText: true).Or(Literals.Keyword("x"));
+            lower = Literals.Text("id", caseInsensitive: true).Or(Literals.Text("x"));
+            upper = Literals.Text("ID", caseInsensitive: true).Or(Literals.Text("x"));
+            keyword = Literals.Keyword("if", caseInsensitive: true).Or(Literals.Keyword("x"));
 
             AssertMatches();
         }
@@ -88,16 +87,16 @@ public class CaseInsensitiveTextSeekTests
             foreach (var text in new[] { "id", "ID", "Id", "iD" })
             {
                 Assert.True(lower.TryParse(text, out var result), text);
-                Assert.Equal(text, result);
+                Assert.Equal("id", result);
 
                 Assert.True(upper.TryParse(text, out result), text);
-                Assert.Equal(text, result);
+                Assert.Equal("ID", result);
             }
 
             foreach (var text in new[] { "if", "IF", "If", "iF" })
             {
                 Assert.True(keyword.TryParse(text, out var result), text);
-                Assert.Equal(text, result);
+                Assert.Equal("if", result);
             }
 
             // The Turkish letters are other letters to an ordinal comparison
@@ -259,6 +258,7 @@ public class CaseInsensitiveTextSeekTests
         var literal = new TextLiteral("abc", comparison);
 
         Assert.False(((ISeekable)literal).CanSeek);
+        Assert.False(((ISeekable)new KeywordLiteral("abc", comparison)).CanSeek);
 
         foreach (var input in new[] { "abc", "ABC", "\u00ADabc", "" })
         {

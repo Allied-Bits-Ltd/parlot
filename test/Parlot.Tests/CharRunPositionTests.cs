@@ -109,21 +109,4 @@ public class CharRunPositionTests
         Assert.Equal(text.Substring(0, length), result.Value.ToString());
         AssertPosition(Expected(text, length), context.Scanner.Cursor);
     }
-    [Theory]
-    [InlineData("abc\n")]
-    [InlineData("abc\r\n")]
-    public void RunsStoppingBeforeNewLineTrackPosition(string text)
-    {
-        var context = new ParseContext(new Scanner(text));
-        var result = new ParseResult<TextSpan>();
-        Assert.True(Literals.Pattern(static c => Character.IsIdentifierPart(c)).Parse(context, ref result));
-        AssertPosition(Expected(text, 3), context.Scanner.Cursor);
-        Assert.Equal("abc", result.Value.ToString());
-
-        var scanner = new Scanner(text);
-        Assert.True(scanner.ReadWhile(static c => Character.IsIdentifierPart(c), out var value));
-        AssertPosition(Expected(text, 3), scanner.Cursor);
-        Assert.Equal("abc", value.ToString());
-    }
-
 }

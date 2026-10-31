@@ -12,12 +12,18 @@ public sealed class Eof : Parser<object?>, ISourceable
     /// <inheritdoc />
     public override bool Parse(ParseContext context, ref ParseResult<object?> result)
     {
+        if (context.IsCompacting)
+        {
+            return context.ParseToken(this, ref result);
+        }
+
         context.EnterParser(this);
 
         var cursor = context.Scanner.Cursor;
 
         if (cursor.Eof)
         {
+            cursor.MarkHitEnd();
             result.Set(cursor.Offset, cursor.Offset, null);
 
             context.ExitParser(this);
@@ -33,9 +39,18 @@ public sealed class Eof : Parser<object?>, ISourceable
     {
         ThrowHelper.ThrowIfNull(context, nameof(context));
 
-        var result = context.CreateResult(typeof(object));
+        if (context.IsCompacting)
+        {
+            return context.GenerateToken(this, typeof(object), () => GenerateSource(context));
+        }
 
-        result.Body.Add($"{result.SuccessVariable} = {context.CursorName}.Eof;");
+        var result = context.CreateResult(typeof(object));
+        result.Body.Add($"if ({context.CursorName}.Eof)");
+        result.Body.Add("{");
+        result.Body.Add($"    {context.CursorName}.MarkHitEnd();");
+        result.Body.Add($"    {result.SuccessVariable} = true;");
+        result.Body.Add($"    {result.ValueVariable} = null;");
+        result.Body.Add("}");
 
         return result;
     }
@@ -47,7 +62,7 @@ public sealed class Eof : Parser<object?>, ISourceable
 /// <summary>
 /// Successful when the cursor is at the end of the string.
 /// </summary>
-public sealed class Eof<T> : Parser<T>, ISourceable, ISeekable
+public sealed class Eof<T> : Parser<T>, ISeekable, ISourceable
 {
     private readonly Parser<T> _parser;
 
@@ -88,13 +103,13 @@ public sealed class Eof<T> : Parser<T>, ISourceable, ISeekable
                 return true;
             }
 
+            // The parser matched but more text follows
             cursor.ResetPosition(start);
         }
 
         context.ExitParser(this);
         return false;
     }
-
 
     public SourceResult GenerateSource(SourceGenerationContext context)
     {
@@ -113,15 +128,10 @@ public sealed class Eof<T> : Parser<T>, ISourceable, ISeekable
             .GetOrCreate(sourceable, $"{context.MethodNamePrefix}_Eof", valueTypeName, () => sourceable.GenerateSource(context))
             .MethodName;
 
-        // var start = cursor.Position;
         // if (Helper(context, out var innerValue) && cursor.Eof)
         // {
         //     success = true;
         //     value = innerValue;
-        // }
-        // else
-        // {
-        //     cursor.ResetPosition(start);
         // }
         var startName = $"start{context.NextNumber()}";
         result.Body.Add($"var {startName} = {context.CursorName}.Position;");

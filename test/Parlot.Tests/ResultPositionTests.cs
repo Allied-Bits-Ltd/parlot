@@ -1,4 +1,3 @@
-using System.Collections.Generic;
 using Parlot.Fluent;
 using Xunit;
 using static Parlot.Fluent.Parsers;
@@ -70,14 +69,14 @@ public class ResultPositionTests
     {
         var context = Parse(Terms.Text("ab").And(ZeroOrOne(Terms.Char('c'))), " ab", out var result);
 
-        Assert.Equal(default, result.Value.Item2);
+        Assert.Empty(result.Value.Item2);
         Assert.Equal(1, result.Start);
         Assert.Equal(3, result.End);
         AssertCursor(context, 3, 1, 4);
 
         context = Parse(ZeroOrOne(Literals.Text("ab").When(static (_, _) => false)), "ab", out var rejected);
 
-        Assert.Null(rejected.Value);
+        Assert.Empty(rejected.Value);
         Assert.Equal(0, rejected.Start);
         Assert.Equal(0, rejected.End);
         AssertCursor(context, 0, 1, 1);
@@ -99,6 +98,38 @@ public class ResultPositionTests
         Assert.Equal(1, matched.Start);
         Assert.Equal(6, matched.End);
         AssertCursor(context, 6, 2, 3);
+    }
+
+    [Fact]
+    public void TupleRightAssociativeShouldSpanTheOperand()
+    {
+        var parser = Terms.Integer().RightAssociative((Terms.Char('^'), static (long a, long b) => a + b));
+
+        var context = Parse(parser, " 1", out var result);
+
+        Assert.Equal(1, result.Value);
+        Assert.Equal(1, result.Start);
+        Assert.Equal(2, result.End);
+        AssertCursor(context, 2, 1, 3);
+    }
+
+    [Fact]
+    public void SeparatedShouldBeAtTheCursorWhenEmpty()
+    {
+        var context = Parse(Terms.Text("ab").And(Separated(Terms.Char(','), Terms.Integer(), min: 0)), " ab", out var result);
+
+        Assert.Empty(result.Value.Item2);
+        Assert.Equal(1, result.Start);
+        Assert.Equal(3, result.End);
+        AssertCursor(context, 3, 1, 4);
+
+        var withOptions = new Separated<char, long>(Terms.Char(','), Terms.Integer(), 0, 0, removeEmptyEntries: true, allowLeadingSeparator: false, allowTrailingSeparator: false);
+        context = Parse(Terms.Text("ab").And(withOptions), " ab", out var options);
+
+        Assert.Empty(options.Value.Item2);
+        Assert.Equal(1, options.Start);
+        Assert.Equal(3, options.End);
+        AssertCursor(context, 3, 1, 4);
     }
 
     [Fact]
@@ -175,6 +206,23 @@ public class ResultPositionTests
         Assert.Equal(1, result.Start);
         Assert.Equal(2, result.End);
         AssertCursor(context, 2, 1, 3);
+    }
+
+    [Fact]
+    public void DelegateParserShouldSpanWhatTheDelegateRead()
+    {
+        var parser = new DelegateParser<long>(static (ParseContext c, out long value) => Terms.Integer().TryParse(c, out value, out _));
+
+        var context = Parse(parser, " 12\n", out var result);
+
+        Assert.Equal(12, result.Value);
+        Assert.Equal(0, result.Start);
+        Assert.Equal(3, result.End);
+        AssertCursor(context, 3, 1, 4);
+
+        context = Parse(parser, " x", out _, success: false);
+
+        AssertCursor(context, 0, 1, 1);
     }
 
     [Theory]

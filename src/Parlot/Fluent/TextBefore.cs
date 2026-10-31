@@ -5,11 +5,6 @@ using System;
 using System.Buffers;
 #endif
 
-#if NETCOREAPP
-using System.Linq;
-#endif
-using System.Reflection;
-
 namespace Parlot.Fluent;
 
 public sealed class TextBefore<T> : Parser<TextSpan>, ISourceable
@@ -19,10 +14,9 @@ public sealed class TextBefore<T> : Parser<TextSpan>, ISourceable
     private readonly bool _failOnEof;
     private readonly bool _consumeDelimiter;
     private readonly bool _canJumpToNextExpectedChar;
+    private readonly char[]? _expectedChars;
 #if NET8_0_OR_GREATER
     private readonly SearchValues<char>? _expectedSearchValues;
-#else
-    private readonly char[]? _expectedChars;
 #endif
     public TextBefore(Parser<T> delimiter, bool canBeEmpty = false, bool failOnEof = false, bool consumeDelimiter = false)
     {
@@ -39,10 +33,9 @@ public sealed class TextBefore<T> : Parser<TextSpan>, ISourceable
             && !seekable.SkipWhitespace
             && Array.IndexOf(seekable.ExpectedChars, OneOf<T>.OtherSeekableChar) < 0)
         {
+            _expectedChars = seekable.ExpectedChars;
 #if NET8_0_OR_GREATER
             _expectedSearchValues = SearchValues.Create(seekable.ExpectedChars);
-#else
-            _expectedChars = seekable.ExpectedChars;
 #endif
             _canJumpToNextExpectedChar = true;
         }
@@ -50,6 +43,11 @@ public sealed class TextBefore<T> : Parser<TextSpan>, ISourceable
 
     public override bool Parse(ParseContext context, ref ParseResult<TextSpan> result)
     {
+        if (context.IsCompacting)
+        {
+            return context.ParseToken(this, ref result);
+        }
+
         context.EnterParser(this);
 
         var start = context.Scanner.Cursor.Position;
@@ -87,7 +85,7 @@ public sealed class TextBefore<T> : Parser<TextSpan>, ISourceable
                     return false;
                 }
 
-                result.Set(start.Offset, previous.Offset, new TextSpan(context.Scanner.Buffer, start.Offset, length));
+                result.Set(start.Offset, previous.Offset, context.Scanner.Cursor.CreateSpan(start.Offset, length));
 
                 context.ExitParser(this);
                 return true;
@@ -106,13 +104,15 @@ public sealed class TextBefore<T> : Parser<TextSpan>, ISourceable
 
                 if (length == 0 && !_canBeEmpty)
                 {
+                    // The delimiter might have been consumed
                     context.Scanner.Cursor.ResetPosition(start);
+
                     context.ExitParser(this);
                     return false;
                 }
 
                 // The result ends where the cursor is: after the delimiter when it is consumed
-                result.Set(start.Offset, context.Scanner.Cursor.Offset, new TextSpan(context.Scanner.Buffer, start.Offset, length));
+                result.Set(start.Offset, context.Scanner.Cursor.Offset, context.Scanner.Cursor.CreateSpan(start.Offset, length));
 
                 context.ExitParser(this);
                 return true;
@@ -183,6 +183,11 @@ public sealed class TextBefore<T> : Parser<TextSpan>, ISourceable
     {
         ThrowHelper.ThrowIfNull(context, nameof(context));
 
+        if (context.IsCompacting)
+        {
+            return context.GenerateToken(this, typeof(TextSpan), () => GenerateSource(context));
+        }
+
         if (_delimiter is not ISourceable sourceable)
         {
             throw new NotSupportedException("TextBefore requires a source-generatable delimiter parser.");
@@ -201,21 +206,26 @@ public sealed class TextBefore<T> : Parser<TextSpan>, ISourceable
         var delimiterValueTypeName = SourceGenerationContext.GetTypeName(typeof(T));
 
         // Use helper instead of inlining
-        var delimiterHelperName = context.Helpers
+        var delimiterHelperName = context.WithDiscardResult(true, () => context.Helpers
             .GetOrCreate(sourceable, $"{context.MethodNamePrefix}_TextBefore_Delimiter", delimiterValueTypeName, () => sourceable.GenerateSource(context))
-            .MethodName;
+            .MethodName);
 
         result.Body.Add("while (true)");
         result.Body.Add("{");
+
+        if (_canJumpToNextExpectedChar)
+        {
+            GenerateJumpToNextExpectedChar(context, result, _expectedChars!);
+        }
+
         result.Body.Add($"    var {previousName} = {cursorName}.Position;");
         result.Body.Add($"    if ({cursorName}.Eof)");
         result.Body.Add("    {");
-        
+
         if (_failOnEof)
         {
             result.Body.Add($"        {cursorName}.ResetPosition({startName});");
             result.Body.Add($"        {result.SuccessVariable} = false;");
-            result.Body.Add("        break;");
         }
         else
         {
@@ -230,19 +240,20 @@ public sealed class TextBefore<T> : Parser<TextSpan>, ISourceable
             }
             if (!context.DiscardResult)
             {
-                result.Body.Add($"        {result.ValueVariable} = new global::Parlot.TextSpan({scannerName}.Buffer, {startName}.Offset, {lengthName});");
+                result.Body.Add($"        {result.ValueVariable} = {context.CursorName}.CreateSpan({startName}.Offset, {lengthName});");
             }
             result.Body.Add($"        {result.SuccessVariable} = true;");
-            result.Body.Add("        break;");
         }
-        
+
+        result.Body.Add("        break;");
+
         result.Body.Add("    }");
 
         // Try to parse delimiter
         result.Body.Add($"    if ({delimiterHelperName}({context.ParseContextName}, out _))");
         result.Body.Add("    {");
         result.Body.Add($"        var {lengthName} = {previousName}.Offset - {startName}.Offset;");
-        
+
         if (!_consumeDelimiter)
         {
             result.Body.Add($"        {cursorName}.ResetPosition({previousName});");
@@ -252,7 +263,10 @@ public sealed class TextBefore<T> : Parser<TextSpan>, ISourceable
         {
             result.Body.Add($"        if ({lengthName} == 0)");
             result.Body.Add("        {");
-            result.Body.Add($"            {cursorName}.ResetPosition({startName});");
+            if (_consumeDelimiter)
+            {
+                result.Body.Add($"            {cursorName}.ResetPosition({startName});");
+            }
             result.Body.Add($"            {result.SuccessVariable} = false;");
             result.Body.Add("            break;");
             result.Body.Add("        }");
@@ -260,7 +274,7 @@ public sealed class TextBefore<T> : Parser<TextSpan>, ISourceable
 
         if (!context.DiscardResult)
         {
-            result.Body.Add($"        {result.ValueVariable} = new global::Parlot.TextSpan({scannerName}.Buffer, {startName}.Offset, {lengthName});");
+            result.Body.Add($"        {result.ValueVariable} = {context.CursorName}.CreateSpan({startName}.Offset, {lengthName});");
         }
         result.Body.Add($"        {result.SuccessVariable} = true;");
         result.Body.Add("        break;");
@@ -269,6 +283,57 @@ public sealed class TextBefore<T> : Parser<TextSpan>, ISourceable
         result.Body.Add("}");
 
         return result;
+    }
+
+    // Emits the same jump as JumpToNextExpectedChar: the cursor moves to the first char the delimiter can start with,
+    // or to the end of the text. A single char is searched with IndexOf on every framework; several chars with
+    // SearchValues on .NET 8+, and with a loop reading the text once below.
+    private static void GenerateJumpToNextExpectedChar(SourceGenerationContext context, SourceResult result, char[] expectedChars)
+    {
+        var cursorName = context.CursorName;
+        var spanName = $"span{context.NextNumber()}";
+        var indexName = $"index{context.NextNumber()}";
+
+        result.Body.Add($"    var {spanName} = {cursorName}.Span;");
+
+        if (expectedChars.Length == 1)
+        {
+            result.Body.Add($"    var {indexName} = {spanName}.IndexOf({LiteralHelper.CharToLiteral(expectedChars[0])});");
+            result.Body.Add($"    {cursorName}.Advance({indexName} >= 0 ? {indexName} : {spanName}.Length);");
+            return;
+        }
+
+        context.StaticFields.Add("#if NET8_0_OR_GREATER");
+        var fieldName = context.RegisterStaticField(
+            "private static readonly global::System.Buffers.SearchValues<char>",
+            $"global::System.Buffers.SearchValues.Create({LiteralHelper.StringToLiteral(new string(expectedChars))})");
+        context.StaticFields.Add("#endif");
+
+        var iName = $"i{context.NextNumber()}";
+        var cName = $"c{context.NextNumber()}";
+        var patterns = new string[expectedChars.Length];
+
+        for (var i = 0; i < expectedChars.Length; i++)
+        {
+            patterns[i] = LiteralHelper.CharToLiteral(expectedChars[i]);
+        }
+
+        result.Body.Add("#if NET8_0_OR_GREATER");
+        result.Body.Add($"    var {indexName} = {spanName}.IndexOfAny({fieldName});");
+        result.Body.Add($"    {cursorName}.Advance({indexName} >= 0 ? {indexName} : {spanName}.Length);");
+        result.Body.Add("#else");
+        result.Body.Add($"    var {indexName} = {spanName}.Length;");
+        result.Body.Add($"    for (var {iName} = 0; {iName} < {spanName}.Length; {iName}++)");
+        result.Body.Add("    {");
+        result.Body.Add($"        var {cName} = {spanName}[{iName}];");
+        result.Body.Add($"        if ({cName} is {string.Join(" or ", patterns)})");
+        result.Body.Add("        {");
+        result.Body.Add($"            {indexName} = {iName};");
+        result.Body.Add("            break;");
+        result.Body.Add("        }");
+        result.Body.Add("    }");
+        result.Body.Add($"    {cursorName}.Advance({indexName});");
+        result.Body.Add("#endif");
     }
 
     public override string ToString() => $"TextBefore({_delimiter})";

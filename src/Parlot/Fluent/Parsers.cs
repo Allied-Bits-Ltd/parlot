@@ -23,9 +23,48 @@ public static partial class Parsers
     public static TermBuilder Terms => new();
 
     /// <summary>
-    /// Builds a parser that looks for zero or many times a parser separated by another one.
+    /// Builds a parser that matches one or more values separated by another parser.
     /// </summary>
+    /// <param name="separator">The separator between values.</param>
+    /// <param name="parser">The parser for each value.</param>
+    /// <param name="removeEmptyEntries">Whether to skip successive separators.</param>
+    /// <param name="allowLeadingSeparator">Whether to accept a separator before the first value.</param>
+    /// <param name="allowTrailingSeparator">Whether to consume a separator after the last value.</param>
+    public static Parser<IReadOnlyList<T>> Separated<U, T>(
+        Parser<U> separator,
+        Parser<T> parser,
+        bool removeEmptyEntries = false,
+        bool allowLeadingSeparator = false,
+        bool allowTrailingSeparator = false) =>
+        new Separated<U, T>(separator, parser, removeEmptyEntries, allowLeadingSeparator, allowTrailingSeparator);
+
+    /// <summary>
+    /// Builds a parser for separated values with a minimum number of matches and an optional maximum.
+    /// A maximum of zero means unlimited. An explicit minimum of zero allows an empty list.
+    /// </summary>
+    /// <param name="separator">The separator between values.</param>
+    /// <param name="parser">The value parser.</param>
     public static Parser<IReadOnlyList<T>> Separated<U, T>(Parser<U> separator, Parser<T> parser) => new Separated<U, T>(separator, parser);
+
+    /// <summary>Builds a parser for separated values with configurable minimum and maximum counts.</summary>
+    /// <param name="separator">The separator between values.</param>
+    /// <param name="parser">The value parser.</param>
+    /// <param name="min">The minimum number of values.</param>
+    /// <param name="max">The maximum number of values, or zero for unlimited.</param>
+    public static Parser<IReadOnlyList<T>> Separated<U, T>(Parser<U> separator, Parser<T> parser, int min = 1, int max = 0) => new Separated<U, T>(separator, parser, min, max);
+
+    /// <summary>Builds a bounded parser for separated values with configurable separator handling.</summary>
+    /// <param name="separator">The separator between values.</param>
+    /// <param name="parser">The value parser.</param>
+    /// <param name="min">The minimum number of values.</param>
+    /// <param name="max">The maximum number of values, or zero for unlimited.</param>
+    /// <param name="removeEmptyEntries">Whether to skip successive separators.</param>
+    /// <param name="allowLeadingSeparator">Whether to accept a separator before the first value.</param>
+    /// <param name="allowTrailingSeparator">Whether to consume a separator after the last value.</param>
+    public static Parser<IReadOnlyList<T>> Separated<U, T>(
+        Parser<U> separator, Parser<T> parser, int min, int max,
+        bool removeEmptyEntries, bool allowLeadingSeparator, bool allowTrailingSeparator) =>
+        new Separated<U, T>(separator, parser, min, max, removeEmptyEntries, allowLeadingSeparator, allowTrailingSeparator);
 
     /// <summary>
     /// Builds a parser that skips white spaces before another one.
@@ -33,24 +72,29 @@ public static partial class Parsers
     public static Parser<T> SkipWhiteSpace<T>(Parser<T> parser) => new SkipWhiteSpace<T>(parser);
 
     /// <summary>
-    /// Builds a parser that looks for zero or one time the specified parser.
+    /// Builds a parser that returns an empty list or a list containing one match.
     /// </summary>
-    public static Parser<T> ZeroOrOne<T>(Parser<T> parser, T defaultValue) => new ZeroOrOne<T>(parser, defaultValue);
-
-    /// <summary>
-    /// Builds a parser that looks for zero or one time the specified parser.
-    /// </summary>
-    public static Parser<T> ZeroOrOne<T>(Parser<T> parser) where T : notnull => new ZeroOrOne<T>(parser, default!);
+    public static Parser<IReadOnlyList<T>> ZeroOrOne<T>(Parser<T> parser) => new ZeroOrOne<T>(parser);
 
     /// <summary>
     /// Builds a parser that looks for zero or many times the specified parser.
     /// </summary>
     public static Parser<IReadOnlyList<T>> ZeroOrMany<T>(Parser<T> parser) => new ZeroOrMany<T>(parser);
 
+    /// <summary>Builds a parser that matches up to <paramref name="max"/> times. Zero means unlimited.</summary>
+    /// <param name="parser">The parser to repeat.</param>
+    /// <param name="max">The maximum number of matches, or zero for unlimited.</param>
+    public static Parser<IReadOnlyList<T>> ZeroOrMany<T>(Parser<T> parser, int max) => new ZeroOrMany<T>(parser, max);
+
     /// <summary>
     /// Builds a parser that looks for one or many times the specified parser.
     /// </summary>
     public static Parser<IReadOnlyList<T>> OneOrMany<T>(Parser<T> parser) => new OneOrMany<T>(parser);
+
+    /// <summary>Builds a parser that matches at least once, up to <paramref name="max"/> times. Zero means unlimited.</summary>
+    /// <param name="parser">The parser to repeat.</param>
+    /// <param name="max">The maximum number of matches, or zero for unlimited.</param>
+    public static Parser<IReadOnlyList<T>> OneOrMany<T>(Parser<T> parser, int max) => new OneOrMany<T>(parser, max);
 
     /// <summary>
     /// Builds a parser that succeeds when the specified parser fails to match.
@@ -58,28 +102,60 @@ public static partial class Parsers
     public static Parser<T> Not<T>(Parser<T> parser) => new Not<T>(parser);
 
     /// <summary>
-    /// Builds a parser that invoked the next one if a condition is true.
+    /// Evaluates a condition once and executes <paramref name="parser"/> if it is true.
+    /// Otherwise, fails without consuming input or changing the result.
     /// </summary>
-    [Obsolete("Use the Select parser instead.")]
-    public static Parser<T> If<C, S, T>(Func<C, S?, bool> predicate, S? state, Parser<T> parser) where C : ParseContext => new If<C, S, T>(parser, predicate, state);
+    /// <param name="condition">The condition to evaluate before parsing.</param>
+    /// <param name="parser">The parser to execute when the condition is true.</param>
+    public static Parser<T> If<T>(Func<bool> condition, Parser<T> parser) => new If<ParseContext, T>(condition, parser);
 
     /// <summary>
-    /// Builds a parser that invoked the next one if a condition is true.
+    /// Evaluates a condition once using the current context and executes <paramref name="parser"/> if it is true.
+    /// Otherwise, fails without consuming input or changing the result.
     /// </summary>
-    [Obsolete("Use the Select parser instead.")]
-    public static Parser<T> If<S, T>(Func<ParseContext, S?, bool> predicate, S? state, Parser<T> parser) => new If<ParseContext, S, T>(parser, predicate, state);
+    /// <param name="condition">The condition to evaluate before parsing.</param>
+    /// <param name="parser">The parser to execute when the condition is true.</param>
+    public static Parser<T> If<T>(Func<ParseContext, bool> condition, Parser<T> parser) => new If<ParseContext, T>(condition, parser);
 
     /// <summary>
-    /// Builds a parser that invoked the next one if a condition is true.
+    /// Evaluates a condition once using the concrete context and executes <paramref name="parser"/> if it is true.
+    /// Otherwise, fails without consuming input or changing the result.
     /// </summary>
-    [Obsolete("Use the Select parser instead.")]
-    public static Parser<T> If<C, T>(Func<C, bool> predicate, Parser<T> parser) where C : ParseContext => new If<C, object?, T>(parser, (c, s) => predicate(c), null);
+    /// <param name="condition">The condition to evaluate before parsing.</param>
+    /// <param name="parser">The parser to execute when the condition is true.</param>
+    public static Parser<T> If<C, T>(Func<C, bool> condition, Parser<T> parser) where C : ParseContext => new If<C, T>(condition, parser);
 
     /// <summary>
-    /// Builds a parser that invoked the next one if a condition is true.
+    /// Evaluates a condition once and executes only the selected branch, without falling back if it fails.
     /// </summary>
-    [Obsolete("Use the Select parser instead.")]
-    public static Parser<T> If<T>(Func<ParseContext, bool> predicate, Parser<T> parser) => new If<ParseContext, object?, T>(parser, (c, s) => predicate(c), null);
+    /// <param name="condition">The condition to evaluate before parsing.</param>
+    /// <param name="thenParser">The parser to execute when the condition is true.</param>
+    /// <param name="elseParser">The parser to execute when the condition is false.</param>
+    public static Parser<T> If<T>(Func<bool> condition, Parser<T> thenParser, Parser<T> elseParser) => new If<ParseContext, T>(condition, thenParser, elseParser);
+
+    /// <summary>
+    /// Evaluates a condition once using the current context and executes only the selected branch, without falling back if it fails.
+    /// </summary>
+    /// <param name="condition">The condition to evaluate before parsing.</param>
+    /// <param name="thenParser">The parser to execute when the condition is true.</param>
+    /// <param name="elseParser">The parser to execute when the condition is false.</param>
+    public static Parser<T> If<T>(Func<ParseContext, bool> condition, Parser<T> thenParser, Parser<T> elseParser) => new If<ParseContext, T>(condition, thenParser, elseParser);
+
+    /// <summary>
+    /// Evaluates a condition once using the concrete context and executes only the selected branch, without falling back if it fails.
+    /// </summary>
+    /// <param name="condition">The condition to evaluate before parsing.</param>
+    /// <param name="thenParser">The parser to execute when the condition is true.</param>
+    /// <param name="elseParser">The parser to execute when the condition is false.</param>
+    public static Parser<T> If<C, T>(Func<C, bool> condition, Parser<T> thenParser, Parser<T> elseParser) where C : ParseContext => new If<C, T>(condition, thenParser, elseParser);
+
+    /// <summary>
+    /// Evaluates a selector once and executes the parser at its index.
+    /// An out-of-range index fails without consuming input.
+    /// </summary>
+    /// <param name="selector">The selector to evaluate before parsing.</param>
+    /// <param name="parsers">The fixed set of parsers to select from.</param>
+    public static Parser<T> Select<T>(Func<int> selector, params Parser<T>[] parsers) => new Select<ParseContext, T>(selector, parsers);
 
     /// <summary>
     /// Builds a parser that selects another parser using custom logic.
@@ -177,6 +253,28 @@ public class LiteralBuilder
     public Parser<string> Keyword(string text, bool caseInsensitive = false, bool returnMatchedText = false) => new KeywordLiteral(text, caseInsensitive ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal, returnMatchedText: returnMatchedText);
 
     /// <summary>
+    /// Builds a parser that matches a keyword by ensuring the following character is not one of <paramref name="identifierPart"/>.
+    /// </summary>
+    /// <param name="text">The keyword.</param>
+    /// <param name="identifierPart">The chars that continue an identifier, e.g. <c>"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"</c>. They replace the default ASCII letters.</param>
+    /// <param name="caseInsensitive">Whether the text is matched ignoring case.</param>
+    /// <param name="returnMatchedText">Whether to return the input's text rather than <paramref name="text"/>.</param>
+    public Parser<string> Keyword(string text, ReadOnlySpan<char> identifierPart, bool caseInsensitive = false, bool returnMatchedText = false) => new KeywordLiteral(text, identifierPart, caseInsensitive ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal, returnMatchedText: returnMatchedText);
+
+    /// <summary>
+    /// Builds a parser that matches a keyword by ensuring the following character is not one of <paramref name="identifierPart"/>.
+    /// </summary>
+    /// <param name="text">The keyword.</param>
+    /// <param name="identifierPart">The chars that continue an identifier, e.g. <c>"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"</c>. They replace the default ASCII letters.</param>
+    /// <param name="caseInsensitive">Whether the text is matched ignoring case.</param>
+    /// <param name="returnMatchedText">Whether to return the input's text rather than <paramref name="text"/>.</param>
+    /// <remarks>
+    /// This overload exists so a factory compiled for .NET Framework or .NET Standard 2.0, where a <see cref="string"/>
+    /// doesn't convert to a <see cref="ReadOnlySpan{T}"/> implicitly, can pass a string literal.
+    /// </remarks>
+    public Parser<string> Keyword(string text, string identifierPart, bool caseInsensitive = false, bool returnMatchedText = false) => new KeywordLiteral(text, (identifierPart ?? throw new ArgumentNullException(nameof(identifierPart))).AsSpan(), caseInsensitive ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal, returnMatchedText: returnMatchedText);
+
+    /// <summary>
     /// Builds a parser that matches the specified char.
     /// </summary>
     public Parser<char> Char(char c) => new CharLiteral(c);
@@ -184,11 +282,38 @@ public class LiteralBuilder
     /// <summary>
     /// Builds a parser that matches a number and returns any numeric type.
     /// </summary>
-    public Parser<T> Number<T>(NumberOptions numberOptions = NumberOptions.Number, char decimalSeparator = '.', char groupSeparator = ',')
+    public Parser<T> Number<T>(NumberOptions numberOptions = NumberOptions.Number, char decimalSeparator = '.', char groupSeparator = ',', char secondDecimalSeparator = NumberLiterals.NoSecondDecimalSeparator)
 #if NET8_0_OR_GREATER
     where T : INumber<T>
 #endif
-    => NumberLiterals.CreateNumberLiteralParser<T>(numberOptions, decimalSeparator, groupSeparator);
+    => NumberLiterals.CreateNumberLiteralParser<T>(numberOptions, decimalSeparator, groupSeparator, secondDecimalSeparator);
+
+    /// <summary>
+    /// Builds a parser that matches hexadecimal digits without a prefix and returns any integer type.
+    /// </summary>
+    public Parser<T> Hexadecimal<T>()
+#if NET8_0_OR_GREATER
+    where T : IBinaryInteger<T>
+#endif
+    => NumberLiterals.CreateRadixNumberLiteralParser<T>(16);
+
+    /// <summary>
+    /// Builds a parser that matches octal digits without a prefix and returns any integer type.
+    /// </summary>
+    public Parser<T> Octal<T>()
+#if NET8_0_OR_GREATER
+    where T : IBinaryInteger<T>
+#endif
+    => NumberLiterals.CreateRadixNumberLiteralParser<T>(8);
+
+    /// <summary>
+    /// Builds a parser that matches binary digits without a prefix and returns any integer type.
+    /// </summary>
+    public Parser<T> Binary<T>()
+#if NET8_0_OR_GREATER
+    where T : IBinaryInteger<T>
+#endif
+    => NumberLiterals.CreateRadixNumberLiteralParser<T>(2);
 
     /// <summary>
     /// Builds a parser that matches an integer with an option leading sign.
@@ -215,7 +340,7 @@ public class LiteralBuilder
     /// <summary>
     /// Builds a parser that matches an quoted string that can be escaped.
     /// </summary>
-    public Parser<TextSpan> String(StringLiteralQuotes quotes = StringLiteralQuotes.SingleOrDouble) => new StringLiteral(quotes);
+    public Parser<TextSpan> String(StringLiteralQuotes quotes = StringLiteralQuotes.SingleOrDouble, bool returnDecoded = true) => new StringLiteral(quotes, returnDecoded);
 
     /// <summary>
     /// Builds a parser that matches an identifier which can have a different starting value that the rest of its chars.
@@ -258,6 +383,13 @@ public class LiteralBuilder
     /// <param name="maxSize">When the parser reaches the maximum number of matches it returns <see langword="True"/>. Defaults to 0, i.e. no maximum size.</param>
     public Parser<TextSpan> Pattern(Func<char, bool> predicate, int minSize = 1, int maxSize = 0) => new PatternLiteral(predicate, minSize, maxSize);
 
+    /// <summary>
+    /// Builds a parser that matches the token found by a function scanning the remaining text.
+    /// </summary>
+    /// <param name="scanner">The function that returns the length of the token at the start of a span, <c>0</c> when there is none. See <see cref="SpanScanner"/>.</param>
+    /// <param name="startChars">The chars a token can start with, used to skip the parser in choices. Empty when unknown.</param>
+    public Parser<TextSpan> Scan(SpanScanner scanner, ReadOnlySpan<char> startChars = default) => new SpanScannerLiteral(scanner, startChars);
+
 #if NET8_0_OR_GREATER
     /// <summary>
     /// Builds a parser that matches a list of chars.
@@ -290,6 +422,30 @@ public class LiteralBuilder
     /// <param name="minSize">The minimum number of chars required. Defaults to 1.</param>
     /// <param name="maxSize">When the parser reaches the maximum number of chars it returns <see langword="True"/>. Defaults to 0, i.e. no maximum size.</param>
     public Parser<TextSpan> NoneOf(ReadOnlySpan<char> values, int minSize = 1, int maxSize = 0) => new SearchValuesCharLiteral(values, minSize, maxSize, negate: true);
+
+    /// <summary>
+    /// Builds a parser that matches a list of chars.
+    /// </summary>
+    /// <param name="values">The set of chars to match.</param>
+    /// <param name="minSize">The minimum number of matches required. Defaults to 1.</param>
+    /// <param name="maxSize">When the parser reaches the maximum number of matches it returns <see langword="True"/>. Defaults to 0, i.e. no maximum size.</param>
+    /// <remarks>
+    /// This overload exists so a factory compiled for .NET Framework or .NET Standard 2.0, where a <see cref="string"/>
+    /// doesn't convert to a <see cref="ReadOnlySpan{T}"/> implicitly, can pass a string literal.
+    /// </remarks>
+    public Parser<TextSpan> AnyOf(string values, int minSize = 1, int maxSize = 0) => new SearchValuesCharLiteral(values.AsSpan(), minSize, maxSize);
+
+    /// <summary>
+    /// Builds a parser that matches anything but a list of chars.
+    /// </summary>
+    /// <param name="values">The set of chars not to match.</param>
+    /// <param name="minSize">The minimum number of chars required. Defaults to 1.</param>
+    /// <param name="maxSize">When the parser reaches the maximum number of chars it returns <see langword="True"/>. Defaults to 0, i.e. no maximum size.</param>
+    /// <remarks>
+    /// This overload exists so a factory compiled for .NET Framework or .NET Standard 2.0, where a <see cref="string"/>
+    /// doesn't convert to a <see cref="ReadOnlySpan{T}"/> implicitly, can pass a string literal.
+    /// </remarks>
+    public Parser<TextSpan> NoneOf(string values, int minSize = 1, int maxSize = 0) => new SearchValuesCharLiteral(values.AsSpan(), minSize, maxSize, negate: true);
 #else
     /// <summary>
     /// Builds a parser that matches a list of chars.
@@ -306,6 +462,30 @@ public class LiteralBuilder
     /// <param name="minSize">The minimum number of required chars. Defaults to 1.</param>
     /// <param name="maxSize">When the parser reaches the maximum number of chars it returns <see langword="True"/>. Defaults to 0, i.e. no maximum size.</param>
     public Parser<TextSpan> NoneOf(ReadOnlySpan<char> values, int minSize = 1, int maxSize = 0) => new ListOfChars(values, minSize, maxSize, negate: true);
+
+    /// <summary>
+    /// Builds a parser that matches a list of chars.
+    /// </summary>
+    /// <param name="values">The set of chars to match.</param>
+    /// <param name="minSize">The minimum number of matches required. Defaults to 1.</param>
+    /// <param name="maxSize">When the parser reaches the maximum number of matches it returns <see langword="True"/>. Defaults to 0, i.e. no maximum size.</param>
+    /// <remarks>
+    /// This overload exists so a factory compiled for .NET Framework or .NET Standard 2.0, where a <see cref="string"/>
+    /// doesn't convert to a <see cref="ReadOnlySpan{T}"/> implicitly, can pass a string literal.
+    /// </remarks>
+    public Parser<TextSpan> AnyOf(string values, int minSize = 1, int maxSize = 0) => new ListOfChars(values.AsSpan(), minSize, maxSize);
+
+    /// <summary>
+    /// Builds a parser that matches anything but a list of chars.
+    /// </summary>
+    /// <param name="values">The set of chars not to match.</param>
+    /// <param name="minSize">The minimum number of chars required. Defaults to 1.</param>
+    /// <param name="maxSize">When the parser reaches the maximum number of chars it returns <see langword="True"/>. Defaults to 0, i.e. no maximum size.</param>
+    /// <remarks>
+    /// This overload exists so a factory compiled for .NET Framework or .NET Standard 2.0, where a <see cref="string"/>
+    /// doesn't convert to a <see cref="ReadOnlySpan{T}"/> implicitly, can pass a string literal.
+    /// </remarks>
+    public Parser<TextSpan> NoneOf(string values, int minSize = 1, int maxSize = 0) => new ListOfChars(values.AsSpan(), minSize, maxSize, negate: true);
 #endif
 
     /// <summary>
@@ -334,31 +514,80 @@ public class TermBuilder
     /// <summary>
     /// Builds a parser that matches anything until whitespaces. This doesn't use the <see cref="ParseContext.WhiteSpaceParser"/>.
     /// </summary>
-    public Parser<TextSpan> NonWhiteSpace(bool includeNewLines = true) => Parsers.SkipWhiteSpace(new NonWhiteSpaceLiteral(includeNewLines: includeNewLines));
+    public Parser<TextSpan> NonWhiteSpace(bool includeNewLines = true) => SkipWhiteSpace(new NonWhiteSpaceLiteral(includeNewLines: includeNewLines));
 
     /// <summary>
     /// Builds a parser that matches the specified text.
     /// </summary>
-    public Parser<string> Text(string text, bool caseInsensitive = false, bool returnMatchedText = false) => Parsers.SkipWhiteSpace(new TextLiteral(text, caseInsensitive ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal, returnMatchedText: returnMatchedText));
+    public Parser<string> Text(string text, bool caseInsensitive = false, bool returnMatchedText = false) => SkipWhiteSpace(new TextLiteral(text, caseInsensitive ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal, returnMatchedText: returnMatchedText));
 
     /// <summary>
     /// Builds a parser that matches a keyword by ensuring the following character is not a letter.
     /// </summary>
-    public Parser<string> Keyword(string text, bool caseInsensitive = false, bool returnMatchedText = false) => Parsers.SkipWhiteSpace(new KeywordLiteral(text, caseInsensitive ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal, returnMatchedText: returnMatchedText));
+    public Parser<string> Keyword(string text, bool caseInsensitive = false, bool returnMatchedText = false) => SkipWhiteSpace(new KeywordLiteral(text, caseInsensitive ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal, returnMatchedText: returnMatchedText));
+
+    /// <summary>
+    /// Builds a parser that matches a keyword by ensuring the following character is not one of <paramref name="identifierPart"/>.
+    /// </summary>
+    /// <param name="text">The keyword.</param>
+    /// <param name="identifierPart">The chars that continue an identifier, e.g. <c>"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"</c>. They replace the default ASCII letters.</param>
+    /// <param name="caseInsensitive">Whether the text is matched ignoring case.</param>
+    /// <param name="returnMatchedText">Whether to return the input's text rather than <paramref name="text"/>.</param>
+    public Parser<string> Keyword(string text, ReadOnlySpan<char> identifierPart, bool caseInsensitive = false, bool returnMatchedText = false) => SkipWhiteSpace(new KeywordLiteral(text, identifierPart, caseInsensitive ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal, returnMatchedText: returnMatchedText));
+
+    /// <summary>
+    /// Builds a parser that matches a keyword by ensuring the following character is not one of <paramref name="identifierPart"/>.
+    /// </summary>
+    /// <param name="text">The keyword.</param>
+    /// <param name="identifierPart">The chars that continue an identifier, e.g. <c>"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"</c>. They replace the default ASCII letters.</param>
+    /// <param name="caseInsensitive">Whether the text is matched ignoring case.</param>
+    /// <param name="returnMatchedText">Whether to return the input's text rather than <paramref name="text"/>.</param>
+    /// <remarks>
+    /// This overload exists so a factory compiled for .NET Framework or .NET Standard 2.0, where a <see cref="string"/>
+    /// doesn't convert to a <see cref="ReadOnlySpan{T}"/> implicitly, can pass a string literal.
+    /// </remarks>
+    public Parser<string> Keyword(string text, string identifierPart, bool caseInsensitive = false, bool returnMatchedText = false) => SkipWhiteSpace(new KeywordLiteral(text, (identifierPart ?? throw new ArgumentNullException(nameof(identifierPart))).AsSpan(), caseInsensitive ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal, returnMatchedText: returnMatchedText));
 
     /// <summary>
     /// Builds a parser that matches the specified char.
     /// </summary>
-    public Parser<char> Char(char c) => Parsers.SkipWhiteSpace(new CharLiteral(c));
+    public Parser<char> Char(char c) => SkipWhiteSpace(new CharLiteral(c));
 
     /// <summary>
     /// Builds a parser that matches a number and returns any numeric type.
     /// </summary>
-    public Parser<T> Number<T>(NumberOptions numberOptions = NumberOptions.Number, char decimalSeparator = '.', char groupSeparator = ',', char secondDecimalSeparator = '\0')
+    public Parser<T> Number<T>(NumberOptions numberOptions = NumberOptions.Number, char decimalSeparator = '.', char groupSeparator = ',', char secondDecimalSeparator = NumberLiterals.NoSecondDecimalSeparator)
 #if NET8_0_OR_GREATER
         where T : INumber<T>
 #endif
-        => Parsers.SkipWhiteSpace(NumberLiterals.CreateNumberLiteralParser<T>(numberOptions, decimalSeparator, groupSeparator, secondDecimalSeparator));
+        => SkipWhiteSpace(NumberLiterals.CreateNumberLiteralParser<T>(numberOptions, decimalSeparator, groupSeparator, secondDecimalSeparator));
+
+    /// <summary>
+    /// Builds a parser that matches hexadecimal digits without a prefix and returns any integer type.
+    /// </summary>
+    public Parser<T> Hexadecimal<T>()
+#if NET8_0_OR_GREATER
+        where T : IBinaryInteger<T>
+#endif
+        => SkipWhiteSpace(NumberLiterals.CreateRadixNumberLiteralParser<T>(16));
+
+    /// <summary>
+    /// Builds a parser that matches octal digits without a prefix and returns any integer type.
+    /// </summary>
+    public Parser<T> Octal<T>()
+#if NET8_0_OR_GREATER
+        where T : IBinaryInteger<T>
+#endif
+        => SkipWhiteSpace(NumberLiterals.CreateRadixNumberLiteralParser<T>(8));
+
+    /// <summary>
+    /// Builds a parser that matches binary digits without a prefix and returns any integer type.
+    /// </summary>
+    public Parser<T> Binary<T>()
+#if NET8_0_OR_GREATER
+        where T : IBinaryInteger<T>
+#endif
+        => SkipWhiteSpace(NumberLiterals.CreateRadixNumberLiteralParser<T>(2));
 
     /// <summary>
     /// Builds a parser that matches an integer with an option leading sign.
@@ -385,7 +614,7 @@ public class TermBuilder
     /// <summary>
     /// Builds a parser that matches an quoted string that can be escaped.
     /// </summary>
-    public Parser<TextSpan> String(StringLiteralQuotes quotes = StringLiteralQuotes.SingleOrDouble, bool returnDecoded = true) => Parsers.SkipWhiteSpace(new StringLiteral(quotes, returnDecoded));
+    public Parser<TextSpan> String(StringLiteralQuotes quotes = StringLiteralQuotes.SingleOrDouble, bool returnDecoded = true) => SkipWhiteSpace(new StringLiteral(quotes, returnDecoded));
 
     /// <summary>
     /// Builds a parser that matches an identifier which can have a different starting value that the rest of its chars.
@@ -395,15 +624,15 @@ public class TermBuilder
 #if NET8_0_OR_GREATER
         if (extraStart == null && extraPart == null)
         {
-            return Parsers.SkipWhiteSpace(new IdentifierLiteral(Character._identifierStart, Character._identifierPart, Character._identifierStartChars));
+            return SkipWhiteSpace(new IdentifierLiteral(Character._identifierStart, Character._identifierPart, Character._identifierStartChars));
         }
         else
         {
             // IdentifierLiteral doesn't support the Func<,> overload
-            return Parsers.SkipWhiteSpace(new Identifier(extraStart, extraPart));
+            return SkipWhiteSpace(new Identifier(extraStart, extraPart));
         }
 #else
-        return Parsers.SkipWhiteSpace(new Identifier(extraStart, extraPart));
+        return SkipWhiteSpace(new Identifier(extraStart, extraPart));
 #endif
     }
 
@@ -411,12 +640,12 @@ public class TermBuilder
     /// <summary>
     /// Builds a parser that matches an identifier which can have a different starting value that the rest of its chars.
     /// </summary>
-    public Parser<TextSpan> Identifier(SearchValues<char> identifierStart, SearchValues<char> identifierPart) => Parsers.SkipWhiteSpace(new IdentifierLiteral(identifierStart, identifierPart));
+    public Parser<TextSpan> Identifier(SearchValues<char> identifierStart, SearchValues<char> identifierPart) => SkipWhiteSpace(new IdentifierLiteral(identifierStart, identifierPart));
 
     /// <summary>
     /// Builds a parser that matches an identifier which can have a different starting value that the rest of its chars.
     /// </summary>
-    public Parser<TextSpan> Identifier(ReadOnlySpan<char> identifierStart, ReadOnlySpan<char> identifierPart) => Parsers.SkipWhiteSpace(new IdentifierLiteral(SearchValues.Create(identifierStart), SearchValues.Create(identifierPart), identifierStart.ToArray()));
+    public Parser<TextSpan> Identifier(ReadOnlySpan<char> identifierStart, ReadOnlySpan<char> identifierPart) => SkipWhiteSpace(new IdentifierLiteral(SearchValues.Create(identifierStart), SearchValues.Create(identifierPart), identifierStart.ToArray()));
 
 #endif
 
@@ -426,7 +655,14 @@ public class TermBuilder
     /// <param name="predicate">The predicate to match against each char.</param>
     /// <param name="minSize">The minimum number of matches required. Defaults to 1.</param>
     /// <param name="maxSize">When the parser reaches the maximum number of matches it returns <see langword="True"/>. Defaults to 0, i.e. no maximum size.</param>
-    public Parser<TextSpan> Pattern(Func<char, bool> predicate, int minSize = 1, int maxSize = 0) => Parsers.SkipWhiteSpace(new PatternLiteral(predicate, minSize, maxSize));
+    public Parser<TextSpan> Pattern(Func<char, bool> predicate, int minSize = 1, int maxSize = 0) => SkipWhiteSpace(new PatternLiteral(predicate, minSize, maxSize));
+
+    /// <summary>
+    /// Builds a parser that matches the token found by a function scanning the remaining text.
+    /// </summary>
+    /// <param name="scanner">The function that returns the length of the token at the start of a span, <c>0</c> when there is none. See <see cref="SpanScanner"/>.</param>
+    /// <param name="startChars">The chars a token can start with, used to skip the parser in choices. Empty when unknown.</param>
+    public Parser<TextSpan> Scan(SpanScanner scanner, ReadOnlySpan<char> startChars = default) => SkipWhiteSpace(new SpanScannerLiteral(scanner, startChars));
 
 #if NET8_0_OR_GREATER
     /// <summary>
@@ -435,7 +671,7 @@ public class TermBuilder
     /// <param name="searchValues">The <see cref="SearchValues{T}"/> instance to match against each char.</param>
     /// <param name="minSize">The minimum number of matches required. Defaults to 1.</param>
     /// <param name="maxSize">When the parser reaches the maximum number of matches it returns <see langword="True"/>. Defaults to 0, i.e. no maximum size.</param>
-    public Parser<TextSpan> AnyOf(SearchValues<char> searchValues, int minSize = 1, int maxSize = 0) => Parsers.SkipWhiteSpace(new SearchValuesCharLiteral(searchValues, minSize, maxSize));
+    public Parser<TextSpan> AnyOf(SearchValues<char> searchValues, int minSize = 1, int maxSize = 0) => SkipWhiteSpace(new SearchValuesCharLiteral(searchValues, minSize, maxSize));
 
     /// <summary>
     /// Builds a parser that matches a list of chars.
@@ -443,7 +679,7 @@ public class TermBuilder
     /// <param name="values">The set of char to match.</param>
     /// <param name="minSize">The minimum number of matches required. Defaults to 1.</param>
     /// <param name="maxSize">When the parser reaches the maximum number of matches it returns <see langword="True"/>. Defaults to 0, i.e. no maximum size.</param>
-    public Parser<TextSpan> AnyOf(ReadOnlySpan<char> values, int minSize = 1, int maxSize = 0) => Parsers.SkipWhiteSpace(new SearchValuesCharLiteral(values, minSize, maxSize));
+    public Parser<TextSpan> AnyOf(ReadOnlySpan<char> values, int minSize = 1, int maxSize = 0) => SkipWhiteSpace(new SearchValuesCharLiteral(values, minSize, maxSize));
 
     /// <summary>
     /// Builds a parser that matches anything but a list of chars.
@@ -451,7 +687,7 @@ public class TermBuilder
     /// <param name="searchValues">The <see cref="SearchValues{T}"/> instance to ignore against each char.</param>
     /// <param name="minSize">The minimum number of chars required. Defaults to 1.</param>
     /// <param name="maxSize">When the parser reaches the maximum number of chars it returns <see langword="True"/>. Defaults to 0, i.e. no maximum size.</param>
-    public Parser<TextSpan> NoneOf(SearchValues<char> searchValues, int minSize = 1, int maxSize = 0) => Parsers.SkipWhiteSpace(new SearchValuesCharLiteral(searchValues, minSize, maxSize, negate: true));
+    public Parser<TextSpan> NoneOf(SearchValues<char> searchValues, int minSize = 1, int maxSize = 0) => SkipWhiteSpace(new SearchValuesCharLiteral(searchValues, minSize, maxSize, negate: true));
 
     /// <summary>
     /// Builds a parser that matches anything but a list of chars.
@@ -459,7 +695,31 @@ public class TermBuilder
     /// <param name="values">The set of chars not to match.</param>
     /// <param name="minSize">The minimum number of chars required. Defaults to 1.</param>
     /// <param name="maxSize">When the parser reaches the maximum number of chars it returns <see langword="True"/>. Defaults to 0, i.e. no maximum size.</param>
-    public Parser<TextSpan> NoneOf(ReadOnlySpan<char> values, int minSize = 1, int maxSize = 0) => Parsers.SkipWhiteSpace(new SearchValuesCharLiteral(values, minSize, maxSize, negate: true));
+    public Parser<TextSpan> NoneOf(ReadOnlySpan<char> values, int minSize = 1, int maxSize = 0) => SkipWhiteSpace(new SearchValuesCharLiteral(values, minSize, maxSize, negate: true));
+
+    /// <summary>
+    /// Builds a parser that matches a list of chars.
+    /// </summary>
+    /// <param name="values">The set of chars to match.</param>
+    /// <param name="minSize">The minimum number of matches required. Defaults to 1.</param>
+    /// <param name="maxSize">When the parser reaches the maximum number of matches it returns <see langword="True"/>. Defaults to 0, i.e. no maximum size.</param>
+    /// <remarks>
+    /// This overload exists so a factory compiled for .NET Framework or .NET Standard 2.0, where a <see cref="string"/>
+    /// doesn't convert to a <see cref="ReadOnlySpan{T}"/> implicitly, can pass a string literal.
+    /// </remarks>
+    public Parser<TextSpan> AnyOf(string values, int minSize = 1, int maxSize = 0) => SkipWhiteSpace(new SearchValuesCharLiteral(values.AsSpan(), minSize, maxSize));
+
+    /// <summary>
+    /// Builds a parser that matches anything but a list of chars.
+    /// </summary>
+    /// <param name="values">The set of chars not to match.</param>
+    /// <param name="minSize">The minimum number of chars required. Defaults to 1.</param>
+    /// <param name="maxSize">When the parser reaches the maximum number of chars it returns <see langword="True"/>. Defaults to 0, i.e. no maximum size.</param>
+    /// <remarks>
+    /// This overload exists so a factory compiled for .NET Framework or .NET Standard 2.0, where a <see cref="string"/>
+    /// doesn't convert to a <see cref="ReadOnlySpan{T}"/> implicitly, can pass a string literal.
+    /// </remarks>
+    public Parser<TextSpan> NoneOf(string values, int minSize = 1, int maxSize = 0) => SkipWhiteSpace(new SearchValuesCharLiteral(values.AsSpan(), minSize, maxSize, negate: true));
 #else
     /// <summary>
     /// Builds a parser that matches a list of chars.
@@ -467,7 +727,7 @@ public class TermBuilder
     /// <param name="values">The set of char to match.</param>
     /// <param name="minSize">The minimum number of matches required. Defaults to 1.</param>
     /// <param name="maxSize">When the parser reaches the maximum number of matches it returns <see langword="True"/>. Defaults to 0, i.e. no maximum size.</param>
-    public Parser<TextSpan> AnyOf(ReadOnlySpan<char> values, int minSize = 1, int maxSize = 0) => Parsers.SkipWhiteSpace(new ListOfChars(values, minSize, maxSize));
+    public Parser<TextSpan> AnyOf(ReadOnlySpan<char> values, int minSize = 1, int maxSize = 0) => SkipWhiteSpace(new ListOfChars(values, minSize, maxSize));
 
     /// <summary>
     /// Builds a parser that matches anything but a list of chars.
@@ -475,7 +735,31 @@ public class TermBuilder
     /// <param name="values">The set of chars not to match.</param>
     /// <param name="minSize">The minimum number of required chars. Defaults to 1.</param>
     /// <param name="maxSize">When the parser reaches the maximum number of chars it returns <see langword="True"/>. Defaults to 0, i.e. no maximum size.</param>
-    public Parser<TextSpan> NoneOf(ReadOnlySpan<char> values, int minSize = 1, int maxSize = 0) => Parsers.SkipWhiteSpace(new ListOfChars(values, minSize, maxSize, negate: true));
+    public Parser<TextSpan> NoneOf(ReadOnlySpan<char> values, int minSize = 1, int maxSize = 0) => SkipWhiteSpace(new ListOfChars(values, minSize, maxSize, negate: true));
+
+    /// <summary>
+    /// Builds a parser that matches a list of chars.
+    /// </summary>
+    /// <param name="values">The set of chars to match.</param>
+    /// <param name="minSize">The minimum number of matches required. Defaults to 1.</param>
+    /// <param name="maxSize">When the parser reaches the maximum number of matches it returns <see langword="True"/>. Defaults to 0, i.e. no maximum size.</param>
+    /// <remarks>
+    /// This overload exists so a factory compiled for .NET Framework or .NET Standard 2.0, where a <see cref="string"/>
+    /// doesn't convert to a <see cref="ReadOnlySpan{T}"/> implicitly, can pass a string literal.
+    /// </remarks>
+    public Parser<TextSpan> AnyOf(string values, int minSize = 1, int maxSize = 0) => SkipWhiteSpace(new ListOfChars(values.AsSpan(), minSize, maxSize));
+
+    /// <summary>
+    /// Builds a parser that matches anything but a list of chars.
+    /// </summary>
+    /// <param name="values">The set of chars not to match.</param>
+    /// <param name="minSize">The minimum number of chars required. Defaults to 1.</param>
+    /// <param name="maxSize">When the parser reaches the maximum number of chars it returns <see langword="True"/>. Defaults to 0, i.e. no maximum size.</param>
+    /// <remarks>
+    /// This overload exists so a factory compiled for .NET Framework or .NET Standard 2.0, where a <see cref="string"/>
+    /// doesn't convert to a <see cref="ReadOnlySpan{T}"/> implicitly, can pass a string literal.
+    /// </remarks>
+    public Parser<TextSpan> NoneOf(string values, int minSize = 1, int maxSize = 0) => SkipWhiteSpace(new ListOfChars(values.AsSpan(), minSize, maxSize, negate: true));
 #endif
 
     /// <summary>

@@ -1,43 +1,47 @@
 using Parlot.SourceGeneration;
 using System;
+using System.Collections.Generic;
 
 namespace Parlot.Fluent;
 
-public sealed class ZeroOrOne<T> : Parser<T>, ISourceable
+/// <summary>
+/// Returns a list containing zero or one result from the inner parser.
+/// </summary>
+public sealed class ZeroOrOne<T> : Parser<IReadOnlyList<T>>, ISourceable
 {
     private readonly Parser<T> _parser;
-    private readonly T _defaultValue;
 
-    public ZeroOrOne(Parser<T> parser, T defaultValue)
+    public ZeroOrOne(Parser<T> parser)
     {
         _parser = parser ?? throw new ArgumentNullException(nameof(parser));
-        _defaultValue = defaultValue;
     }
 
-    public override bool Parse(ParseContext context, ref ParseResult<T> result)
+    public override bool Parse(ParseContext context, ref ParseResult<IReadOnlyList<T>> result)
     {
         context.EnterParser(this);
 
         var parsed = new ParseResult<T>();
 
+        // The text is read again when the parser fails
+        var pin = context.Pin();
         var success = _parser.Parse(context, ref parsed);
+        context.Unpin(pin);
 
         if (success)
         {
-            result.Set(parsed.Start, parsed.End, parsed.Value);
+            result.Set(parsed.Start, parsed.End, [parsed.Value]);
         }
         else
         {
             // Nothing was read: the result is empty at the current position
             var offset = context.Scanner.Cursor.Offset;
-            result.Set(offset, offset, _defaultValue);
+            result.Set(offset, offset, Array.Empty<T>());
         }
 
         // ZeroOrOne always succeeds
         context.ExitParser(this);
         return true;
     }
-
 
     public SourceResult GenerateSource(SourceGenerationContext context)
     {
@@ -48,54 +52,33 @@ public sealed class ZeroOrOne<T> : Parser<T>, ISourceable
             throw new NotSupportedException("ZeroOrOne requires a source-generatable parser.");
         }
 
-        var defaultValueExpr = _defaultValue == null ? "default" : SourceGenerationContext.GetTypeName(typeof(T)) + ".Parse(\"" + _defaultValue?.ToString() + "\")";
-        if (_defaultValue == null || _defaultValue.Equals(default(T)))
-        {
-            defaultValueExpr = "default";
-        }
-        else if (typeof(T) == typeof(string))
-        {
-            defaultValueExpr = "\"" + _defaultValue?.ToString()?.Replace("\"", "\\\"") + "\"";
-        }
-        else if (typeof(T).IsPrimitive || typeof(T) == typeof(decimal))
-        {
-            defaultValueExpr = _defaultValue?.ToString() ?? "default";
-        }
-
-        var result = context.CreateResult(typeof(T), defaultSuccess: true, defaultValueExpression: defaultValueExpr);
-
-        static Type GetParserValueType(object parser)
-        {
-            var type = parser.GetType();
-            while (type != null)
-            {
-                if (type.IsGenericType && type.GetGenericTypeDefinition().FullName == "Parlot.Fluent.Parser`1")
-                {
-                    return type.GetGenericArguments()[0];
-                }
-                type = type.BaseType!;
-            }
-            throw new InvalidOperationException("Unable to determine parser value type.");
-        }
-
-        var valueTypeName = SourceGenerationContext.GetTypeName(GetParserValueType(sourceable));
+        var elementTypeName = SourceGenerationContext.GetTypeName(typeof(T));
+        var result = context.CreateResult(typeof(IReadOnlyList<T>), defaultSuccess: true,
+            defaultValueExpression: $"global::System.Array.Empty<{elementTypeName}>()");
         var helperName = context.Helpers
-            .GetOrCreate(sourceable, $"{context.MethodNamePrefix}_ZeroOrOne_Parser", valueTypeName, () => sourceable.GenerateSource(context))
+            .GetOrCreate(sourceable, $"{context.MethodNamePrefix}_ZeroOrOne_Parser", elementTypeName, () => sourceable.GenerateSource(context))
             .MethodName;
 
         if (context.DiscardResult)
         {
-            result.Body.Add($"{helperName}({context.ParseContextName}, out _);");
+            var call = $"{helperName}({context.ParseContextName}, out _)";
+            if (context.PinnedCall(result, call) == call)
+            {
+                result.Body.Add($"{call};");
+            }
         }
         else
         {
-            result.Body.Add($"if ({helperName}({context.ParseContextName}, out {result.ValueVariable}))");
+            var itemValueName = $"itemValue{context.NextNumber()}";
+            var success = context.PinnedCall(result, $"{helperName}({context.ParseContextName}, out var {itemValueName})");
+            result.Body.Add($"if ({success})");
             result.Body.Add("{");
-            result.Body.Add($"    // Value already assigned via out parameter");
+            result.Body.Add($"    {result.ValueVariable} = new {elementTypeName}[] {{ {itemValueName} }};");
             result.Body.Add("}");
         }
 
         return result;
     }
+
     public override string ToString() => $"{_parser}?";
 }

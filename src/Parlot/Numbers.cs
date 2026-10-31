@@ -1,129 +1,270 @@
 using System;
-using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Numerics;
-using System.Linq;
-using System.Reflection;
 using System.Runtime.CompilerServices;
+#if NET8_0_OR_GREATER
+using System.Diagnostics.CodeAnalysis;
+#endif
 
 namespace Parlot;
 
 /// <summary>
 /// Centralized numeric parsing helpers used by number literals and source generation.
 /// </summary>
-public static class Numbers
+public static partial class Numbers
 {
+    /// <summary>
+    /// Parses digits in the specified radix.
+    /// </summary>
+    public static bool TryParseRadix(ReadOnlySpan<char> span, int radix, out int charsRead, out byte value)
+    {
+        var success = TryParseUnsignedRadix(span, radix, byte.MaxValue, out charsRead, out var parsed);
+        value = (byte)parsed;
+        return success;
+    }
+
+    /// <summary>
+    /// Parses digits in the specified radix.
+    /// </summary>
+    public static bool TryParseRadix(ReadOnlySpan<char> span, int radix, out int charsRead, out sbyte value)
+    {
+        var success = TryParseUnsignedRadix(span, radix, (ulong)sbyte.MaxValue, out charsRead, out var parsed);
+        value = (sbyte)parsed;
+        return success;
+    }
+
+    /// <summary>
+    /// Parses digits in the specified radix.
+    /// </summary>
+    public static bool TryParseRadix(ReadOnlySpan<char> span, int radix, out int charsRead, out short value)
+    {
+        var success = TryParseUnsignedRadix(span, radix, (ulong)short.MaxValue, out charsRead, out var parsed);
+        value = (short)parsed;
+        return success;
+    }
+
+    /// <summary>
+    /// Parses digits in the specified radix.
+    /// </summary>
+    public static bool TryParseRadix(ReadOnlySpan<char> span, int radix, out int charsRead, out ushort value)
+    {
+        var success = TryParseUnsignedRadix(span, radix, ushort.MaxValue, out charsRead, out var parsed);
+        value = (ushort)parsed;
+        return success;
+    }
+
+    /// <summary>
+    /// Parses digits in the specified radix.
+    /// </summary>
+    public static bool TryParseRadix(ReadOnlySpan<char> span, int radix, out int charsRead, out int value)
+    {
+        var success = TryParseUnsignedRadix(span, radix, int.MaxValue, out charsRead, out var parsed);
+        value = (int)parsed;
+        return success;
+    }
+
+    /// <summary>
+    /// Parses digits in the specified radix.
+    /// </summary>
+    public static bool TryParseRadix(ReadOnlySpan<char> span, int radix, out int charsRead, out uint value)
+    {
+        var success = TryParseUnsignedRadix(span, radix, uint.MaxValue, out charsRead, out var parsed);
+        value = (uint)parsed;
+        return success;
+    }
+
+    /// <summary>
+    /// Parses digits in the specified radix.
+    /// </summary>
+    public static bool TryParseRadix(ReadOnlySpan<char> span, int radix, out int charsRead, out long value)
+    {
+        var success = TryParseUnsignedRadix(span, radix, long.MaxValue, out charsRead, out var parsed);
+        value = (long)parsed;
+        return success;
+    }
+
+    /// <summary>
+    /// Parses digits in the specified radix.
+    /// </summary>
+    public static bool TryParseRadix(ReadOnlySpan<char> span, int radix, out int charsRead, out ulong value)
+    {
+        return TryParseUnsignedRadix(span, radix, ulong.MaxValue, out charsRead, out value);
+    }
+
+    /// <summary>
+    /// Parses digits in the specified radix.
+    /// </summary>
+    public static bool TryParseRadix(ReadOnlySpan<char> span, int radix, out int charsRead, out BigInteger value)
+    {
+        value = BigInteger.Zero;
+        charsRead = 0;
+
+        if (!IsValidRadix(radix))
+        {
+            return false;
+        }
+
+        while (charsRead < span.Length && TryGetDigit(span[charsRead], radix, out var digit))
+        {
+            value = (value * radix) + digit;
+            charsRead++;
+        }
+
+        return charsRead > 0;
+    }
+
+#if NET8_0_OR_GREATER
+    /// <summary>
+    /// Parses digits in the specified radix.
+    /// </summary>
+    public static bool TryParseRadix<TNumber>(ReadOnlySpan<char> span, int radix, out int charsRead, [MaybeNullWhen(false)] out TNumber value)
+        where TNumber : IBinaryInteger<TNumber>
+    {
+        value = TNumber.Zero;
+        charsRead = 0;
+
+        if (!IsValidRadix(radix))
+        {
+            return false;
+        }
+
+        var radixValue = TNumber.CreateTruncating(radix);
+
+        // An overflowing literal fails without an exception: the value is compared with the largest one a
+        // digit can still be appended to, like TryParseUnsignedRadix does with its 64-bit guard.
+        var limit = RadixLimits<TNumber>.Limits[radix];
+        var lastDigit = RadixLimits<TNumber>.LastDigits[radix];
+        var bounded = RadixLimits<TNumber>.Bounded;
+
+        while (charsRead < span.Length && TryGetDigit(span[charsRead], radix, out var digit))
+        {
+            if (bounded && (value > limit || (value == limit && digit > lastDigit)))
+            {
+                value = default;
+                charsRead = 0;
+                return false;
+            }
+
+            value = (value * radixValue) + TNumber.CreateTruncating(digit);
+            charsRead++;
+        }
+
+        return charsRead > 0;
+    }
+
+    /// <summary>
+    /// The largest value of <typeparamref name="TNumber"/> and, per radix, the largest value a digit can be
+    /// appended to and the largest digit that can be appended to it.
+    /// </summary>
+    private static class RadixLimits<TNumber> where TNumber : IBinaryInteger<TNumber>
+    {
+        public static readonly TNumber[] Limits = new TNumber[17];
+        public static readonly int[] LastDigits = new int[17];
+
+        // False for a type without a largest value, like BigInteger, which can't overflow
+        public static readonly bool Bounded;
+
+        static RadixLimits()
+        {
+            // All bits set is the largest value of an unsigned type and -1 for a signed one, whose largest value
+            // is all the bits but the sign one.
+            var max = TNumber.AllBitsSet;
+
+            if (TNumber.IsNegative(max))
+            {
+                max >>>= 1;
+            }
+
+            // A fixed-size type wraps past its largest value, an arbitrary-precision one doesn't (and its unsigned
+            // shift of -1 is not its largest value either)
+            Bounded = max + TNumber.One < max;
+
+            if (!Bounded)
+            {
+                return;
+            }
+
+            for (var radix = 2; radix <= 16; radix++)
+            {
+                var radixValue = TNumber.CreateTruncating(radix);
+                var limit = max / radixValue;
+
+                Limits[radix] = limit;
+                LastDigits[radix] = int.CreateTruncating(max - (limit * radixValue));
+            }
+        }
+    }
+#endif
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool TryParse(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider provider, out byte value)
     {
-#if NET6_0_OR_GREATER
         return byte.TryParse(s, style, provider, out value);
-#else
-        return byte.TryParse(s.ToString(), style, provider, out value);
-#endif
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool TryParse(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider provider, out sbyte value)
     {
-#if NET6_0_OR_GREATER
         return sbyte.TryParse(s, style, provider, out value);
-#else
-        return sbyte.TryParse(s.ToString(), style, provider, out value);
-#endif
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool TryParse(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider provider, out short value)
     {
-#if NET6_0_OR_GREATER
         return short.TryParse(s, style, provider, out value);
-#else
-        return short.TryParse(s.ToString(), style, provider, out value);
-#endif
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool TryParse(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider provider, out ushort value)
     {
-#if NET6_0_OR_GREATER
         return ushort.TryParse(s, style, provider, out value);
-#else
-        return ushort.TryParse(s.ToString(), style, provider, out value);
-#endif
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool TryParse(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider provider, out int value)
     {
-#if NET6_0_OR_GREATER
         return int.TryParse(s, style, provider, out value);
-#else
-        return int.TryParse(s.ToString(), style, provider, out value);
-#endif
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool TryParse(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider provider, out uint value)
     {
-#if NET6_0_OR_GREATER
         return uint.TryParse(s, style, provider, out value);
-#else
-        return uint.TryParse(s.ToString(), style, provider, out value);
-#endif
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool TryParse(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider provider, out long value)
     {
-#if NET6_0_OR_GREATER
         return long.TryParse(s, style, provider, out value);
-#else
-        return long.TryParse(s.ToString(), style, provider, out value);
-#endif
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool TryParse(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider provider, out ulong value)
     {
-#if NET6_0_OR_GREATER
         return ulong.TryParse(s, style, provider, out value);
-#else
-        return ulong.TryParse(s.ToString(), style, provider, out value);
-#endif
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool TryParse(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider provider, out float value)
     {
-#if NET6_0_OR_GREATER
         return float.TryParse(s, style, provider, out value);
-#else
-        return float.TryParse(s.ToString(), style, provider, out value);
-#endif
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool TryParse(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider provider, out double value)
     {
-#if NET6_0_OR_GREATER
         return double.TryParse(s, style, provider, out value);
-#else
-        return double.TryParse(s.ToString(), style, provider, out value);
-#endif
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool TryParse(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider provider, out decimal value)
     {
-#if NET6_0_OR_GREATER
         return decimal.TryParse(s, style, provider, out value);
-#else
-        return decimal.TryParse(s.ToString(), style, provider, out value);
-#endif
     }
 
-#if NET6_0_OR_GREATER
+// System.Half arrived in .NET 5; net472 and netstandard2.0 lack the type, so this overload
+// cannot exist there at all. A missing type is not polyfillable, unlike a missing member.
+#if NET8_0_OR_GREATER
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool TryParse(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider provider, out Half value)
     {
@@ -134,14 +275,12 @@ public static class Numbers
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool TryParse(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider provider, out BigInteger value)
     {
-#if NET6_0_OR_GREATER
         return BigInteger.TryParse(s, style, provider, out value);
-#else
-        return BigInteger.TryParse(s.ToString(), style, provider, out value);
-#endif
     }
 
-#if NET7_0_OR_GREATER // INumber<T> arrives in net7
+// INumber<T> arrived in .NET 7; net472 and netstandard2.0 lack the type entirely,
+// so this whole generic lane is modern-only and cannot be polyfilled.
+#if NET8_0_OR_GREATER
         /// <summary>
         /// Parses a number, using a fast path for plain sequences of digits.
         /// </summary>
@@ -149,7 +288,8 @@ public static class Numbers
         public static bool TryParseNumber<TNumber>(ReadOnlySpan<char> span, NumberStyles styles, IFormatProvider provider, [MaybeNullWhen(false)] out TNumber value)
                 where TNumber : INumber<TNumber>
         {
-                if ((uint)(span.Length - 1) < MaxFastDigits)
+                // The digits are only decimal ones without a hex or binary style
+                if ((styles & (NumberStyles.AllowHexSpecifier | NumberStyles.AllowBinarySpecifier)) == 0 && (uint)(span.Length - 1) < MaxFastDigits)
                 {
                         long parsed = 0;
 
@@ -179,80 +319,60 @@ public static class Numbers
 
         // long.MaxValue has 19 digits, so every number with at most 18 digits fits.
         private const int MaxFastDigits = 18;
+#endif
 
-        private delegate bool TryParseSpanWithStyles<TNumber>(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider provider, out TNumber value);
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static bool TryParse<TNumber>(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider provider, out TNumber value)
-                where TNumber : System.Numerics.INumber<TNumber>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool TryGetDigit(char c, int radix, out int digit)
+    {
+        if ((uint)(c - '0') <= 9)
         {
-                // Prefer a TryParse overload that accepts NumberStyles if available to honor number options.
-                var withStyles = TryParseDelegate<TNumber>.WithStyles;
-                if (withStyles is not null)
-                {
-                        return withStyles(s, style, provider, out value);
-                }
-
-                // Fallback to INumberBase.TryParse(ReadOnlySpan<char>, IFormatProvider?, out TNumber)
-        #pragma warning disable CS8601 // Possible null reference assignment.
-                return TNumber.TryParse(s, provider, out value);
-        #pragma warning restore CS8601
+            digit = c - '0';
+        }
+        else if ((uint)(c - 'A') <= 5)
+        {
+            digit = c - 'A' + 10;
+        }
+        else if ((uint)(c - 'a') <= 5)
+        {
+            digit = c - 'a' + 10;
+        }
+        else
+        {
+            digit = 0;
+            return false;
         }
 
-        private static class TryParseDelegate<TNumber>
+        return digit < radix;
+    }
+
+    private static bool TryParseUnsignedRadix(ReadOnlySpan<char> span, int radix, ulong maxValue, out int charsRead, out ulong value)
+    {
+        value = 0;
+        charsRead = 0;
+
+        if (!IsValidRadix(radix))
         {
-                public static readonly TryParseSpanWithStyles<TNumber>? WithStyles = CreateWithStyles();
-
-                [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2090", Justification = "When the TryParse overload is trimmed away, the INumberBase<TNumber>.TryParse fallback is used.")]
-                private static TryParseSpanWithStyles<TNumber>? CreateWithStyles()
-                {
-                        var method = typeof(TNumber).GetMethod(
-                                "TryParse",
-                                BindingFlags.Public | BindingFlags.Static,
-                                binder: null,
-                                types: new[] { typeof(ReadOnlySpan<char>), typeof(NumberStyles), typeof(IFormatProvider), typeof(TNumber).MakeByRefType() },
-                                modifiers: null);
-
-                        return method is null
-                                ? null
-                                : method.CreateDelegate<TryParseSpanWithStyles<TNumber>>();
-                }
-        }
-#endif
-
-#if !AOT_COMPILATION
-        /// <summary>
-        /// Gets the Numbers.TryParse method for a specific numeric type.
-        /// </summary>
-        internal static MethodInfo GetTryParseMethod(Type type)
-        {
-                MethodInfo? method = typeof(Numbers).GetMethod(
-                        nameof(TryParse),
-                        BindingFlags.Public | BindingFlags.Static,
-                        binder: null,
-                        types: new[] { typeof(ReadOnlySpan<char>), typeof(NumberStyles), typeof(IFormatProvider), type.MakeByRefType() },
-                        modifiers: null);
-
-#if NET7_0_OR_GREATER
-                if (method is null && ImplementsINumber(type))
-                {
-                        method = _genericTryParseMethod?.MakeGenericMethod(type);
-                }
-#endif
-
-                return method ?? throw new NotSupportedException($"Numbers.TryParse is not available for type '{type}'.");
+            return false;
         }
 
-        internal static MethodInfo GetTryParseMethod<T>()
-                => GetTryParseMethod(typeof(T));
+        var unsignedRadix = (uint)radix;
 
-#if NET7_0_OR_GREATER
-        private static readonly MethodInfo? _genericTryParseMethod = typeof(Numbers)
-                .GetMethods(BindingFlags.Public | BindingFlags.Static)
-                .FirstOrDefault(m => m.IsGenericMethodDefinition && m.Name == nameof(TryParse) && m.GetParameters().Length == 4);
+        while (charsRead < span.Length && TryGetDigit(span[charsRead], radix, out var digit))
+        {
+            if (value > (maxValue - (uint)digit) / unsignedRadix)
+            {
+                value = default;
+                charsRead = 0;
+                return false;
+            }
 
-        private static bool ImplementsINumber(Type type)
-                => type.GetInterfaces().Any(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(INumber<>));
-#endif
-#endif
+            value = (value * unsignedRadix) + (uint)digit;
+            charsRead++;
+        }
+
+        return charsRead > 0;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool IsValidRadix(int radix) => (uint)(radix - 2) <= 14;
 }

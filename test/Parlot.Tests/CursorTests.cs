@@ -18,6 +18,35 @@ public class CursorTests
     }
 
     [Fact]
+    public void ShouldStartAtGivenPosition()
+    {
+        var c = new Cursor("ab\ncd", new TextPosition(3, 7, 1));
+
+        Assert.Equal(3, c.Offset);
+        Assert.Equal('c', c.Current);
+        Assert.False(c.Eof);
+        Assert.Equal(7, c.Position.Line);
+        Assert.Equal(1, c.Position.Column);
+
+        c.Advance();
+
+        Assert.Equal(new TextPosition(4, 7, 2).ToString(), c.Position.ToString());
+        Assert.Equal(4, c.Position.Offset);
+        Assert.Equal('d', c.Current);
+    }
+
+    [Fact]
+    public void ShouldStartAtEndPosition()
+    {
+        var c = new Cursor("ab", new TextPosition(2, 1, 3));
+
+        Assert.True(c.Eof);
+        Assert.Equal(Cursor.NullChar, c.Current);
+        Assert.Equal(2, c.Offset);
+        Assert.Throws<ArgumentOutOfRangeException>(() => new Cursor("ab", new TextPosition(3, 1, 1)));
+    }
+
+    [Fact]
     public void ShouldMatchEmptyString()
     {
         var c = new Cursor("Lorem ipsum", TextPosition.Start);
@@ -345,7 +374,7 @@ public class CursorTests
         Assert.Equal(0, t2.Length);
         Assert.Equal(0, t2.Offset);
 
-#if NET6_0_OR_GREATER
+#if NET8_0_OR_GREATER
         Assert.True(ReadOnlySpan<char>.Empty == t2.Span);
 #endif
     }
@@ -426,6 +455,41 @@ public class CursorTests
                 cursor.Advance(count);
 
                 AssertPosition(ExpectedPosition(text, Math.Min(start + count, text.Length)), cursor);
+            }
+        }
+    }
+
+    [Theory]
+    [MemberData(nameof(LineTrackingInputs))]
+    public void AdvanceByShouldAgreeWithAdvance(string text)
+    {
+        for (var start = 0; start <= text.Length; start++)
+        {
+            for (var count = 0; count <= text.Length - start; count++)
+            {
+                var cursor = new Cursor(text);
+                cursor.Advance(start);
+
+                var consumed = text.AsSpan(start, count);
+                var newLines = 0;
+                var trailing = 0;
+
+                foreach (var c in consumed)
+                {
+                    if (c == '\n')
+                    {
+                        newLines++;
+                        trailing = 0;
+                    }
+                    else
+                    {
+                        trailing++;
+                    }
+                }
+
+                cursor.AdvanceBy(count, newLines, trailing);
+
+                AssertPosition(ExpectedPosition(text, start + count), cursor);
             }
         }
     }

@@ -1,6 +1,5 @@
 using Parlot.SourceGeneration;
 using System;
-using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 
 namespace Parlot.Fluent;
@@ -51,6 +50,9 @@ public sealed class Unary<T, TInput> : Parser<T>, ISourceable
     {
         context.EnterParser(this);
 
+        // The operators are tried from the same position
+        var pin = context.Pin();
+
         // Try each unary operator
         foreach (var (op, factory) in _operators)
         {
@@ -64,6 +66,8 @@ public sealed class Unary<T, TInput> : Parser<T>, ISourceable
                 {
                     continue;
                 }
+
+                context.Unpin(pin);
 
                 // Recursively parse the operand (which may have more unary operators)
                 if (Parse(context, ref result))
@@ -84,6 +88,8 @@ public sealed class Unary<T, TInput> : Parser<T>, ISourceable
         }
 
         // No operator matched, try the base parser
+        context.Unpin(pin);
+
         var success = _parser.Parse(context, ref result);
 
         context.ExitParser(this);
@@ -93,6 +99,12 @@ public sealed class Unary<T, TInput> : Parser<T>, ISourceable
     public SourceResult GenerateSource(SourceGenerationContext context)
     {
         ThrowHelper.ThrowIfNull(context, nameof(context));
+
+        // Recursive callbacks must receive the value produced by the inner operator.
+        if (context.DiscardResult)
+        {
+            return context.WithDiscardResult(false, () => GenerateSource(context));
+        }
 
         if (_parser is not ISourceable parserSourceable)
         {
@@ -105,26 +117,16 @@ public sealed class Unary<T, TInput> : Parser<T>, ISourceable
         var valueTypeName = SourceGenerationContext.GetTypeName(typeof(T));
 
         var operatorMatchedName = $"unaryOpMatched{context.NextNumber()}";
-        
+
         // Register this unary parser as a deferred method for recursive calls
         var helperMethodName = context.Deferred.GetOrCreateMethodName(this, "Unary");
 
         result.Body.Add($"bool {operatorMatchedName} = false;");
 
-        // Helper function to get parser value type
-        static Type GetParserValueType(object parser)
-        {
-            var type = parser.GetType();
-            while (type != null)
-            {
-                if (type.IsGenericType && type.GetGenericTypeDefinition().FullName == "Parlot.Fluent.Parser`1")
-                {
-                    return type.GetGenericArguments()[0];
-                }
-                type = type.BaseType!;
-            }
-            throw new InvalidOperationException("Unable to determine parser value type.");
-        }
+        var opValueTypeName = SourceGenerationContext.GetTypeName(typeof(TInput));
+
+        // The operators are tried from the same position
+        var pin = context.Pin(result);
 
         // Generate operator matching for each operator
         for (int i = 0; i < _operators.Length; i++)
@@ -140,10 +142,9 @@ public sealed class Unary<T, TInput> : Parser<T>, ISourceable
             var factoryFieldName = context.RegisterLambda(factory);
 
             // Register helper for the operator parser
-            var opValueTypeName = SourceGenerationContext.GetTypeName(GetParserValueType(opSourceable));
-            var opHelperName = context.Helpers
+            var opHelperName = context.WithDiscardResult(true, () => context.Helpers
                 .GetOrCreate(opSourceable, $"{context.MethodNamePrefix}_Unary", opValueTypeName, () => opSourceable.GenerateSource(context))
-                .MethodName;
+                .MethodName);
 
             var opResultName = $"opResult{context.NextNumber()}";
             var opPositionName = $"unaryPos{context.NextNumber()}";
@@ -152,6 +153,7 @@ public sealed class Unary<T, TInput> : Parser<T>, ISourceable
             if (i == 0)
             {
                 result.Body.Add($"{indent}var {opPositionName} = {cursorName}.Position;");
+                // An operator that didn't read anything is treated as no operator, like at runtime
                 result.Body.Add($"{indent}if ({opHelperName}({ctx}, out _) && {cursorName}.Offset != {opPositionName}.Offset)");
             }
             else
@@ -165,7 +167,8 @@ public sealed class Unary<T, TInput> : Parser<T>, ISourceable
             var innerIndent = i == 0 ? indent : $"{indent}    ";
             result.Body.Add($"{innerIndent}{{");
             result.Body.Add($"{innerIndent}    {operatorMatchedName} = true;");
-            
+            context.Unpin(result, pin, $"{innerIndent}    ");
+
             // Recursive call via helper method
             result.Body.Add($"{innerIndent}    if ({helperMethodName}({ctx}, out var {opResultName}RecursiveValue))");
             result.Body.Add($"{innerIndent}    {{");
@@ -194,6 +197,7 @@ public sealed class Unary<T, TInput> : Parser<T>, ISourceable
         // If no operator matched, try base parser using helper
         result.Body.Add($"if (!{operatorMatchedName})");
         result.Body.Add("{");
+        context.Unpin(result, pin, "    ");
 
         var baseHelperName = context.Helpers
             .GetOrCreate(parserSourceable, $"{context.MethodNamePrefix}_Unary", valueTypeName, () => parserSourceable.GenerateSource(context))
@@ -258,6 +262,9 @@ public sealed class UnaryWithContext<T, TInput> : Parser<T>, ISourceable
     {
         context.EnterParser(this);
 
+        // The operators are tried from the same position
+        var pin = context.Pin();
+
         foreach (var (op, factory) in _operators)
         {
             var operatorPosition = context.Scanner.Cursor.Position;
@@ -271,6 +278,8 @@ public sealed class UnaryWithContext<T, TInput> : Parser<T>, ISourceable
                 {
                     continue;
                 }
+
+                context.Unpin(pin);
 
                 if (Parse(context, ref result))
                 {
@@ -286,6 +295,8 @@ public sealed class UnaryWithContext<T, TInput> : Parser<T>, ISourceable
             }
         }
 
+        context.Unpin(pin);
+
         var success = _parser.Parse(context, ref result);
 
         context.ExitParser(this);
@@ -295,6 +306,11 @@ public sealed class UnaryWithContext<T, TInput> : Parser<T>, ISourceable
     public SourceResult GenerateSource(SourceGenerationContext context)
     {
         ThrowHelper.ThrowIfNull(context, nameof(context));
+
+        if (context.DiscardResult)
+        {
+            return context.WithDiscardResult(false, () => GenerateSource(context));
+        }
 
         if (_parser is not ISourceable parserSourceable)
         {
@@ -311,19 +327,10 @@ public sealed class UnaryWithContext<T, TInput> : Parser<T>, ISourceable
 
         result.Body.Add($"bool {operatorMatchedName} = false;");
 
-        static Type GetParserValueType(object parser)
-        {
-            var type = parser.GetType();
-            while (type != null)
-            {
-                if (type.IsGenericType && type.GetGenericTypeDefinition().FullName == "Parlot.Fluent.Parser`1")
-                {
-                    return type.GetGenericArguments()[0];
-                }
-                type = type.BaseType!;
-            }
-            throw new InvalidOperationException("Unable to determine parser value type.");
-        }
+        var opValueTypeName = SourceGenerationContext.GetTypeName(typeof(TInput));
+
+        // The operators are tried from the same position
+        var pin = context.Pin(result);
 
         for (int i = 0; i < _operators.Length; i++)
         {
@@ -336,10 +343,9 @@ public sealed class UnaryWithContext<T, TInput> : Parser<T>, ISourceable
 
             var factoryFieldName = context.RegisterLambda(factory);
 
-            var opValueTypeName = SourceGenerationContext.GetTypeName(GetParserValueType(opSourceable));
-            var opHelperName = context.Helpers
+            var opHelperName = context.WithDiscardResult(true, () => context.Helpers
                 .GetOrCreate(opSourceable, $"{context.MethodNamePrefix}_UnaryCtx", opValueTypeName, () => opSourceable.GenerateSource(context))
-                .MethodName;
+                .MethodName);
 
             var opResultName = $"opResult{context.NextNumber()}";
             var opPositionName = $"unaryPos{context.NextNumber()}";
@@ -348,6 +354,7 @@ public sealed class UnaryWithContext<T, TInput> : Parser<T>, ISourceable
             if (i == 0)
             {
                 result.Body.Add($"{indent}var {opPositionName} = {cursorName}.Position;");
+                // An operator that didn't read anything is treated as no operator, like at runtime
                 result.Body.Add($"{indent}if ({opHelperName}({ctx}, out _) && {cursorName}.Offset != {opPositionName}.Offset)");
             }
             else
@@ -361,6 +368,7 @@ public sealed class UnaryWithContext<T, TInput> : Parser<T>, ISourceable
             var innerIndent = i == 0 ? indent : $"{indent}    ";
             result.Body.Add($"{innerIndent}{{");
             result.Body.Add($"{innerIndent}    {operatorMatchedName} = true;");
+            context.Unpin(result, pin, $"{innerIndent}    ");
 
             result.Body.Add($"{innerIndent}    if ({helperMethodName}({ctx}, out var {opResultName}RecursiveValue))");
             result.Body.Add($"{innerIndent}    {{");
@@ -390,6 +398,7 @@ public sealed class UnaryWithContext<T, TInput> : Parser<T>, ISourceable
 
         result.Body.Add($"if (!{operatorMatchedName})");
         result.Body.Add("{");
+        context.Unpin(result, pin, "    ");
 
         var baseHelperName = context.Helpers
             .GetOrCreate(parserSourceable, $"{context.MethodNamePrefix}_UnaryCtx", valueTypeName, () => parserSourceable.GenerateSource(context))

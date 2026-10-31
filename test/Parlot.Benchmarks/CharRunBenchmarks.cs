@@ -62,14 +62,6 @@ public class CharRunBenchmarks
     [Benchmark]
     public TextSpan NonWhiteSpace() => Parse(_nonWhiteSpace);
 
-    [Benchmark]
-    public int ReadWhile()
-    {
-        _context.Scanner.Cursor.ResetPosition(TextPosition.Start);
-        _context.Scanner.ReadWhile(static c => c != ' ', out var result);
-        return result.Length;
-    }
-
     // The white space set without the new lines, the run can then contain some and the lines are tracked
     [Benchmark]
     public TextSpan NonWhiteSpaceNoNewLines() => Parse(_nonWhiteSpaceNoNewLines);

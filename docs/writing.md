@@ -68,22 +68,48 @@ In this case it is never necessary to invoke `ResetPosition` since as soon as a 
 
 > ✔️ DO: Create a unit test to ensure that the parser resets the position when it's failing.
 
+## Reading the text directly
+
+When parsing a stream, the parser runs on a window of the text which more text may follow (see [Parsing streams](streaming.md)).
+The `Cursor` methods record when a result depends on that text. A parser which reads `Cursor.Span` or `Cursor.Buffer` directly,
+and fails or stops because the text is too short without advancing to its end, must call `Cursor.MarkHitEnd()`. It does
+nothing when parsing a `string`.
+
+A parser which reads the cursor is a *token* of the compacting buffer, which replaces the window while parsing a stream.
+It must start with:
+
+```c#
+if (context.IsCompacting)
+{
+    return context.ParseToken(this, ref result);
+}
+```
+
+`Cursor.Offset` is then an absolute offset: don't index `Cursor.Buffer` with it, use `Cursor.Span`, `Cursor.GetSpan`
+and `Cursor.CreateSpan`. A parser which moves the cursor back to read the same text again, not only to report a failure,
+must keep that text buffered with `context.Pin()` and `context.Unpin(pin)`. Both cost a branch when parsing a `string`.
+
+> ✔️ DO: Test the parser with `Parse(TextReader)` over a reader returning one character at a time, with `BufferSize = 1`, and compare with `Parse(string)`.
+
 ## Moving the cursor
 
-`Cursor.Position` is the offset, the line and the column of the current char. The line starts at 1 and increases after
-each `'\n'`. The column starts at 1 on each line and counts every char other than `'\n'`, `'\r'` included: it is one
-more than the number of chars between the previous `'\n'` (or the start of the text) and the position. A position at
-the end of the text follows the same rule, so after `"ab\n"` the cursor is at line 2, column 1, and after `"ab\r"` at
-line 1, column 4.
+`Cursor.Position` is the absolute offset, the line and the column of the current char. The line starts at 1 and
+increases after each `'\n'`. The column starts at 1 on each line and counts every char other than `'\n'`, `'\r'` included:
+it is one more than the number of chars between the previous `'\n'` (or the start of the text) and the position. A
+position at the end of the text follows the same rule, so after `"ab\n"` the cursor is at line 2, column 1, and after
+`"ab\r"` at line 1, column 4. This is also what source generated parsers report.
 
 All the ways of moving the cursor forward apply that rule; they differ in what they assume about the chars they leave:
 
 - `Advance()` moves by one char and `Advance(count)` by `count` chars, looking at each of them. Both stop at the end of
   the text, where `Advance()` does nothing.
 - `AdvanceNoNewLines(count)` is for text known not to contain `'\n'`, such as an identifier or digits.
+- `AdvanceBy(consumed, newLines, trailingSegmentLength)` is for text whose number of `'\n'` chars, and number of chars
+  after the last of them, were counted while matching, or at build time for a literal. The source generator emits it for
+  `Text` and `Char` literals.
 
 A parser which counts the chars of a match before moving the cursor should note whether it saw a `'\n'` and call
-`Advance(size)` when it did, or `AdvanceNoNewLines(size)` otherwise, as `Pattern` does.
+`Advance(size)` when it did, or `AdvanceBy(size, 0, size)` otherwise, as `Pattern` does.
 
 > ✔️ DO: Assert the line and the column of the cursor after a match, not only its offset, including after a `"\r\n"` and when the match ends the text.
 
@@ -100,6 +126,9 @@ var intOrHello = integer.Or(hello);
 ```
 
 Note: when `caseInsensitive: true`, `Text("Hello")` returns the canonical requested text ("Hello") by default to avoid allocating a new string. If you need the matched input text (e.g. "HELLO"), use `returnMatchedText: true`.
+Matched text reuses the requested string if its casing is exact, or the input string if
+the match covers the entire input; only a differently cased substring is materialized.
+Similarly, `TextSpan.ToString()` reuses its buffer when the span covers it entirely.
 
 Both **integer** and **hello** have well-known characters that can be at the start of their potential values: 
 - **integers** can start with `[0-9\.\-]`.
@@ -112,7 +141,21 @@ To be able to take advantage of this optimization, a parser type can implement `
 
 The expected chars have to include every char the parser can start with, since a parser is not invoked for any other one. They are computed when the parser is built, so they can't depend on something that is only known when it parses, like the current culture. A parser which can't tell sets `CanSeek` to `false`: a text compared with `StringComparison.CurrentCultureIgnoreCase` does.
 
-A `Deferred` parser reads the hints from its `Parser` whenever they are asked for, so they are known once the grammar is complete. A `OneOf` which held an alternative that couldn't tell when it was built, a `Deferred` set later or another `OneOf` holding one, builds its table again from the current hints the first time it parses (once, under a lock shared by every parser). A `Deferred` that reaches itself while its hints are read reports `CanSeek == false`, so a left-recursive alternative is tried for any char.
+A `Deferred` parser reads the hints from its `Parser` whenever they are asked for, so they are known once the grammar is complete. A `OneOf` which held an alternative that couldn't tell when it was built, a `Deferred` set later or another `OneOf` holding one, builds its table again from the current hints the first time it parses (once, under a lock shared by every parser). A `Deferred` that reaches itself while its hints are read reports `CanSeek == false`, so a left-recursive alternative is tried for any char. The source generator runs the factory to completion before emitting, so generated choices use the same table.
+
+Parlot's ordinal text and keyword parsers, and the parsers that start with one, also tell choices their whole text, so
+that a choice can skip the alternatives that share a first char with the input but not the rest of their text. A custom
+`ISeekable` parser only tells its first chars.
+
+Source generation can additionally specialize compatible keyword-only choices using
+length and discriminating characters. This does not replace the runtime lookup table
+or alter ordered-choice semantics. See [Keyword lookup investigation](keyword-lookups.md)
+for the measured tradeoffs and eligibility restrictions.
+
+Compatible ordinal `Text`-only choices use a separate packed-prefix recognizer. It
+preserves ordered alternatives even when texts overlap: `Text("if1").Or(Text("if"))`
+still returns `"if1"` for `"if12"`, while reversing the alternatives returns `"if"`.
+Unlike keywords, these text choices have no boundary requirement.
 
 ## Parser factories
 
