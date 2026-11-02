@@ -11,7 +11,7 @@
     <description>Parlot is a fast, lightweight and simple to use .NET parser combinator.</description>
     <copyright>Sebastien Ros</copyright>
     <tags>parser interpreter</tags>
-    <repository type="git" url="https://github.com/Allied-Bits-Ltd/parlot" commit="cfc958af6f9bc5b9fe0cbd0112a75ea83f79936c" />
+    <repository type="git" url="https://github.com/Allied-Bits-Ltd/parlot" commit="865fa35b90153d2ff7513d458a810582f002fcbc" />
     <readme>README.md</readme>
     <dependencies>
       <group targetFramework=".NETFramework4.7.2">
