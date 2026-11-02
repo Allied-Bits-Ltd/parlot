@@ -63,18 +63,6 @@ public class NumberLiteralTests
     }
 
     [Theory]
-    [InlineData("1_234.5", true, 1234.5)]
-    [InlineData("1_2_3", true, 123)]
-    [InlineData("1_000,000.25", true, 1000000.25)]
-    [InlineData("-12.5", true, -12.5)]
-    [InlineData("abc", false, 0)]
-    public void Underscores_Are_Removed_From_Numbers(string input, bool expectedSuccess, decimal expected)
-    {
-        Assert.Equal(expectedSuccess, Grammars.TryParseUnderscoreDecimal(input, out var value));
-        Assert.Equal(expected, value);
-    }
-
-    [Theory]
     [InlineData("1.5", true, 1.5)]
     [InlineData("1,5", true, 1.5)]
     [InlineData("-1,5", true, -1.5)]

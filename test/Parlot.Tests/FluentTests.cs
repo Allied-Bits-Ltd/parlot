@@ -976,6 +976,234 @@ public class FluentTests
     }
 
     [Fact]
+    public void ContinuingErrorsShouldCollectFailuresAbsorbedByOptionalParsers()
+    {
+        var parser = Literals.Char('a').ElseError("expected a").Optional()
+            .And(Literals.Char('b').ElseError("expected b").Optional());
+        var context = new ParseContext(new Scanner("x")) { CollectDiagnostics = true };
+
+        Assert.True(parser.TryParse(context, out _, out var error));
+        Assert.Null(error);
+        Assert.Collection(context.Diagnostics,
+            item => { Assert.Equal("expected a", item.Message); Assert.Equal(0, item.Position.Offset); },
+            item => { Assert.Equal("expected b", item.Message); Assert.Equal(0, item.Position.Offset); });
+        Assert.Equal(0, context.Scanner.Cursor.Offset);
+    }
+
+    [Fact]
+    public void ContinuingErrorShouldResetCursorForBothErrorVariants()
+    {
+        Assert.Throws<ParseException>(() => Literals.Text("ab").Error("unexpected").Parse("ab"));
+
+        var context = new ParseContext(new Scanner("ab")) { CollectDiagnostics = true };
+        var parser = Literals.Text("ab").Error("unexpected");
+        Assert.False(parser.TryParse(context, out _, out var error));
+        Assert.Null(error);
+        Assert.Equal(0, context.Scanner.Cursor.Offset);
+        Assert.Equal(2, Assert.Single(context.Diagnostics).Position.Offset);
+
+        var typedContext = new ParseContext(new Scanner("ab")) { CollectDiagnostics = true };
+        Assert.False(Literals.Text("ab").Error<int>("unexpected").TryParse(typedContext, out _, out _));
+        Assert.Equal(0, typedContext.Scanner.Cursor.Offset);
+        Assert.Equal(2, Assert.Single(typedContext.Diagnostics).Position.Offset);
+    }
+
+    [Fact]
+    public void ContinuingErrorsShouldDiscardAbandonedAlternativesAndKeepFurthestFailure()
+    {
+        var successful = OneOf(Literals.Char('a').Error("abandoned"), Literals.Char('a'));
+        var context = new ParseContext(new Scanner("a")) { CollectDiagnostics = true };
+        Assert.True(successful.TryParse(context, out var value, out _));
+        Assert.Equal('a', value);
+        Assert.Empty(context.Diagnostics);
+
+        var failed = OneOf(
+            Literals.Text("ab").AndSkip(Literals.Char('!').ElseError("far")),
+            Literals.Text("a").AndSkip(Literals.Char('!').ElseError("near")));
+        context = new ParseContext(new Scanner("ab")) { CollectDiagnostics = true };
+        Assert.False(failed.TryParse(context, out _, out _));
+        Assert.Equal(0, context.Scanner.Cursor.Offset);
+        var diagnostic = Assert.Single(context.Diagnostics);
+        Assert.Equal("far", diagnostic.Message);
+        Assert.Equal(2, diagnostic.Position.Offset);
+    }
+
+    [Theory]
+    [InlineData("letter", true, null, -1)]
+    [InlineData(" value", true, null, -1)]
+    [InlineData("var", false, "'var' is not supported", 3)]
+    [InlineData("let", false, "Expected '!'", 3)]
+    public void ContinuingErrorsShouldDiscardAbandonedAlternativesOfDispatchedChoices(string text, bool success, string message, int offset)
+    {
+        // The alternatives are dispatched on their first chars, and the ones sharing a prefix on the next ones
+        var parser = OneOf(
+            Terms.Text("let").AndSkip(Literals.Char('!').ElseError("Expected '!'")),
+            Terms.Text("letter"),
+            Terms.Text("var").Error("'var' is not supported"),
+            Terms.Text("value"));
+        var context = new ParseContext(new Scanner(text)) { CollectDiagnostics = true };
+
+        Assert.Equal(success, parser.TryParse(context, out _, out var error));
+        Assert.Null(error);
+
+        if (message is null)
+        {
+            Assert.Empty(context.Diagnostics);
+        }
+        else
+        {
+            var diagnostic = Assert.Single(context.Diagnostics);
+            Assert.Equal(message, diagnostic.Message);
+            Assert.Equal(offset, diagnostic.Position.Offset);
+            Assert.Equal(0, context.Scanner.Cursor.Offset);
+        }
+    }
+
+    [Fact]
+    public void ContinuingErrorsShouldRetainRepetitionTerminalFailure()
+    {
+        var parser = ZeroOrMany(Literals.Char('a').ElseError("expected a"));
+        var context = new ParseContext(new Scanner("aa!")) { CollectDiagnostics = true };
+
+        Assert.True(parser.TryParse(context, out var values, out _));
+        Assert.Equal(2, values.Count);
+        Assert.Equal(2, context.Scanner.Cursor.Offset);
+        Assert.Equal(2, Assert.Single(context.Diagnostics).Position.Offset);
+    }
+
+    [Fact]
+    public void ContinuingErrorsShouldHandleCovariantAlternatives()
+    {
+        var parser = new OneOf<string, object, object>(
+            Literals.Text("a").Error("abandoned"),
+            Literals.Char('a').Then<object>(static value => value));
+        var context = new ParseContext(new Scanner("a")) { CollectDiagnostics = true };
+
+        Assert.True(parser.TryParse(context, out var value, out _));
+        Assert.Equal('a', value);
+        Assert.Empty(context.Diagnostics);
+        Assert.Equal(1, context.Scanner.Cursor.Offset);
+    }
+
+    [Fact]
+    public void WarningShouldBeIgnoredUnlessCollected()
+    {
+        var parser = Terms.Text("var").Warning("'var' is deprecated");
+        var context = new ParseContext(new Scanner("  var"));
+
+        Assert.True(parser.TryParse(context, out var value, out var error));
+        Assert.Equal("var", value);
+        Assert.Null(error);
+        Assert.Empty(context.Diagnostics);
+    }
+
+    [Fact]
+    public void WarningShouldBeCollectedAtMatchStartAndKeepResult()
+    {
+        var parser = Terms.Text("var").Warning("'var' is deprecated");
+        var context = new ParseContext(new Scanner("\n  var")) { CollectDiagnostics = true };
+
+        Assert.True(parser.TryParse(context, out var value, out _));
+        Assert.Equal("var", value);
+        Assert.Equal(6, context.Scanner.Cursor.Offset);
+        var warning = Assert.Single(context.Diagnostics);
+        Assert.Equal(ParseDiagnosticSeverity.Warning, warning.Severity);
+        Assert.True(warning.IsWarning);
+        Assert.Equal("'var' is deprecated", warning.Message);
+        Assert.Equal(3, warning.Position.Offset);
+        Assert.Equal(2, warning.Position.Line);
+        Assert.Equal(3, warning.Position.Column);
+    }
+
+    [Fact]
+    public void WarningShouldFailWithoutDiagnosticWhenInnerParserFails()
+    {
+        var parser = Literals.Text("ab").Warning("warned");
+        var context = new ParseContext(new Scanner("ax")) { CollectDiagnostics = true, TreatWarningsAsErrors = true };
+
+        Assert.False(parser.TryParse(context, out _, out _));
+        Assert.Equal(0, context.Scanner.Cursor.Offset);
+        Assert.Empty(context.Diagnostics);
+    }
+
+    [Fact]
+    public void WarningsAsErrorsShouldThrowWhenNotCollected()
+    {
+        var parser = Terms.Text("var").Warning("'var' is deprecated");
+        var context = new ParseContext(new Scanner("  var")) { TreatWarningsAsErrors = true };
+
+        Assert.False(parser.TryParse(context, out _, out var error));
+        Assert.NotNull(error);
+        Assert.Equal("'var' is deprecated", error.Message);
+        Assert.Equal(2, error.Position.Offset);
+        Assert.Empty(context.Diagnostics);
+    }
+
+    [Fact]
+    public void WarningsAsErrorsShouldFailTokenAndLetAlternativesMatch()
+    {
+        var warned = Terms.Text("var").Warning("'var' is deprecated");
+        var context = new ParseContext(new Scanner("  var")) { CollectDiagnostics = true, TreatWarningsAsErrors = true };
+
+        Assert.False(warned.TryParse(context, out _, out _));
+        Assert.Equal(0, context.Scanner.Cursor.Offset);
+        var diagnostic = Assert.Single(context.Diagnostics);
+        Assert.Equal(ParseDiagnosticSeverity.Error, diagnostic.Severity);
+        Assert.Equal(2, diagnostic.Position.Offset);
+
+        var choice = OneOf(warned, Terms.Identifier().Then(static x => x.ToString()!));
+        context = new ParseContext(new Scanner("  var")) { CollectDiagnostics = true, TreatWarningsAsErrors = true };
+        Assert.True(choice.TryParse(context, out var value, out _));
+        Assert.Equal("var", value);
+        Assert.Empty(context.Diagnostics);
+    }
+
+    [Fact]
+    public void WarningsShouldBeDiscardedWithAbandonedAlternatives()
+    {
+        var parser = OneOf(
+            Literals.Text("a").Warning("abandoned").AndSkip(Literals.Char('!')),
+            Literals.Text("ab"));
+        var context = new ParseContext(new Scanner("ab")) { CollectDiagnostics = true };
+
+        Assert.True(parser.TryParse(context, out var value, out _));
+        Assert.Equal("ab", value);
+        Assert.Empty(context.Diagnostics);
+
+        context = new ParseContext(new Scanner("ax")) { CollectDiagnostics = true };
+        Assert.False(parser.TryParse(context, out _, out _));
+        Assert.Empty(context.Diagnostics);
+    }
+
+    [Fact]
+    public void WarningsShouldBeDiscardedWithTheOnlyAlternativeOfAChar()
+    {
+        // 'a' selects a single alternative, which fails after its warning
+        var parser = OneOf(
+            Terms.Text("a").Warning("abandoned").AndSkip(Terms.Char('!')),
+            Terms.Text("b"));
+        var context = new ParseContext(new Scanner("a?")) { CollectDiagnostics = true };
+
+        Assert.False(parser.TryParse(context, out _, out _));
+        Assert.Empty(context.Diagnostics);
+        Assert.Equal(0, context.Scanner.Cursor.Offset);
+    }
+
+    [Fact]
+    public void FailedAlternativeShouldKeepWarningsAlongWithItsErrors()
+    {
+        var parser = OneOf(
+            Literals.Text("a").Warning("warned").AndSkip(Literals.Char('!').ElseError("expected !")),
+            Literals.Text("b"));
+        var context = new ParseContext(new Scanner("ax")) { CollectDiagnostics = true };
+
+        Assert.False(parser.TryParse(context, out _, out _));
+        Assert.Collection(context.Diagnostics,
+            item => { Assert.True(item.IsWarning); Assert.Equal(0, item.Position.Offset); },
+            item => { Assert.Equal(ParseDiagnosticSeverity.Error, item.Severity); Assert.Equal(1, item.Position.Offset); });
+    }
+
+    [Fact]
     public void TextBeforeShouldReturnAllCharBeforeDelimiter()
     {
         Assert.False(AnyCharBefore(Literals.Char('a')).TryParse("", out _));
@@ -2268,6 +2496,31 @@ public class FluentTests
         Assert.NotNull(error);
         Assert.Equal("The maximum parser recursion depth of 3 was exceeded.", error.Message);
         Assert.Equal(3, error.Position.Offset);
+    }
+
+    [Fact]
+    public void UnaryShouldParseChainsLongerThanTheStack()
+    {
+        var parser = Terms.Integer().Unary(
+            (Literals.Char('-'), static value => -value),
+            (Literals.Char('!'), static value => value + 1));
+        var contextual = Terms.Integer().Unary(
+            (Literals.Char('-'), static (ParseContext _, long value) => -value),
+            (Literals.Char('!'), static (ParseContext _, long value) => value + 1));
+        var chain = new string('-', 1_000_000) + "5";
+
+        Assert.Equal(5L, parser.Parse(chain));
+        Assert.Equal(5L, contextual.Parse(chain));
+
+        // The operators apply from the last one
+        Assert.Equal(-5L, parser.Parse("!-!5"));
+        Assert.Equal(-5L, contextual.Parse("!-!5"));
+
+        // An operator not followed by an operand fails the parser, which leaves the cursor where it started
+        var context = new ParseContext(new Scanner("--x"));
+        var result = new ParseResult<long>();
+        Assert.False(parser.Parse(context, ref result));
+        Assert.Equal(0, context.Scanner.Cursor.Offset);
     }
 
     [Fact]

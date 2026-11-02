@@ -11,33 +11,39 @@ namespace Parlot.Fluent;
 /// <typeparam name="A">The type of the parser before the main parser.</typeparam>
 /// <typeparam name="T">The type of the value parsed by the main parser.</typeparam>
 /// <typeparam name="B">The type of the parser after the main parser.</typeparam>
-public sealed class Between<A, T, B> : Parser<T>, ISeekablePrefixes, ISourceable
+public sealed class Between<A, T, B> : Parser<T>, ISeekablePrefixes, ISourceable, ILoopAnalyzable, ISpanSourceable
 {
     private readonly Parser<T> _parser;
     private readonly Parser<A> _before;
     private readonly Parser<B> _after;
+
+    // Whether the parsers are invoked without their value when it isn't used
+    private readonly bool _beforeWithoutValue;
+    private readonly bool _withoutValue;
+    private readonly bool _afterWithoutValue;
 
     public Between(Parser<A> before, Parser<T> parser, Parser<B> after)
     {
         _before = before ?? throw new ArgumentNullException(nameof(before));
         _parser = parser ?? throw new ArgumentNullException(nameof(parser));
         _after = after ?? throw new ArgumentNullException(nameof(after));
-
-        if (_before is ISeekable seekable)
-        {
-            CanSeek = seekable.CanSeek;
-            ExpectedChars = seekable.ExpectedChars;
-            SkipWhitespace = seekable.SkipWhitespace;
-        }
+        _beforeWithoutValue = before.CanParseWithoutValue;
+        _withoutValue = parser.CanParseWithoutValue;
+        _afterWithoutValue = after.CanParseWithoutValue;
     }
 
-    public bool CanSeek { get; }
+    // The hints of the parser that reads first, read when they are asked for since it can be a Deferred set later
+    private ForwardedHints? _hints;
 
-    public char[] ExpectedChars { get; } = [];
+    public bool CanSeek => ForwardedHints.Get(ref _hints, _before).CanSeek;
 
-    public bool SkipWhitespace { get; }
+    public char[] ExpectedChars => ForwardedHints.Get(ref _hints, _before).ExpectedChars;
+
+    public bool SkipWhitespace => ForwardedHints.Get(ref _hints, _before).SkipWhitespace;
 
     string[]? ISeekablePrefixes.ExpectedPrefixes => SeekableHints.Prefixes(_before);
+
+    bool ILoopAnalyzable.AnalyzeStart(LoopAnalysis analysis) => analysis.Invoke(_before) && analysis.Invoke(_parser) && analysis.Invoke(_after);
 
     public override bool Parse(ParseContext context, ref ParseResult<T> result)
     {
@@ -45,11 +51,11 @@ public sealed class Between<A, T, B> : Parser<T>, ISeekablePrefixes, ISourceable
 
         var cursor = context.Scanner.Cursor;
 
-        var start = cursor.Position;
+        var start = cursor.Offset;
 
         var parsedA = new ParseResult<A>();
 
-        if (!_before.Parse(context, ref parsedA))
+        if (!(_beforeWithoutValue ? _before.ParseWithoutValue(context, ref parsedA) : _before.Parse(context, ref parsedA)))
         {
             context.ExitParser(this);
 
@@ -67,7 +73,50 @@ public sealed class Between<A, T, B> : Parser<T>, ISeekablePrefixes, ISourceable
 
         var parsedB = new ParseResult<B>();
 
-        if (!_after.Parse(context, ref parsedB))
+        if (!(_afterWithoutValue ? _after.ParseWithoutValue(context, ref parsedB) : _after.Parse(context, ref parsedB)))
+        {
+            cursor.ResetPosition(start);
+
+            context.ExitParser(this);
+            return false;
+        }
+
+        context.ExitParser(this);
+        return true;
+    }
+
+    internal override bool CanParseWithoutValue => _withoutValue;
+
+    // Parse, with the parser invoked without its value
+    internal override bool ParseWithoutValue(ParseContext context, ref ParseResult<T> result)
+    {
+        context.EnterParser(this);
+
+        var cursor = context.Scanner.Cursor;
+
+        var start = cursor.Offset;
+
+        var parsedA = new ParseResult<A>();
+
+        if (!(_beforeWithoutValue ? _before.ParseWithoutValue(context, ref parsedA) : _before.Parse(context, ref parsedA)))
+        {
+            context.ExitParser(this);
+
+            // Don't reset position since _before should do it
+            return false;
+        }
+
+        if (!(_withoutValue ? _parser.ParseWithoutValue(context, ref result) : _parser.Parse(context, ref result)))
+        {
+            cursor.ResetPosition(start);
+
+            context.ExitParser(this);
+            return false;
+        }
+
+        var parsedB = new ParseResult<B>();
+
+        if (!(_afterWithoutValue ? _after.ParseWithoutValue(context, ref parsedB) : _after.Parse(context, ref parsedB)))
         {
             cursor.ResetPosition(start);
 
@@ -88,11 +137,16 @@ public sealed class Between<A, T, B> : Parser<T>, ISeekablePrefixes, ISourceable
             throw new NotSupportedException("Between requires all parsers to be source-generatable.");
         }
 
+        if (SpanSource.TryGenerate(this, typeof(T), context) is { } spanResult)
+        {
+            return spanResult;
+        }
+
         var result = context.CreateResult(typeof(T));
         var cursorName = context.CursorName;
         var startName = $"start{context.NextNumber()}";
 
-        result.Body.Add($"var {startName} = {cursorName}.Position;");
+        result.Body.Add($"var {startName} = {cursorName}.Offset;");
         result.Body.Add($"{result.SuccessVariable} = false;");
 
         string Helper(ISourceable p, Type valueType, string suffix)
@@ -131,6 +185,13 @@ public sealed class Between<A, T, B> : Parser<T>, ISeekablePrefixes, ISourceable
 
         return result;
     }
+
+    int ISpanSourceable.GetSpanSourceWeight(SourceGenerationContext context) => SpanSource.GetWeight(context, _before, _parser, _after);
+
+    void ISpanSourceable.GenerateSpanSource(SpanSourceWriter writer, string? valueVariable, SpanLabel fail)
+        => SpanSource.GenerateSequence(writer, valueVariable, fail,
+            [(_before, typeof(A), false), (_parser, typeof(T), true), (_after, typeof(B), false)],
+            static values => values[1]!);
 
     public override string ToString() => Name ?? $"Between({_before},{_parser},{_after})";
 }

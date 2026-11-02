@@ -10,6 +10,34 @@ public abstract partial class Parser<T> : IParser<T>
     public abstract bool Parse(ParseContext context, ref ParseResult<T> result);
 
     /// <summary>
+    /// Parses like <see cref="Parse(ParseContext, ref ParseResult{T})"/>, without building the value, for the parsers which
+    /// don't use it, like <see cref="Capture{T}"/>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// It matches what <see cref="Parse(ParseContext, ref ParseResult{T})"/> matches: it moves the cursor, invokes the same
+    /// parsers, calls the same <see cref="ParseContext"/> methods and sets the same <see cref="ParseResult{T}.Start"/> and
+    /// <see cref="ParseResult{T}.End"/>. The <see cref="ParseResult{T}.Value"/> is not set, it must not be read.
+    /// </para>
+    /// <para>
+    /// The parsers whose value allocates, like the lists of <see cref="ZeroOrMany{T}"/>, or which invoke such parsers, like
+    /// sequences, override it with <see cref="CanParseWithoutValue"/>. The generated parsers do the same with
+    /// <c>SourceGenerationContext.DiscardResult</c>.
+    /// </para>
+    /// </remarks>
+    internal virtual bool ParseWithoutValue(ParseContext context, ref ParseResult<T> result) => Parse(context, ref result);
+
+    /// <summary>
+    /// Gets whether <see cref="ParseWithoutValue"/> does less than <see cref="Parse(ParseContext, ref ParseResult{T})"/>.
+    /// </summary>
+    /// <remarks>
+    /// The parsers which don't use the value of a parser read it once, when they are built, and invoke
+    /// <see cref="ParseWithoutValue"/> only when it is set, such that the other parsers aren't invoked through the extra call.
+    /// It can't change once the parser is built, a <see cref="Deferred{T}"/> parser is always set.
+    /// </remarks>
+    internal virtual bool CanParseWithoutValue => false;
+
+    /// <summary>
     /// Attempts to parse the input and returns whether the parse was successful.
     /// This is the covariant version of Parse for use with the IParser&lt;out T&gt; interface.
     /// </summary>
@@ -110,6 +138,16 @@ public abstract partial class Parser<T> : IParser<T>
     /// Builds a parser that emits an error.
     /// </summary>
     public Parser<U> Error<U>(string message) => new Error<T, U>(this, message);
+
+    /// <summary>
+    /// Builds a parser that reports a warning when the previous parser succeeds, keeping its result.
+    /// </summary>
+    /// <remarks>
+    /// Warnings are recorded in <see cref="ParseContext.Diagnostics"/> when <see cref="ParseContext.CollectDiagnostics"/>
+    /// is enabled. When <see cref="ParseContext.TreatWarningsAsErrors"/> is enabled the warning is reported as an error
+    /// and the parser fails.
+    /// </remarks>
+    public Parser<T> Warning(string message) => new Warning<T>(this, message);
 
     /// <summary>
     /// Names a parser.

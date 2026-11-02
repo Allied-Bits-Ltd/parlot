@@ -1,23 +1,83 @@
 using Parlot.Rewriting;
 using Parlot.SourceGeneration;
 using System;
+using System.Collections.Generic;
+using System.Threading;
 
 namespace Parlot.Fluent;
 
-public sealed class Deferred<T> : Parser<T>, ISeekablePrefixes, ISourceable
+public sealed class Deferred<T> : Parser<T>, ISeekablePrefixes, ISourceable, ILoopAnalyzable, IDeferredParser
 {
 
     private readonly object _lockObject = new();
     private Parser<T>? _parser;
 
+    // Whether the parser is invoked without its value when this one's isn't used. A pair read while the parser is replaced
+    // is still correct, any parser can be invoked without its value.
+    private bool _withoutValue;
+
     // Whether the hints are being read from the parser, see Resolve()
     private bool _resolving;
+
+    // Whether Parse() looks for this parser in the parsers that are active at the position, see LoopAnalysis. Written under
+    // LoopAnalysis.SyncRoot, read on each parse.
+    private int _loopDetection;
+
+    // The analyses that read the parser, see LoopAnalysis.Invalidate()
+    private List<IDeferredParser[]>? _loopGroups;
 
     public Parser<T>? Parser
     {
         get => _parser;
-        set => _parser = value ?? throw new ArgumentNullException(nameof(value));
+        set
+        {
+            ThrowHelper.ThrowIfNull(value, nameof(value));
+
+            // The deferred parsers which were analyzed with the previous parser are analyzed again when they are invoked
+            lock (LoopAnalysis.SyncRoot)
+            {
+                _parser = value;
+                _withoutValue = value!.CanParseWithoutValue;
+                LoopAnalysis.Invalidate(this);
+            }
+
+            // The parsers that start with this one read its hints again
+            SeekableResolution.Invalidate();
+        }
     }
+
+    /// <summary>
+    /// Gets whether this parser can't be invoked again at the position where it is already active, such that it doesn't
+    /// look for itself in the active parsers of the context. The grammar is analyzed when it is first needed.
+    /// </summary>
+    /// <remarks>
+    /// The loop detection is still enabled when the white space parser of the context can invoke a deferred parser, see
+    /// <see cref="LoopAnalysis"/>.
+    /// </remarks>
+    internal bool IsLoopDetectionElided
+    {
+        get
+        {
+            var loopDetection = Volatile.Read(ref _loopDetection);
+
+            return loopDetection == LoopAnalysis.Unknown ? LoopAnalysis.Analyze(this) : loopDetection == LoopAnalysis.Elided;
+        }
+    }
+
+    int IDeferredParser.LoopDetection
+    {
+        get => _loopDetection;
+        set => Volatile.Write(ref _loopDetection, value);
+    }
+
+    List<IDeferredParser[]>? IDeferredParser.LoopGroups
+    {
+        get => _loopGroups;
+        set => _loopGroups = value;
+    }
+
+    // A parser which isn't initialized throws when it is invoked
+    bool ILoopAnalyzable.AnalyzeStart(LoopAnalysis analysis) => _parser is { } parser && analysis.Invoke(parser);
 
     /// <summary>
     /// Gets whether the parser can be selected from a single char. The hints follow <see cref="Parser"/>, so a
@@ -77,14 +137,8 @@ public sealed class Deferred<T> : Parser<T>, ISeekablePrefixes, ISourceable
 
             try
             {
-                if (parser is OneOf<T> oneOf)
-                {
-                    oneOf.EnsureResolved();
-                }
-
-                return parser is ISeekable seekable
-                    ? (seekable.CanSeek, seekable.ExpectedChars, seekable.SkipWhitespace)
-                    : (false, [], false);
+                // A choice builds its lookup table first, since this lock is held
+                return SeekableHints.Of(parser);
             }
             finally
             {
@@ -104,21 +158,81 @@ public sealed class Deferred<T> : Parser<T>, ISeekablePrefixes, ISourceable
 
     public override bool Parse(ParseContext context, ref ParseResult<T> result)
     {
-        var parser = Parser;
+        var parser = _parser;
 
         if (parser is null)
         {
             throw new InvalidOperationException("Parser has not been initialized");
         }
 
+        // Deep input fails instead of overflowing the stack
+        context.EnsureSufficientStack();
+
+        // A parser which can't be invoked again where it is active has nothing to track, unless the context limits the
+        // recursion or skips white space with a parser that can invoke it
+        if (_loopDetection == LoopAnalysis.Elided && !context.TracksDeferredParsers)
+        {
+            context.EnterParser(this);
+
+            var success = parser.Parse(context, ref result);
+
+            context.ExitParser(this);
+
+            return success;
+        }
+
+        return ParseTracked(context, ref result, parser);
+    }
+
+    // The parser is set later, and can be replaced
+    internal override bool CanParseWithoutValue => true;
+
+    // Parse, with the parser invoked without its value when it isn't tracked. The other path keeps a single implementation.
+    internal override bool ParseWithoutValue(ParseContext context, ref ParseResult<T> result)
+    {
+        var parser = _parser;
+
+        if (parser is null || !_withoutValue || _loopDetection != LoopAnalysis.Elided || context.TracksDeferredParsers)
+        {
+            return Parse(context, ref result);
+        }
+
+        // Deep input fails instead of overflowing the stack
+        context.EnsureSufficientStack();
+
+        context.EnterParser(this);
+
+        var success = parser.ParseWithoutValue(context, ref result);
+
+        context.ExitParser(this);
+
+        return success;
+    }
+
+    private bool ParseTracked(ParseContext context, ref ParseResult<T> result, Parser<T> parser)
+    {
+        // The grammar is analyzed even when the context disables the loop detection, such that the next parses take the
+        // shortcut when they can
+        var elided = IsLoopDetectionElided;
+
+        var trackPosition = !context.DisableLoopDetection && (!elided || context.HasReentrantWhiteSpaceParser);
         var limitRecursion = context.MaxRecursionDepth > 0;
+
+        if (!trackPosition && !limitRecursion)
+        {
+            context.EnterParser(this);
+
+            var success = parser.Parse(context, ref result);
+
+            context.ExitParser(this);
+
+            return success;
+        }
 
         if (limitRecursion)
         {
             context.EnterRecursion();
         }
-
-        var trackPosition = !context.DisableLoopDetection;
 
         // Remember the position where we entered this parser
         var entryPosition = 0;

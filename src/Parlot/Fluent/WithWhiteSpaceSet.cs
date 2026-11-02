@@ -7,10 +7,13 @@ namespace Parlot.Fluent;
 /// <summary>
 /// A parser that sets the <see cref="ParseContext.WhiteSpaceSet"/> of its inner parser.
 /// </summary>
-public sealed class WithWhiteSpaceSet<T> : Parser<T>, ISeekable, ISourceable
+public sealed class WithWhiteSpaceSet<T> : Parser<T>, ISeekable, ISourceable, ILoopAnalyzable
 {
     private readonly Parser<T> _parser;
     private readonly WhiteSpaceSet _whiteSpaceSet;
+
+    // Whether the parser is invoked without its value when this one's isn't used
+    private readonly bool _withoutValue;
 
     public WithWhiteSpaceSet(Parser<T> parser, WhiteSpaceSet whiteSpaceSet)
     {
@@ -19,23 +22,25 @@ public sealed class WithWhiteSpaceSet<T> : Parser<T>, ISeekable, ISourceable
         // Validates the set
         Character.GetWhiteSpaceMask(whiteSpaceSet);
         _whiteSpaceSet = whiteSpaceSet;
-
-        // A parser skipping white spaces does it with this set, which a OneOf doesn't know about:
-        // it would skip them with its own before looking up the first char.
-        if (parser is ISeekable seekable && !seekable.SkipWhitespace)
-        {
-            CanSeek = seekable.CanSeek;
-            ExpectedChars = seekable.ExpectedChars;
-        }
+        _withoutValue = parser.CanParseWithoutValue;
     }
 
     public WhiteSpaceSet WhiteSpaceSet => _whiteSpaceSet;
 
-    public bool CanSeek { get; }
+    // The hints of the parser that reads first, read when they are asked for since it can be a Deferred set later. A parser
+    // skipping white spaces does it with this set, which a OneOf doesn't know about: it would skip them with its own
+    // before looking up the first char.
+    private ForwardedHints? _hints;
 
-    public char[] ExpectedChars { get; } = [];
+    public bool CanSeek => Hints.CanSeek;
+
+    public char[] ExpectedChars => Hints.ExpectedChars;
 
     public bool SkipWhitespace { get; }
+
+    private ForwardedHints Hints => ForwardedHints.Get(ref _hints, _parser, static parser => SeekableHints.Of(parser) is { SkipWhitespace: false } hints ? hints : (false, [], false));
+
+    bool ILoopAnalyzable.AnalyzeStart(LoopAnalysis analysis) => analysis.Invoke(_parser);
 
     public override bool Parse(ParseContext context, ref ParseResult<T> result)
     {
@@ -48,6 +53,30 @@ public sealed class WithWhiteSpaceSet<T> : Parser<T>, ISeekable, ISourceable
             context.WhiteSpaceSet = _whiteSpaceSet;
 
             var success = _parser.Parse(context, ref result);
+
+            context.ExitParser(this);
+            return success;
+        }
+        finally
+        {
+            context.WhiteSpaceSet = previousWhiteSpaceSet;
+        }
+    }
+
+    internal override bool CanParseWithoutValue => _withoutValue;
+
+    // Parse, with the parser invoked without its value
+    internal override bool ParseWithoutValue(ParseContext context, ref ParseResult<T> result)
+    {
+        context.EnterParser(this);
+
+        var previousWhiteSpaceSet = context.WhiteSpaceSet;
+
+        try
+        {
+            context.WhiteSpaceSet = _whiteSpaceSet;
+
+            var success = _withoutValue ? _parser.ParseWithoutValue(context, ref result) : _parser.Parse(context, ref result);
 
             context.ExitParser(this);
             return success;

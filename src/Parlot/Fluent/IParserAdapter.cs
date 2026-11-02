@@ -8,32 +8,33 @@ namespace Parlot.Fluent;
 /// Adapts an IParser&lt;T&gt; to a Parser&lt;T&gt; for use in contexts that require Parser.
 /// This is used internally to support covariance.
 /// </summary>
-internal sealed class IParserAdapter<T> : Parser<T>, ISeekable, ISourceable
+internal sealed class IParserAdapter<T> : Parser<T>, ISeekable, ISourceable, ILoopAnalyzable
 {
     private readonly IParser<T> _parser;
 
     // The wrapped parser when it is a Parser<T>, to call its typed Parse without boxing the value
     private readonly Parser<T>? _typedParser;
 
+    // Whether the typed parser is invoked without its value when this one's isn't used
+    private readonly bool _withoutValue;
+
     public IParserAdapter(IParser<T> parser)
     {
         _parser = parser ?? throw new ArgumentNullException(nameof(parser));
         _typedParser = parser as Parser<T>;
-
-        // Forward ISeekable properties from the wrapped parser if it implements ISeekable
-        if (_parser is ISeekable seekable)
-        {
-            CanSeek = seekable.CanSeek;
-            ExpectedChars = seekable.ExpectedChars;
-            SkipWhitespace = seekable.SkipWhitespace;
-        }
+        _withoutValue = _typedParser is not null && _typedParser.CanParseWithoutValue;
     }
 
-    public bool CanSeek { get; }
+    // The hints of the parser that reads first, read when they are asked for since it can be a Deferred set later
+    private ForwardedHints? _hints;
 
-    public char[] ExpectedChars { get; } = [];
+    public bool CanSeek => ForwardedHints.Get(ref _hints, _parser).CanSeek;
 
-    public bool SkipWhitespace { get; }
+    public char[] ExpectedChars => ForwardedHints.Get(ref _hints, _parser).ExpectedChars;
+
+    public bool SkipWhitespace => ForwardedHints.Get(ref _hints, _parser).SkipWhitespace;
+
+    bool ILoopAnalyzable.AnalyzeStart(LoopAnalysis analysis) => analysis.Invoke(_parser);
 
     public override bool Parse(ParseContext context, ref ParseResult<T> result)
     {
@@ -50,6 +51,11 @@ internal sealed class IParserAdapter<T> : Parser<T>, ISeekable, ISourceable
         }
         return success;
     }
+
+    internal override bool CanParseWithoutValue => _withoutValue;
+
+    internal override bool ParseWithoutValue(ParseContext context, ref ParseResult<T> result)
+        => _withoutValue ? _typedParser!.ParseWithoutValue(context, ref result) : Parse(context, ref result);
 
     public SourceResult GenerateSource(SourceGenerationContext context)
     {

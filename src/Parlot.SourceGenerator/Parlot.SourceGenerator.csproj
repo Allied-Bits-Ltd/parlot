@@ -26,6 +26,9 @@
     <DefineConstants>$(DefineConstants);SOURCE_GENERATOR</DefineConstants>
     <!-- Dependency groups describe generated consumers; analyzer-only packages intentionally have no lib assets. -->
     <NoWarn>$(NoWarn);RS2007;RS2008;NU5128</NoWarn>
+    <!-- The lowest System.Memory generated downlevel parsers build against. Projects pinned to older packages,
+         like System.Memory 4.5.5 with System.Buffers 4.5.1, must not see a NU1605 downgrade. -->
+    <ParlotMinimumSystemMemoryVersion>4.5.5</ParlotMinimumSystemMemoryVersion>
   </PropertyGroup>
 
   <ItemGroup>
@@ -49,9 +52,12 @@
     <EmbeddedResource Include="../Parlot/Cursor.cs" LogicalName="Parlot.StandaloneRuntime.Cursor.cs" />
     <EmbeddedResource Include="../Parlot/TextPosition.cs" LogicalName="Parlot.StandaloneRuntime.TextPosition.cs" />
     <EmbeddedResource Include="../Parlot/TextSpan.cs" LogicalName="Parlot.StandaloneRuntime.TextSpan.cs" />
+    <EmbeddedResource Include="../Parlot/StringPool.cs" LogicalName="Parlot.StandaloneRuntime.StringPool.cs" />
+    <EmbeddedResource Include="../Parlot/CaseCache.cs" LogicalName="Parlot.StandaloneRuntime.CaseCache.cs" />
     <EmbeddedResource Include="../Parlot/ParseResult.cs" LogicalName="Parlot.StandaloneRuntime.ParseResult.cs" />
     <EmbeddedResource Include="../Parlot/ParseException.cs" LogicalName="Parlot.StandaloneRuntime.ParseException.cs" />
     <EmbeddedResource Include="../Parlot/ParseError.cs" LogicalName="Parlot.StandaloneRuntime.ParseError.cs" />
+    <EmbeddedResource Include="../Parlot/ParseDiagnostic.cs" LogicalName="Parlot.StandaloneRuntime.ParseDiagnostic.cs" />
     <EmbeddedResource Include="../Parlot/Option.cs" LogicalName="Parlot.StandaloneRuntime.Option.cs" />
     <EmbeddedResource Include="../Parlot/Character.cs" LogicalName="Parlot.StandaloneRuntime.Character.cs" />
     <EmbeddedResource Include="../Parlot/Character.Class.cs" LogicalName="Parlot.StandaloneRuntime.Character.Class.cs" />
@@ -68,6 +74,8 @@
     <EmbeddedResource Include="../Parlot/Polyfills/Polyfills.ArgumentNullException.cs" LogicalName="Parlot.StandaloneRuntime.Polyfills.ArgumentNullException.cs" />
     <EmbeddedResource Include="../Parlot/Fluent/ParseContext.cs" LogicalName="Parlot.StandaloneRuntime.Fluent.ParseContext.cs" />
     <EmbeddedResource Include="../Parlot/Fluent/HybridList.cs" LogicalName="Parlot.StandaloneRuntime.Fluent.HybridList.cs" />
+    <EmbeddedResource Include="../Parlot/Fluent/ListBuilder.cs" LogicalName="Parlot.StandaloneRuntime.Fluent.ListBuilder.cs" />
+    <EmbeddedResource Include="../Parlot/Fluent/OperatorList.cs" LogicalName="Parlot.StandaloneRuntime.Fluent.OperatorList.cs" />
     <EmbeddedResource Include="../Parlot/Fluent/NumberOptions.cs" LogicalName="Parlot.StandaloneRuntime.Fluent.NumberOptions.cs" />
     <EmbeddedResource Include="../Parlot/Fluent/DelegateParser.cs" LogicalName="Parlot.StandaloneRuntime.Fluent.DelegateParser.cs" />
     <EmbeddedResource Include="../Parlot/Fluent/TextReaderRefillSource.cs" LogicalName="Parlot.StandaloneRuntime.Fluent.TextReaderRefillSource.cs" />
@@ -77,7 +85,7 @@
 
   <Target Name="SetParlotNuspecProperties" BeforeTargets="_GetOutputItemsFromPack">
     <PropertyGroup>
-      <NuspecProperties>$(NuspecProperties);version=$(PackageVersion);configuration=$(Configuration);authors=$(Authors);description=$(Description);copyright=$(Copyright);memoryVersion=@(PackageVersion->WithMetadataValue('Identity', 'System.Memory')->Metadata('Version'))</NuspecProperties>
+      <NuspecProperties>$(NuspecProperties);version=$(PackageVersion);configuration=$(Configuration);authors=$(Authors);description=$(Description);copyright=$(Copyright);memoryVersion=$(ParlotMinimumSystemMemoryVersion)</NuspecProperties>
     </PropertyGroup>
   </Target>
   <Target Name="SetParlotNuspecRepository" BeforeTargets="GenerateNuspec" DependsOnTargets="SetParlotNuspecProperties">

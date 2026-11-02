@@ -13,7 +13,7 @@ public enum StringLiteralQuotes
     Custom
 }
 
-public sealed class StringLiteral : Parser<TextSpan>, ISeekable, ISourceable
+public sealed class StringLiteral : Parser<TextSpan>, ISeekable, ISourceable, ILoopAnalyzable
 {
     static readonly char[] SingleQuotes = ['\''];
     static readonly char[] DoubleQuotes = ['\"'];
@@ -22,6 +22,9 @@ public sealed class StringLiteral : Parser<TextSpan>, ISeekable, ISourceable
 
     private readonly StringLiteralQuotes _quotes;
     private readonly bool _returnDecoded = true;
+
+    // The pool the decoded strings come from, for a literal read by a pooled string
+    private readonly StringPool? _pool;
 
     /// <param name="quotes">The quotes that delimit the string.</param>
     /// <param name="returnDecoded">Whether the escape sequences of the string are decoded. When <c>false</c> the text between the quotes is returned as it is.</param>
@@ -57,11 +60,25 @@ public sealed class StringLiteral : Parser<TextSpan>, ISeekable, ISourceable
         Name = "StringLiteral";
     }
 
+    /// <summary>
+    /// A copy of <paramref name="source"/> which takes the strings it decodes from <paramref name="pool"/>.
+    /// </summary>
+    internal StringLiteral(StringLiteral source, StringPool pool)
+    {
+        _quotes = source._quotes;
+        _returnDecoded = source._returnDecoded;
+        _pool = pool;
+        ExpectedChars = source.ExpectedChars;
+        Name = source.Name;
+    }
+
     public bool CanSeek { get; } = true;
 
     public char[] ExpectedChars { get; }
 
     public bool SkipWhitespace { get; }
+
+    bool ILoopAnalyzable.AnalyzeStart(LoopAnalysis analysis) => false;
 
     public override bool Parse(ParseContext context, ref ParseResult<TextSpan> result)
     {
@@ -94,7 +111,7 @@ public sealed class StringLiteral : Parser<TextSpan>, ISeekable, ISourceable
         // The scanner knows whether the string has escape sequences, so a string without any isn't read again
         if (hasEscape && _returnDecoded)
         {
-            result.Set(start, end, new TextSpan(Character.DecodeStringInternal(text.Slice(1, text.Length - 2))));
+            result.Set(start, end, new TextSpan(Character.DecodeStringInternal(text.Slice(1, text.Length - 2), _pool)));
         }
         else
         {
@@ -158,7 +175,8 @@ public sealed class StringLiteral : Parser<TextSpan>, ISeekable, ISourceable
                 // The scanner knows whether the string has escape sequences, so a string without any isn't read again
                 result.Body.Add($"    if ({hasEscapeName})");
                 result.Body.Add("    {");
-                result.Body.Add($"        {result.ValueVariable} = new global::Parlot.TextSpan(global::Parlot.Character.DecodeStringInternal({textName}.Slice(1, {textName}.Length - 2)));");
+                var pool = _pool != null ? ", " + context.GetStringPoolField(_pool) : "";
+                result.Body.Add($"        {result.ValueVariable} = new global::Parlot.TextSpan(global::Parlot.Character.DecodeStringInternal({textName}.Slice(1, {textName}.Length - 2){pool}));");
                 result.Body.Add("    }");
                 result.Body.Add("    else");
                 result.Body.Add("    {");

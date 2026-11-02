@@ -34,6 +34,14 @@ public class StreamingTests
         ["log-record"] = new Grammar<int>(LogParser.Record),
         ["log"] = new Grammar<int>(LogParser.Log),
         ["sql"] = new Grammar<StatementList>(CreateSqlParser(), static scanner => new ParseContext(scanner, disableLoopDetection: true)),
+        // Operators are read again by the looser levels when they are not followed by an operand
+        ["operators"] = new Grammar<string>(CreateOperators()),
+        ["operators-eof"] = new Grammar<string>(CreateOperators().Eof()),
+        // A chain of operator levels is parsed by a single precedence parser
+        ["operator-levels"] = new Grammar<string>(CreateOperatorLevels()),
+        // Valued operators are parsed by the level which applies them, and read again by the looser levels when they fail
+        ["valued-operators"] = new Grammar<string>(CreateValuedOperators()),
+        ["valued-operators-eof"] = new Grammar<string>(CreateValuedOperators().Eof()),
         ["identifier"] = new Grammar<TextSpan>(Terms.Identifier()),
         ["integer"] = new Grammar<long>(Terms.Integer()),
         ["standalone-eof"] = new Grammar<object?>(Eof()),
@@ -41,6 +49,9 @@ public class StreamingTests
         ["integer-eof-error"] = new Grammar<long>(Terms.Integer().AndSkip(Eof().ElseError("Unexpected trailing input"))),
         ["decimal"] = new Grammar<decimal>(Terms.Decimal()),
         ["double"] = new Grammar<double>(Terms.Number<double>(NumberOptions.Float)),
+        // Trailing underscores aren't part of the number, but digits could follow them in the next window
+        ["underscores"] = new Grammar<decimal>(Terms.Number<decimal>(NumberOptions.Any | NumberOptions.AllowUnderscore)),
+        ["underscores-list"] = new Grammar<IReadOnlyList<long>>(Separated(Terms.Char(';'), Terms.Number<long>(NumberOptions.Integer | NumberOptions.AllowUnderscore))),
         ["text"] = new Grammar<string>(Terms.Text("hello")),
         ["text-ci"] = new Grammar<string>(Terms.Text("hello", caseInsensitive: true)),
         ["keyword"] = new Grammar<string>(Terms.Keyword("for")),
@@ -60,6 +71,9 @@ public class StreamingTests
         ["scan-signature"] = new Grammar<TextSpan>(Literals.Scan(LiquidScanners.VariableSignature, LiquidScanners.StartChars)),
         ["scan-tag"] = new Grammar<IReadOnlyList<TextSpan>>(Terms.Text("{%").SkipAnd(ZeroOrMany(Terms.Scan(LiquidScanners.Identifier, LiquidScanners.StartChars))).AndSkip(Terms.Text("-%}").Or(Terms.Text("%}")))),
         ["string"] = new Grammar<TextSpan>(Terms.String()),
+        // Pooled strings copy the text out of the window, and string literals decode into the pool
+        ["pooled-strings"] = new Grammar<IReadOnlyList<string>>(ZeroOrMany(OneOf(Terms.Identifier().ToPooledString(), Terms.String().ToPooledString())).Eof()),
+        ["text-ci-matched"] = new Grammar<IReadOnlyList<string>>(ZeroOrMany(OneOf(Terms.Text("hello", caseInsensitive: true, returnMatchedText: true), Terms.Keyword("for", caseInsensitive: true, returnMatchedText: true)))),
         ["backslash-string"] = new Grammar<TextSpan>(new StringLiteral('\\')),
         ["nul-string"] = new Grammar<TextSpan>(new StringLiteral('\0')),
         ["whitespace"] = new Grammar<TextSpan>(Literals.WhiteSpace(includeNewLines: true)),
@@ -72,6 +86,8 @@ public class StreamingTests
         ["notfollowed"] = new Grammar<long>(Terms.Integer().WhenNotFollowedBy(Literals.Char('.'))),
         ["separated"] = new Grammar<IReadOnlyList<long>>(Separated(Terms.Char(','), Terms.Integer())),
         ["list-eof"] = new Grammar<IReadOnlyList<TextSpan>>(ZeroOrMany(Terms.Identifier()).Eof()),
+        // Nested lists of the same element type share the scratch stack of the list parsers
+        ["nested-lists"] = new Grammar<object>(CreateNestedLists()),
         ["elseerror"] = new Grammar<long>(Terms.Char('(').SkipAnd(Terms.Integer()).AndSkip(Terms.Char(')').ElseError("Expected ')'"))),
         ["comments"] = new Grammar<IReadOnlyList<TextSpan>>(ZeroOrMany(Terms.Identifier()).WithComments(static c => c.WithWhiteSpaceOrNewLine().WithSingleLine("//").WithMultiLine("/*", "*/"))),
         ["ascii-separated"] = new Grammar<IReadOnlyList<long>>(Separated(Terms.Char(','), Terms.Integer()).WithWhiteSpaceSet(WhiteSpaceSet.Ascii)),
@@ -80,6 +96,11 @@ public class StreamingTests
         ["ascii-whitespace"] = new Grammar<TextSpan>(Literals.WhiteSpace(includeNewLines: true).WithWhiteSpaceSet(WhiteSpaceSet.Ascii)),
         ["ascii-nonwhitespace"] = new Grammar<TextSpan>(Literals.NonWhiteSpace().WithWhiteSpaceSet(WhiteSpaceSet.Ascii)),
         ["ascii-comments"] = new Grammar<IReadOnlyList<TextSpan>>(ZeroOrMany(Terms.Identifier()).WithComments(static c => c.WithWhiteSpaceOrNewLine().WithSingleLine("//")).WithWhiteSpaceSet(WhiteSpaceSet.Ascii)),
+        ["spacetabcrlf-separated"] = new Grammar<IReadOnlyList<long>>(Separated(Terms.Char(','), Terms.Integer()).WithWhiteSpaceSet(WhiteSpaceSet.SpaceTabCrLf)),
+        ["spacetabcrlf-context"] = new Grammar<IReadOnlyList<long>>(Separated(Terms.Char(','), Terms.Integer()), static scanner => new ParseContext(scanner) { WhiteSpaceSet = WhiteSpaceSet.SpaceTabCrLf }),
+        ["spacetabcrlf-choice"] = new Grammar<IReadOnlyList<string>>(ZeroOrMany(OneOf(Terms.Text("for"), Terms.Text("if"), Terms.Text("\f"))).WithWhiteSpaceSet(WhiteSpaceSet.SpaceTabCrLf)),
+        ["spacetabcrlf-whitespace"] = new Grammar<TextSpan>(Literals.WhiteSpace(includeNewLines: true).WithWhiteSpaceSet(WhiteSpaceSet.SpaceTabCrLf)),
+        ["spacetabcrlf-nonwhitespace"] = new Grammar<TextSpan>(Literals.NonWhiteSpace().WithWhiteSpaceSet(WhiteSpaceSet.SpaceTabCrLf)),
         // The line and column after the match must not depend on how the text is split
         ["position-text"] = new Grammar<(int, int, int)>(Literals.Text("\r\n").Then(static (c, _) => Position(c))),
         ["position-char"] = new Grammar<(int, int, int)>(Literals.Char('\n').Then(static (c, _) => Position(c))),
@@ -87,7 +108,24 @@ public class StreamingTests
         ["position-pattern"] = new Grammar<(int, int, int)>(Literals.Pattern(static c => c != ' ').Then(static (c, _) => Position(c))),
         ["position-scan"] = new Grammar<(int, int, int)>(Literals.Scan(static span => span.IndexOf(' ') is var i and >= 0 ? i : span.Length).Then(static (c, _) => Position(c))),
         ["position-textbefore"] = new Grammar<(int, int, int)>(AnyCharBefore(Literals.Text("--"), consumeDelimiter: true).Then(static (c, _) => Position(c))),
+        // The line and column are computed when they are read: the error is reported where the assignment started, which a
+        // compacting buffer has discarded when the assignment spans a refill
+        ["position-elseerror"] = new Grammar<(int, int, int)>(Terms.Text("begin").SkipAnd(Terms.Identifier().And(Terms.Char('=')).And(Terms.Integer()).ElseError("Expected an assignment")).Then(static (c, _) => Position(c))),
+        // A position read after one read further, by an alternative which failed
+        ["position-backtrack"] = new Grammar<(int, int, int)>(OneOf(
+            Terms.Identifier().And(Terms.Char('=').Then(static (c, _) => Position(c))).And(Terms.Char('(')).Then(static (c, x) => x.Item2),
+            Terms.Identifier().Then(static (c, _) => Position(c)))),
     };
+
+    private static Parser<object> CreateNestedLists()
+    {
+        var item = Deferred<object>();
+        var separated = Between(Terms.Char('['), Separated(Terms.Char(','), item, min: 0), Terms.Char(']')).Then<object>(static items => items);
+        var zeroOrMany = Between(Terms.Char('('), ZeroOrMany(item), Terms.Char(')')).Then<object>(static items => items);
+        var oneOrMany = Between(Terms.Char('{'), OneOrMany(item), Terms.Char('}')).Then<object>(static items => items);
+        item.Parser = OneOf(Terms.Integer().Then<object>(static value => value), separated, zeroOrMany, oneOrMany);
+        return item;
+    }
 
     private static (int Offset, int Line, int Column) Position(ParseContext context)
     {
@@ -142,6 +180,25 @@ public class StreamingTests
         Add("log-record", log);
         Add("log", log);
 
+        string[] operators =
+        [
+            "", "a", "-a", "- -a", "a!", "-a!", "a + b * c", "a ** b ** c", "a << b < c <= d", "a <= b", "a < = b", "a & b && c",
+            "a &", "a & &", "a ** -", "(a + b) * -(c - d)!", "(a + b", "a + (b", "a == b = c", "a = = b", "not a < b", "a + not b",
+            "a ++ b", "a << << b", " a  <<  b  <=  c  ", "a\n<=\nb",
+        ];
+        Add("operators", operators);
+        Add("operators-eof", operators);
+        Add("operator-levels", operators);
+
+        string[] valuedOperators =
+        [
+            "", "a", "a.b", "a.b.c", "a[b]", "a[b][c].d", "a.", "a[", "a[b", "-a.b", "a ? b : c", "a ? b : c ? d : e", "a ?? b",
+            "a ? b ?? c : d", "a ? b : c ?? d", "a ? b", "a ? b :", "a ?? ", "a = b = c", "a = b ? c : d", "a = b = ", "a * b / c",
+            "a[b ? c : d].e", " a . b [ c ] ? d : e ", "a\n?\nb\n:\nc",
+        ];
+        Add("valued-operators", valuedOperators);
+        Add("valued-operators-eof", valuedOperators);
+
         Add("sql",
             "SELECT * FROM users",
             "SELECT id, name FROM users WHERE id = 1",
@@ -166,6 +223,8 @@ public class StreamingTests
         Add("integer-eof-error", "", "42", "42a", "42 ", " 42");
         Add("decimal", "", "1", "1.5", "1.", "1.e", "12.5e-3", "1e", "1e+", ".5", "-0.25 ", "1.e5", "1.e+", "1.E-2x");
         Add("double", "", "1", "1.5e10", "1e", "2.", "-3.25e-2x", "2.e3", "2.e");
+        Add("underscores", "", "1_000", "1_", "1__", "1__2", "1_x", "1,000_000.0_5e1_0", "1._5", "1e_5", "1e1_", "-1_2 ", "_1");
+        Add("underscores-list", "", "1_000;2__0;3", "1_;2", "1;_2", "1_2_3;4_5_6", "9_223_372_036_854_775_807;1");
         Add("text", "", "h", "hel", "hello", "hello!", " hello", "help");
         Add("text-ci", "", "HEL", "HeLLo", "HELP", "hellO world");
         Add("keyword", "", "f", "for", "for ", "fore", "for(", "fo");
@@ -197,6 +256,11 @@ public class StreamingTests
         Add("notfollowed", "", "1", "12", "12.", "12.5", "12 .", "12x");
         Add("separated", "", "1", "1,", "1,2", "1 , 2 ,3", "1,,2", "1,x");
         Add("list-eof", "", "a", "a b c", "a b 1", "a b ");
+        Add("pooled-strings", "", "a", "abc abc", "'abc' abc \"a\\nb\" 'a\\nb'", "abcdefghijklmnopqr abcdefghijklmnopqr x", "'unterminated");
+        Add("text-ci-matched", "", "HELLO hello Hello HELLO", "FOR for hello", "HeLLo FoR fore");
+        Add("nested-lists", "", "1", "[", "[]", "()", "{}", "[1]", "(1)", "{1}", "[1,2,3,4,5,6]", "(1 2 3 4 5 6)", "[1,[2,[3,4],5],(6 7 (8 9 10 11 12) 13),{14 15}]",
+            "(1 2 [3,4 (5 6)] 7", "[1,2,", "[1,(2 3", "{1 2", "((((((((1 2 3))))))))", "[" + string.Join(",", Enumerable.Range(0, 40)) + ",(" + string.Join(" ", Enumerable.Range(0, 30)) + ")]",
+            "(" + string.Join(" ", Enumerable.Range(0, 20).Select(static i => "[" + i + "," + (i + 1) + ",{" + i + "}]")) + ")");
         Add("elseerror", "", "(", "(1", "(1)", "(1 x", "( 12 )", "x");
         Add("comments", "", "a", "a // b\n c", "a /* b */ c", "a /* b", "a / b", "// only");
         string[] separated = ["", "1", "1 , 2", "1\u00A0, 2", "1 ,\u3000 2", "1\t,\n2\r\n,\v\f3", " \u00A01"];
@@ -206,6 +270,11 @@ public class StreamingTests
         Add("ascii-whitespace", "", " \t\n\r\v\f x", "\u00A0", " \u2000", "x");
         Add("ascii-nonwhitespace", "", "a\u00A0b c", "a\u3000b\tc", "ab\fc", " x");
         Add("ascii-comments", "", "a // b\n c", "a\u00A0b", "a\u00A0// b", "a \u00A0b");
+        Add("spacetabcrlf-separated", separated);
+        Add("spacetabcrlf-context", separated);
+        Add("spacetabcrlf-choice", "", "for if", "for\fif", "\f\r\n if", "  \v", "if\tfor\r\nif");
+        Add("spacetabcrlf-whitespace", "", " \t\n\r x", " \t\v", "\f", "x");
+        Add("spacetabcrlf-nonwhitespace", "", "a\fb c", "a\vb\rc", "ab\u00A0c", " x");
         Add("position-text", "", "\r", "\r\n", "\r\nx", "\n");
         Add("position-char", "", "\n", "\nx", "\r\n");
         Add("position-noneof", "", "\n", "\r\n", "\r", "x\ny\nz", "x\ny\nz\n", "x\r\ny\rz a", "a");
@@ -213,6 +282,11 @@ public class StreamingTests
         Add("position-scan", "", "ab\rc", "ab\n", "a\n\nb c", "\n\n\nab c", new string('a', 70) + "\r\n" + new string('b', 70) + " x",
             new string('a', 30) + "\n" + new string('b', 40) + "\n\n" + new string('c', 50) + "\n" + new string('d', 60) + " x");
         Add("position-textbefore", "", "a\r\nb--c", "a\rb--", "a\n--\n");
+        Add("position-elseerror", "", "begin", "begin x = 1", "begin x = y", "begin\n", "begin\n x\n =\n 12", "begin\n\n x\n =\n y", "\n\nbegin\r\n  x =\n\n y",
+            "begin\r\n" + new string(' ', 70) + "x\n" + new string(' ', 70) + "= z", "\n begin abc\n\n=\n\n\n", "begin 1");
+        Add("position-backtrack", "", "abc", "abc\n =\n (", "abc\n =\n x", "a\r\n=\r\n(", "\n\n abc \n = x", "abc =", "abc\n\n", "1");
+        Add("elseerror", "(\n1\n x", "( 12\n )", "\n(\n\n1 \n x", "(1\r\n\r\n");
+        Add("integer-eof-error", " 42\n\n x", "\n\n42\n");
 
         return data;
     }
@@ -457,6 +531,38 @@ public class StreamingTests
         Assert.Equal(3, exception.Position.Column);
     }
 
+    [Theory]
+    [InlineData("a b\nc\n\n  d\r\n e", false)]
+    [InlineData("a\n(b)\n  c (\n d )", false)]
+    [InlineData("a\n bb\n\n ccc\r\n (dd", true)]
+    [InlineData("\n\n\n a", false)]
+    public async Task ParseManyAsyncReportsTheLinesAndColumnsOfTheWholeText(string text, bool fails)
+    {
+        // Each item reports its position, and a failed one the position of its error. The offsets are relative to the window.
+        var item = Terms.Identifier().Then(static (c, _) => (c.Scanner.Cursor.Position.Line, c.Scanner.Cursor.Position.Column))
+            .Or(Terms.Char('(').SkipAnd(Terms.Identifier()).AndSkip(Terms.Char(')').ElseError("Expected ')'")).Then(static (c, _) => (-c.Scanner.Cursor.Position.Line, -c.Scanner.Cursor.Position.Column)));
+
+        Assert.Equal(!fails, ZeroOrMany(item).Eof().TryParse(text, out var expected, out var error));
+
+        var expectedError = error == null ? null : $"{error.Message} {error.Position}";
+
+        foreach (var (chunk, bufferSize) in new[] { (1, 1), (1, 4096), (3, 2), (7, 5), (int.MaxValue, 1) })
+        {
+            var items = new List<(int, int)>();
+
+            try
+            {
+                await ToListAsync(item.ParseManyAsync(new ChunkedReader(text, () => chunk, yield: false), new StreamParseOptions { BufferSize = bufferSize }), items);
+                Assert.Null(expectedError);
+                Assert.Equal(expected, items);
+            }
+            catch (ParseException e)
+            {
+                Assert.Equal(expectedError, $"{e.Message} {e.Position}");
+            }
+        }
+    }
+
     [Fact]
     public async Task ParseManyAsyncRejectsEmptyValues()
     {
@@ -662,6 +768,63 @@ public class StreamingTests
         }
 
         return items;
+    }
+
+    private static Parser<string> CreateOperators()
+    {
+        static Func<string, string, string> Binary(string op) => (a, b) => $"({a}{op}{b})";
+
+        var expression = Deferred<string>();
+        var primary = Terms.Identifier().Then(static x => x.ToString()).Or(Between(Terms.Char('('), expression, Terms.Char(')')));
+
+        expression.Parser = primary.Operators()
+            .Postfix((Terms.Char('!'), static x => $"({x}!)"))
+            .Unary((Terms.Char('-'), static x => $"(-{x})"))
+            .RightAssociative((Terms.Text("**"), Binary("**")))
+            .LeftAssociative((Terms.Text("*"), Binary("*")), (Terms.Text("+"), Binary("+")))
+            .LeftAssociative((Terms.Text("<<"), Binary("<<")), (Terms.Text("&"), Binary("&")), (Terms.Text("="), Binary("=")))
+            .LeftAssociative((Terms.Text("<"), Binary("<")), (Terms.Text("<="), Binary("<=")))
+            .Unary((Terms.Text("not"), static x => $"(not {x})"))
+            .LeftAssociative((Terms.Text("&&"), Binary("&&")), (Terms.Text("=="), Binary("==")));
+
+        return expression;
+    }
+
+    private static Parser<string> CreateOperatorLevels()
+    {
+        static Func<string, string, string> Binary(string op) => (a, b) => $"({a}{op}{b})";
+
+        var expression = Deferred<string>();
+        var primary = Terms.Identifier().Then(static x => x.ToString()).Or(Between(Terms.Char('('), expression, Terms.Char(')')));
+
+        expression.Parser = primary
+            .Unary((Terms.Char('-'), static x => $"(-{x})"))
+            .RightAssociative((Terms.Text("**"), Binary("**")))
+            .LeftAssociative((Terms.Text("*"), Binary("*")), (Terms.Text("+"), Binary("+")))
+            .LeftAssociative((Terms.Text("<<"), Binary("<<")), (Terms.Text("&"), Binary("&")), (Terms.Text("="), Binary("=")))
+            .LeftAssociative((Terms.Text("<"), Binary("<")), (Terms.Text("<="), Binary("<=")))
+            .Unary((Terms.Text("not"), static x => $"(not {x})"))
+            .LeftAssociative((Terms.Text("&&"), Binary("&&")), (Terms.Text("=="), Binary("==")));
+
+        return expression;
+    }
+
+    private static Parser<string> CreateValuedOperators()
+    {
+        var expression = Deferred<string>();
+        var primary = Terms.Identifier().Then(static x => x.ToString()).Or(Between(Terms.Char('('), expression, Terms.Char(')')));
+
+        expression.Parser = primary.Operators()
+            .Postfix(
+                (Terms.Char('.').SkipAnd(Terms.Identifier()), static (x, name) => $"{x}.{name}"),
+                (Between(Terms.Char('['), expression, Terms.Char(']')), static (x, index) => $"{x}[{index}]"))
+            .Unary((Terms.Char('-'), static x => $"(-{x})"))
+            .LeftAssociative([Terms.Text("*"), Terms.Text("/")], static (a, b, op) => $"({a}{op}{b})")
+            .Ternary(Terms.Char('?'), expression, Terms.Char(':'), static (c, a, b) => $"({c}?{a}:{b})", rightAssociative: false)
+            .LeftAssociative((Terms.Text("??"), static (a, b) => $"({a}??{b})"))
+            .RightAssociative([Terms.Text("=")], static (a, b, op) => $"({a}{op}{b})");
+
+        return expression;
     }
 
     private static Parser<StatementList> CreateSqlParser()

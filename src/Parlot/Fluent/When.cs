@@ -8,7 +8,7 @@ namespace Parlot.Fluent;
 /// Ensure the given parser is valid based on a condition, and backtracks if not.
 /// </summary>
 /// <typeparam name="T">The output parser type.</typeparam>
-public sealed class When<T> : Parser<T>, ISeekablePrefixes, ISourceable
+public sealed class When<T> : Parser<T>, ISeekablePrefixes, ISourceable, ILoopAnalyzable
 {
     private readonly Func<ParseContext, T, bool> _action;
     private readonly Parser<T> _parser;
@@ -18,39 +18,32 @@ public sealed class When<T> : Parser<T>, ISeekablePrefixes, ISourceable
     {
         _action = action != null ? (c, t) => action(t) : throw new ArgumentNullException(nameof(action));
         _parser = parser ?? throw new ArgumentNullException(nameof(parser));
-        InitializeSeekable();
     }
 
     public When(Parser<T> parser, Func<ParseContext, T, bool> action)
     {
         _action = action ?? throw new ArgumentNullException(nameof(action));
         _parser = parser ?? throw new ArgumentNullException(nameof(parser));
-        InitializeSeekable();
     }
 
-    private void InitializeSeekable()
-    {
-        if (_parser is ISeekable seekable)
-        {
-            CanSeek = seekable.CanSeek;
-            ExpectedChars = seekable.ExpectedChars;
-            SkipWhitespace = seekable.SkipWhitespace;
-        }
-    }
+    // The hints of the parser that reads first, read when they are asked for since it can be a Deferred set later
+    private ForwardedHints? _hints;
 
-    public bool CanSeek { get; private set; }
+    public bool CanSeek => ForwardedHints.Get(ref _hints, _parser).CanSeek;
 
-    public char[] ExpectedChars { get; private set; } = [];
+    public char[] ExpectedChars => ForwardedHints.Get(ref _hints, _parser).ExpectedChars;
 
-    public bool SkipWhitespace { get; private set; }
+    public bool SkipWhitespace => ForwardedHints.Get(ref _hints, _parser).SkipWhitespace;
 
     string[]? ISeekablePrefixes.ExpectedPrefixes => SeekableHints.Prefixes(_parser);
+
+    bool ILoopAnalyzable.AnalyzeStart(LoopAnalysis analysis) => analysis.Invoke(_parser);
 
     public override bool Parse(ParseContext context, ref ParseResult<T> result)
     {
         context.EnterParser(this);
 
-        var start = context.Scanner.Cursor.Position;
+        var start = context.Scanner.Cursor.Offset;
 
         var valid = _parser.Parse(context, ref result) && _action(context, result.Value);
 
@@ -77,7 +70,7 @@ public sealed class When<T> : Parser<T>, ISeekablePrefixes, ISourceable
         var valueTypeName = SourceGenerationContext.GetTypeName(typeof(T));
         
         var startName = $"start{context.NextNumber()}";
-        result.Body.Add($"var {startName} = {cursorName}.Position;");
+        result.Body.Add($"var {startName} = {cursorName}.Offset;");
 
         // Use helper instead of inlining
         var helperName = context.WithDiscardResult(false, () => context.Helpers

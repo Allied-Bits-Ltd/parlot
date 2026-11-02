@@ -4,10 +4,13 @@ using System.Collections.Generic;
 
 namespace Parlot.Fluent;
 
-public sealed class ZeroOrMany<T> : Parser<IReadOnlyList<T>>, ISourceable
+public sealed class ZeroOrMany<T> : Parser<IReadOnlyList<T>>, ISourceable, ILoopAnalyzable, ISpanSourceable
 {
     private readonly Parser<T> _parser;
     private readonly int _max;
+
+    // Whether the elements are parsed without their value when the list isn't built
+    private readonly bool _withoutValue;
 
     public ZeroOrMany(Parser<T> parser) : this(parser, 0)
     {
@@ -19,28 +22,87 @@ public sealed class ZeroOrMany<T> : Parser<IReadOnlyList<T>>, ISourceable
         _parser = parser ?? throw new ArgumentNullException(nameof(parser));
         ThrowHelper.ThrowIfNegative(max, nameof(max));
         _max = max;
+        _withoutValue = parser.CanParseWithoutValue;
+    }
+
+    bool ILoopAnalyzable.AnalyzeStart(LoopAnalysis analysis)
+    {
+        analysis.Invoke(_parser);
+
+        return true;
     }
 
     public override bool Parse(ParseContext context, ref ParseResult<IReadOnlyList<T>> result)
     {
         context.EnterParser(this);
 
-        HybridList<T>? results = null;
+        // An empty result is at the current position
+        var start = context.Scanner.Cursor.Offset;
+        var end = start;
+
+        var parsed = new ParseResult<T>();
+        var results = new ListBuilder<T>();
+
+        // The start of the current element is read again when it fails
+        var pin = context.Pin();
+
+        try
+        {
+            while (_max == 0 || results.Count < _max)
+            {
+                var previousOffset = context.Scanner.Cursor.Offset;
+                if (!_parser.Parse(context, ref parsed)
+                    || context.Scanner.Cursor.Offset == previousOffset)
+                {
+                    break;
+                }
+
+                context.MovePin(pin);
+
+                if (results.Count == 0)
+                {
+                    start = parsed.Start;
+                }
+
+                end = parsed.End;
+
+                results.Add(parsed.Value);
+            }
+
+            context.Unpin(pin);
+
+            result.Set(start, end, results.ToArray());
+        }
+        finally
+        {
+            results.Release();
+        }
+
+        context.ExitParser(this);
+        return true;
+    }
+
+    internal override bool CanParseWithoutValue => true;
+
+    // The loop of Parse, without the list
+    internal override bool ParseWithoutValue(ParseContext context, ref ParseResult<IReadOnlyList<T>> result)
+    {
+        context.EnterParser(this);
 
         // An empty result is at the current position
         var start = context.Scanner.Cursor.Offset;
         var end = start;
 
-        var first = true;
         var parsed = new ParseResult<T>();
+        var count = 0;
 
         // The start of the current element is read again when it fails
         var pin = context.Pin();
 
-        while (_max == 0 || (results?.Count ?? 0) < _max)
+        while (_max == 0 || count < _max)
         {
             var previousOffset = context.Scanner.Cursor.Offset;
-            if (!_parser.Parse(context, ref parsed)
+            if (!(_withoutValue ? _parser.ParseWithoutValue(context, ref parsed) : _parser.Parse(context, ref parsed))
                 || context.Scanner.Cursor.Offset == previousOffset)
             {
                 break;
@@ -48,25 +110,29 @@ public sealed class ZeroOrMany<T> : Parser<IReadOnlyList<T>>, ISourceable
 
             context.MovePin(pin);
 
-            if (first)
+            if (count == 0)
             {
-                results = [];
-                first = false;
                 start = parsed.Start;
             }
 
             end = parsed.End;
 
-            results!.Add(parsed.Value);
+            count++;
         }
 
         context.Unpin(pin);
 
-        result.Set(start, end, results?.AsReadOnlyList() ?? (IReadOnlyList<T>)[]);
+        result.Start = start;
+        result.End = end;
 
         context.ExitParser(this);
         return true;
     }
+
+    int ISpanSourceable.GetSpanSourceWeight(SourceGenerationContext context) => SpanSource.GetWeight(context, _parser);
+
+    void ISpanSourceable.GenerateSpanSource(SpanSourceWriter writer, string? valueVariable, SpanLabel fail)
+        => SpanSource.GenerateLoop(writer, _parser, typeof(T), _max, oneOrMore: false, valueVariable, fail);
 
     public override string ToString() => $"{_parser}*";
 
@@ -79,22 +145,31 @@ public sealed class ZeroOrMany<T> : Parser<IReadOnlyList<T>>, ISourceable
             throw new NotSupportedException("ZeroOrMany requires a source-generatable parser.");
         }
 
+        if (SpanSource.TryGenerate(this, typeof(IReadOnlyList<T>), context) is { } spanResult)
+        {
+            return spanResult;
+        }
+
         var elementTypeName = SourceGenerationContext.GetTypeName(typeof(T));
         var result = context.CreateResult(typeof(IReadOnlyList<T>), defaultSuccess: true, defaultValueExpression: $"global::System.Array.Empty<{elementTypeName}>()");
         var ctx = context.ParseContextName;
 
-        var listName = $"list{context.NextNumber()}";
-        var firstName = $"first{context.NextNumber()}";
-
-        if (!context.DiscardResult)
-        {
-            result.Body.Add($"global::Parlot.Fluent.HybridList<{elementTypeName}>? {listName} = null;");
-            result.Body.Add($"bool {firstName} = true;");
-        }
-
         var helperName = context.Helpers
             .GetOrCreate(sourceable, $"{context.MethodNamePrefix}_ZeroOrMany_Parser", elementTypeName, () => sourceable.GenerateSource(context))
             .MethodName;
+
+        if (!context.DiscardResult && !context.IsCompacting)
+        {
+            ListBuilderSource.EmitFirstItemThenRest(context, result, helperName, elementTypeName, _max);
+            return result;
+        }
+
+        var listName = $"list{context.NextNumber()}";
+
+        if (!context.DiscardResult)
+        {
+            result.Body.Add(ListBuilderSource.Declare(listName, elementTypeName));
+        }
         var previousOffsetName = $"previousOffset{context.NextNumber()}";
         var itemValueName = $"itemValue{context.NextNumber()}";
         var countName = $"count{context.NextNumber()}";
@@ -105,6 +180,7 @@ public sealed class ZeroOrMany<T> : Parser<IReadOnlyList<T>>, ISourceable
         }
         // Each element is read again from its start when it fails
         var pin = context.Pin(result);
+        var bodyStart = result.Body.Count;
         result.Body.Add(_max == 0 ? "while (true)" : $"while ({countName} < {_max})");
         result.Body.Add("{");
         result.Body.Add($"    var {previousOffsetName} = {context.CursorName}.Offset;");
@@ -115,12 +191,7 @@ public sealed class ZeroOrMany<T> : Parser<IReadOnlyList<T>>, ISourceable
         context.MovePin(result, pin, "    ");
         if (!context.DiscardResult)
         {
-            result.Body.Add($"    if ({firstName})");
-            result.Body.Add("    {");
-            result.Body.Add($"        {listName} = new global::Parlot.Fluent.HybridList<{elementTypeName}>();");
-            result.Body.Add($"        {firstName} = false;");
-            result.Body.Add("    }");
-            result.Body.Add($"    {listName}!.Add({itemValueName});");
+            result.Body.Add($"    {listName}.Add({itemValueName});");
         }
         if (_max > 0)
         {
@@ -130,7 +201,8 @@ public sealed class ZeroOrMany<T> : Parser<IReadOnlyList<T>>, ISourceable
         context.Unpin(result, pin);
         if (!context.DiscardResult)
         {
-            result.Body.Add($"{result.ValueVariable} = {listName}?.AsReadOnlyList() ?? global::System.Array.Empty<{elementTypeName}>();");
+            result.Body.Add($"{result.ValueVariable} = {listName}.ToArray();");
+            ListBuilderSource.ReleaseInFinally(result, bodyStart, listName);
         }
 
         return result;

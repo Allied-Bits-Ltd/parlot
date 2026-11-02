@@ -5,6 +5,7 @@ using Parlot.Benchmarks.PidginParsers;
 using Parlot.Tests.Calc;
 using Parlot.Tests.Json;
 using System;
+using System.Linq;
 using System.ComponentModel.DataAnnotations;
 using Xunit;
 
@@ -14,6 +15,56 @@ public class BenchmarksTests
 {
     const decimal _expected1 = (decimal)3.5;
     const decimal _expected2 = (decimal)-64.5;
+
+    [Fact]
+    public void GrammarRulesBenchmarksCompareEachPatternWithItsFix()
+    {
+        var benchmark = new GrammarRulesBenchmarks();
+        benchmark.Setup();
+
+        // Each pattern is the one its rule reports, and the suggested grammar has no finding
+        foreach (var (pattern, fix, rule) in new[]
+        {
+            ("_mixedWhiteSpace", "_sameWhiteSpace", Analysis.GrammarRule.MixedWhiteSpaceChoice),
+            ("_unseekable", "_seekable", Analysis.GrammarRule.UnseekableAlternative),
+            ("_sharedLeadingParser", "_factored", Analysis.GrammarRule.SharedLeadingParser),
+            ("_loopDetection", "_loopDetectionElided", Analysis.GrammarRule.LoopDetection),
+        })
+        {
+            Assert.Equal([rule], Analyze(pattern).Select(static finding => finding.Rule));
+            Assert.Empty(Analyze(fix));
+        }
+
+        static System.Collections.Generic.IEnumerable<Analysis.GrammarFinding> Analyze(string field)
+        {
+            var parser = typeof(GrammarRulesBenchmarks).GetField(field, System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!.GetValue(null)!;
+            var valueType = parser.GetType().BaseType!.GetGenericArguments()[0];
+
+            return (System.Collections.Generic.IEnumerable<Analysis.GrammarFinding>)typeof(Analysis.GrammarAnalyzer).GetMethod(nameof(Analysis.GrammarAnalyzer.Analyze))!
+                .MakeGenericMethod(valueType).Invoke(null, [parser])!;
+        }
+    }
+
+    [Fact]
+    public void CommentsGrammar()
+    {
+        var benchmark = new CommentsBenchmarks();
+        benchmark.Setup();
+        Assert.Equal(-64.5m, benchmark.Expression_Spaces().Evaluate());
+        Assert.Equal(-64.5m, benchmark.Expression_Comments().Evaluate());
+    }
+
+    [Fact]
+    public void ParseWithoutValueGrammars()
+    {
+        var benchmark = new ParseWithoutValueBenchmarks();
+        benchmark.Setup();
+        Assert.Equal("alpha.beta.gamma.delta.epsilon.zeta", benchmark.CapturedSequence().ToString());
+        Assert.Equal("alpha.beta.gamma.delta.epsilon.zeta", benchmark.CapturedSeparated().ToString());
+        Assert.Equal(["a", "b", "c", "d", "e", "f", "g"], benchmark.SkippedList().Select(static x => x.ToString()));
+        Assert.True(benchmark.TryParseSequence());
+        Assert.Equal("alpha.beta.gamma.delta.epsilon.zeta", benchmark.TryMatchSequence().ToString());
+    }
 
     [Fact]
     public void DiscardedTextGrammar()
@@ -42,6 +93,128 @@ public class BenchmarksTests
         Assert.Equal(expected, benchmark.RuntimeWrappedOneOf());
         Assert.Equal(expected, benchmark.GeneratedWrappedPrefixDispatch());
         Assert.Equal(expected, benchmark.GeneratedWrappedFirstCharacterLookup());
+    }
+
+    [Fact]
+    public void WrapperChoiceGrammar()
+    {
+        // The setup checks both choices
+        var benchmark = new WrapperChoiceBenchmarks();
+        benchmark.Setup();
+        Assert.Equal("h", benchmark.Operators());
+        Assert.Equal("h", benchmark.Sequences());
+    }
+
+    [Theory]
+    [InlineData("Atom", 1)]
+    [InlineData("Arithmetic", 7)]
+    [InlineData("Mixed", 1)]
+    [InlineData("Nested", 0)]
+    public void PrecedenceGrammar(string input, long expected)
+    {
+        // The setup checks every parser against the nested runtime one
+        var benchmark = new PrecedenceBenchmarks { Input = input };
+        benchmark.Setup();
+        Assert.Equal(expected, benchmark.NestedRuntime());
+        Assert.Equal(expected, benchmark.ChainGenerated());
+    }
+
+    [Theory]
+    [InlineData("Operand", 42)]
+    [InlineData("Prefixes", 1)]
+    public void PrefixTableGrammar(string input, long expected)
+    {
+        // The setup checks every parser against the runtime Unary one
+        var benchmark = new PrefixTableBenchmarks { Input = input };
+        benchmark.Setup();
+        Assert.Equal(expected, benchmark.UnaryRuntime());
+        Assert.Equal(expected, benchmark.TableGenerated());
+    }
+
+    [Theory]
+    [InlineData(1, -42)]
+    [InlineData(2, 43)]
+    [InlineData(5, 1)]
+    [InlineData(32, 1)]
+    public void PrefixChainGrammar(int count, long expected)
+    {
+        // The setup checks every parser against the runtime Unary one
+        var benchmark = new PrefixChainBenchmarks { Count = count };
+        benchmark.Setup();
+        Assert.Equal(expected, benchmark.UnaryRuntime());
+        Assert.Equal(expected, benchmark.TableGenerated());
+    }
+
+    [Theory]
+    [InlineData("Atom", 1)]
+    [InlineData("Members", 1254301)]
+    [InlineData("Conditional", 993)]
+    [InlineData("Mixed", 1185)]
+    public void ValuedOperatorsGrammar(string input, long expected)
+    {
+        // The setup checks every parser against the folded runtime one
+        var benchmark = new ValuedOperatorsBenchmarks { Input = input };
+        benchmark.Setup();
+        Assert.Equal(expected, benchmark.FoldRuntime());
+        Assert.Equal(expected, benchmark.TableGenerated());
+    }
+
+    [Theory]
+    [InlineData("Flat", 3)]
+    [InlineData("Nested", 50)]
+    public void RecursionLimitGrammar(string input, long expected)
+    {
+        // The setup checks the limited parser against the other one
+        var benchmark = new RecursionLimitBenchmarks { Input = input };
+        benchmark.Setup();
+        Assert.Equal(expected, benchmark.Generated());
+    }
+
+    [Theory]
+    [InlineData("Simple", 1)]
+    [InlineData("Calls", 1)]
+    [InlineData("Conditional", 2)]
+    public void TernaryLevelGrammar(string input, long expected)
+    {
+        // The setup checks every parser against the runtime Sequence one
+        var benchmark = new TernaryLevelBenchmarks { Input = input };
+        benchmark.Setup();
+        Assert.Equal(expected, benchmark.SequenceRuntime());
+        Assert.Equal(expected, benchmark.LevelGenerated());
+    }
+
+    [Theory]
+    [InlineData("Simple", "(&& (< (number 3) (name 5)) (>= (number 5) (name 5)))")]
+    [InlineData("Prefixes", "(?? (|| (&& (== (+ (* (neg (name 1)) (name 1)) (! (name 1))) (~ (name 1))) (neg (- (name 1) (neg (name 1))))) (! (name 1))) (** (' (name 1)) (number 2)))")]
+    [InlineData("Chains", "(&& (== (+ (neg (neg (name 1))) (* (! (! (name 1))) (~ (neg (** (name 1) (number 2)))))) (! (~ (neg (name 1))))) (neg (neg (neg (name 1)))))")]
+    public void ExpressionTableGrammar(string input, string expected)
+    {
+        // The setup checks the generated parser against the runtime one
+        var benchmark = new ExpressionTableBenchmarks { Input = input };
+        benchmark.Setup();
+        Assert.Equal(expected, benchmark.Runtime().ToString());
+        Assert.Equal(expected, benchmark.Generated()?.ToString());
+    }
+
+    [Theory]
+    [InlineData("Repeated")]
+    [InlineData("Distinct")]
+    public void PooledStringGrammars(string scenario)
+    {
+        // The setup checks the pooled strings against ToString()
+        var benchmark = new PooledStringBenchmarks { Scenario = scenario };
+        benchmark.Setup();
+        Assert.Equal(1000, benchmark.PooledIdentifiers().Count);
+        Assert.Equal(1000, benchmark.PooledStrings().Count);
+    }
+
+    [Fact]
+    public void MatchedTextGrammars()
+    {
+        var benchmark = new MatchedTextBenchmarks();
+        benchmark.Setup();
+        Assert.Equal("Select", benchmark.Texts()[2]);
+        Assert.Equal("SELECT", benchmark.Keywords()[0]);
     }
 
     [Fact]
@@ -157,6 +330,16 @@ public class BenchmarksTests
 
         Assert.Equal(success, benchmarks.Lookup());
         Assert.Equal(success, benchmarks.Lookup());
+    }
+
+    [Fact]
+    public void PositionBenchmarks()
+    {
+        var benchmarks = new PositionBenchmarks();
+
+        Assert.Equal(2000, benchmarks.Identifiers());
+        Assert.Equal(400, benchmarks.PositionAfterEachIdentifier());
+        Assert.Equal(400, benchmarks.ErrorPositionAtTheEnd());
     }
 
     [Fact]
@@ -588,6 +771,10 @@ public class BenchmarksTests
 
         Assert.Equal("hello", benchmarks.Text_Generated());
         Assert.Equal(123.456m, benchmarks.Decimal_Generated());
+        Assert.Equal(123.456m, benchmarks.Decimal_NoUnderscores_Fluent());
+        Assert.Equal(123.456m, benchmarks.Decimal_NoUnderscores_Generated());
+        Assert.Equal(123456.789012m, benchmarks.Decimal_Underscores_Fluent());
+        Assert.Equal(123456.789012m, benchmarks.Decimal_Underscores_Generated());
         Assert.Equal(123L, benchmarks.Integer_Generated());
         Assert.Equal("cherry", benchmarks.OneOf_Generated());
         Assert.Equal("cherry", benchmarks.LiteralOneOf_Generated());

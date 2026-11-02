@@ -12,7 +12,7 @@
     <!-- NuGet excludes package build imports during restore. An analyzer-private transitive dependency
          compiles the library, but does not enter its nuspec without an explicit project reference. -->
     <Error Condition="'@(PackageReference->WithMetadataValue('Identity', 'System.Memory'))' == ''"
-           Text="Packaging generated Parlot parsers for $(TargetFramework) requires an explicit non-private PackageReference to System.Memory 4.6.3 or later, so downstream applications restore the runtime dependency." />
+           Text="Packaging generated Parlot parsers for $(TargetFramework) requires an explicit non-private PackageReference to System.Memory 4.5.5 or later, so downstream applications restore the runtime dependency." />
     <Error Condition="'%(PackageReference.Identity)' == 'System.Memory' and ('%(PackageReference.PrivateAssets)' == 'all' or '%(PackageReference.PrivateAssets)' == 'All')"
            Text="The System.Memory PackageReference must not use PrivateAssets=all when packaging generated Parlot parsers for $(TargetFramework)." />
   </Target>
@@ -29,6 +29,15 @@
       <Compile Remove="@(AdditionalFiles)"
                Condition="$([System.String]::Copy('%(AdditionalFiles.Identity)').EndsWith('.parlot.cs', System.StringComparison.OrdinalIgnoreCase))" />
     </ItemGroup>
+  </Target>
+  <Target Name="CollectParlotAnalyzers"
+          BeforeTargets="GenerateMSBuildEditorConfigFileShouldRun">
+    <!-- [IncludeGenerators] loads the generators the compiler is given, wherever NuGet restored them. A generator
+         can't see analyzer references, and an editorconfig value ends at ';' or '#', hence the '|' separator. A path
+         with a '#' is cut there, and the generator falls back to the NuGet package folders. -->
+    <PropertyGroup>
+      <_ParlotAnalyzers>@(Analyzer->'%(FullPath)', '|')</_ParlotAnalyzers>
+    </PropertyGroup>
   </Target>
   <Target Name="IsolateParlotDesignTimeEditorConfig"
           BeforeTargets="GenerateMSBuildEditorConfigFileShouldRun"

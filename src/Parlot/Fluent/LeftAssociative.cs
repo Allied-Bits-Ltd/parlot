@@ -1,3 +1,4 @@
+using Parlot.Rewriting;
 using Parlot.SourceGeneration;
 using System;
 
@@ -9,7 +10,7 @@ namespace Parlot.Fluent;
 /// </summary>
 /// <typeparam name="T">The type of the value being parsed.</typeparam>
 /// <typeparam name="TInput">The type of the operator parsers.</typeparam>
-public sealed class LeftAssociative<T, TInput> : Parser<T>, ISourceable
+public sealed class LeftAssociative<T, TInput> : Parser<T>, ISeekablePrefixes, ISourceable, ILoopAnalyzable
 {
     private readonly Parser<T> _parser;
     private readonly (Parser<TInput> Op, Func<T, T, T> Factory)[] _operators;
@@ -37,6 +38,33 @@ public sealed class LeftAssociative<T, TInput> : Parser<T>, ISourceable
         _choice = new OneOf<int>(choices);
     }
 
+    // The hints of the first operand, which is parsed first, read when they are asked for since it can be a Deferred set later
+    private ForwardedHints? _hints;
+
+    /// <inheritdoc />
+    public bool CanSeek => ForwardedHints.Get(ref _hints, _parser).CanSeek;
+
+    /// <inheritdoc />
+    public char[] ExpectedChars => ForwardedHints.Get(ref _hints, _parser).ExpectedChars;
+
+    /// <inheritdoc />
+    public bool SkipWhitespace => ForwardedHints.Get(ref _hints, _parser).SkipWhitespace;
+
+    string[]? ISeekablePrefixes.ExpectedPrefixes => SeekableHints.Prefixes(_parser);
+
+    bool ILoopAnalyzable.AnalyzeStart(LoopAnalysis analysis)
+    {
+        var nullable = analysis.Invoke(_parser);
+
+        // The operators follow the first operand
+        if (nullable)
+        {
+            analysis.Invoke(_choice);
+        }
+
+        return nullable;
+    }
+
     public override bool Parse(ParseContext context, ref ParseResult<T> result)
     {
         context.EnterParser(this);
@@ -57,7 +85,7 @@ public sealed class LeftAssociative<T, TInput> : Parser<T>, ISourceable
         // Parse zero or more (operator operand) pairs
         while (true)
         {
-            var operatorPosition = context.Scanner.Cursor.Position;
+            var operatorPosition = context.Scanner.Cursor.Offset;
             context.MovePin(pin);
             var operatorResult = new ParseResult<int>();
 
@@ -80,7 +108,7 @@ public sealed class LeftAssociative<T, TInput> : Parser<T>, ISourceable
             }
 
             // Neither the operator nor the operand read anything, so they would match forever
-            if (context.Scanner.Cursor.Offset == operatorPosition.Offset)
+            if (context.Scanner.Cursor.Offset == operatorPosition)
             {
                 break;
             }
@@ -157,7 +185,7 @@ public sealed class LeftAssociative<T, TInput> : Parser<T>, ISourceable
         var pin = context.Pin(result);
         result.Body.Add("    while (true)");
         result.Body.Add("    {");
-        result.Body.Add($"        var {operatorPositionName} = {cursorName}.Position;");
+        result.Body.Add($"        var {operatorPositionName} = {cursorName}.Offset;");
         context.MovePin(result, pin, "        ");
         result.Body.Add($"        if (!{operatorHelperName}({ctx}, out var {operatorName})) break;");
         result.Body.Add($"        if (!{baseHelperName}({ctx}, out var {rightName}))");
@@ -165,7 +193,7 @@ public sealed class LeftAssociative<T, TInput> : Parser<T>, ISourceable
         result.Body.Add($"            {cursorName}.ResetPosition({operatorPositionName});");
         result.Body.Add("            break;");
         result.Body.Add("        }");
-        result.Body.Add($"        if ({cursorName}.Offset == {operatorPositionName}.Offset) break;");
+        result.Body.Add($"        if ({cursorName}.Offset == {operatorPositionName}) break;");
         result.Body.Add($"        switch ({operatorName})");
         result.Body.Add("        {");
 
@@ -188,7 +216,7 @@ public sealed class LeftAssociative<T, TInput> : Parser<T>, ISourceable
     public override string ToString() => Name ?? $"LeftAssociative({_parser})";
 }
 
-public sealed class LeftAssociativeWithContext<T, TInput> : Parser<T>, ISourceable
+public sealed class LeftAssociativeWithContext<T, TInput> : Parser<T>, ISeekablePrefixes, ISourceable, ILoopAnalyzable
 {
     private readonly Parser<T> _parser;
     private readonly (Parser<TInput> Op, Func<ParseContext, T, T, T> Factory)[] _operators;
@@ -216,6 +244,33 @@ public sealed class LeftAssociativeWithContext<T, TInput> : Parser<T>, ISourceab
         _choice = new OneOf<int>(choices);
     }
 
+    // The hints of the first operand, which is parsed first, read when they are asked for since it can be a Deferred set later
+    private ForwardedHints? _hints;
+
+    /// <inheritdoc />
+    public bool CanSeek => ForwardedHints.Get(ref _hints, _parser).CanSeek;
+
+    /// <inheritdoc />
+    public char[] ExpectedChars => ForwardedHints.Get(ref _hints, _parser).ExpectedChars;
+
+    /// <inheritdoc />
+    public bool SkipWhitespace => ForwardedHints.Get(ref _hints, _parser).SkipWhitespace;
+
+    string[]? ISeekablePrefixes.ExpectedPrefixes => SeekableHints.Prefixes(_parser);
+
+    bool ILoopAnalyzable.AnalyzeStart(LoopAnalysis analysis)
+    {
+        var nullable = analysis.Invoke(_parser);
+
+        // The operators follow the first operand
+        if (nullable)
+        {
+            analysis.Invoke(_choice);
+        }
+
+        return nullable;
+    }
+
     public override bool Parse(ParseContext context, ref ParseResult<T> result)
     {
         context.EnterParser(this);
@@ -234,7 +289,7 @@ public sealed class LeftAssociativeWithContext<T, TInput> : Parser<T>, ISourceab
 
         while (true)
         {
-            var operatorPosition = context.Scanner.Cursor.Position;
+            var operatorPosition = context.Scanner.Cursor.Offset;
             context.MovePin(pin);
             var operatorResult = new ParseResult<int>();
 
@@ -254,7 +309,7 @@ public sealed class LeftAssociativeWithContext<T, TInput> : Parser<T>, ISourceab
             }
 
             // Neither the operator nor the operand read anything, so they would match forever
-            if (context.Scanner.Cursor.Offset == operatorPosition.Offset)
+            if (context.Scanner.Cursor.Offset == operatorPosition)
             {
                 break;
             }
@@ -326,7 +381,7 @@ public sealed class LeftAssociativeWithContext<T, TInput> : Parser<T>, ISourceab
         var pin = context.Pin(result);
         result.Body.Add("    while (true)");
         result.Body.Add("    {");
-        result.Body.Add($"        var {operatorPositionName} = {cursorName}.Position;");
+        result.Body.Add($"        var {operatorPositionName} = {cursorName}.Offset;");
         context.MovePin(result, pin, "        ");
         result.Body.Add($"        if (!{operatorHelperName}({ctx}, out var {operatorName})) break;");
         result.Body.Add($"        if (!{baseHelperName}({ctx}, out var {rightName}))");
@@ -334,7 +389,7 @@ public sealed class LeftAssociativeWithContext<T, TInput> : Parser<T>, ISourceab
         result.Body.Add($"            {cursorName}.ResetPosition({operatorPositionName});");
         result.Body.Add("            break;");
         result.Body.Add("        }");
-        result.Body.Add($"        if ({cursorName}.Offset == {operatorPositionName}.Offset) break;");
+        result.Body.Add($"        if ({cursorName}.Offset == {operatorPositionName}) break;");
         result.Body.Add($"        switch ({operatorName})");
         result.Body.Add("        {");
 

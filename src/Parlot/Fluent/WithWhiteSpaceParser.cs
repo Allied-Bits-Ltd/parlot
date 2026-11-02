@@ -7,30 +7,40 @@ namespace Parlot.Fluent;
 /// <summary>
 /// A parser that temporarily sets a custom whitespace parser for its inner parser.
 /// </summary>
-public sealed class WithWhiteSpaceParser<T> : Parser<T>, ISeekable, ISourceable
+public sealed class WithWhiteSpaceParser<T> : Parser<T>, ISeekable, ISourceable, ILoopAnalyzable
 {
     private readonly Parser<T> _parser;
     private readonly Parser<TextSpan> _whiteSpaceParser;
+
+    // Whether the parser is invoked without its value when this one's isn't used
+    private readonly bool _withoutValue;
+
+    // Whether the white space parser can invoke a deferred parser, see ParseContext.HasReentrantWhiteSpaceParser.
+    // Unknown until the first parse, which needs the grammar to be complete.
+    private int _reentrantWhiteSpaceParser = Unknown;
+    private const int Unknown = 0;
+    private const int NotReentrant = 1;
+    private const int Reentrant = 2;
 
     public WithWhiteSpaceParser(Parser<T> parser, Parser<TextSpan> whiteSpaceParser)
     {
         _parser = parser ?? throw new ArgumentNullException(nameof(parser));
         _whiteSpaceParser = whiteSpaceParser ?? throw new ArgumentNullException(nameof(whiteSpaceParser));
-
-        // A parser skipping white spaces does it with the custom parser, which a OneOf doesn't know about:
-        // it would skip them with its own before looking up the first char.
-        if (parser is ISeekable seekable && !seekable.SkipWhitespace)
-        {
-            CanSeek = seekable.CanSeek;
-            ExpectedChars = seekable.ExpectedChars;
-        }
+        _withoutValue = parser.CanParseWithoutValue;
     }
 
-    public bool CanSeek { get; }
+    // The hints of the parser that reads first, read when they are asked for since it can be a Deferred set later. A parser
+    // skipping white spaces does it with the custom parser, which a OneOf doesn't know about: it would skip them with its own
+    // before looking up the first char.
+    private ForwardedHints? _hints;
 
-    public char[] ExpectedChars { get; } = [];
+    public bool CanSeek => Hints.CanSeek;
+
+    public char[] ExpectedChars => Hints.ExpectedChars;
 
     public bool SkipWhitespace { get; }
+
+    private ForwardedHints Hints => ForwardedHints.Get(ref _hints, _parser, static parser => SeekableHints.Of(parser) is { SkipWhitespace: false } hints ? hints : (false, [], false));
 
     public override bool Parse(ParseContext context, ref ParseResult<T> result)
     {
@@ -38,11 +48,12 @@ public sealed class WithWhiteSpaceParser<T> : Parser<T>, ISeekable, ISourceable
 
         // Save the current whitespace parser
         var previousWhiteSpaceParser = context.WhiteSpaceParser;
+        var previousReentrant = context.HasReentrantWhiteSpaceParser;
 
         try
         {
             // Set the custom whitespace parser
-            context.WhiteSpaceParser = _whiteSpaceParser;
+            context.SetWhiteSpaceParser(_whiteSpaceParser, IsWhiteSpaceParserReentrant());
 
             // Parse with the custom whitespace parser
             var success = _parser.Parse(context, ref result);
@@ -53,9 +64,55 @@ public sealed class WithWhiteSpaceParser<T> : Parser<T>, ISeekable, ISourceable
         finally
         {
             // Restore the previous whitespace parser
-            context.WhiteSpaceParser = previousWhiteSpaceParser;
+            context.SetWhiteSpaceParser(previousWhiteSpaceParser, previousReentrant);
         }
     }
+
+    internal override bool CanParseWithoutValue => _withoutValue;
+
+    // Parse, with the parser invoked without its value
+    internal override bool ParseWithoutValue(ParseContext context, ref ParseResult<T> result)
+    {
+        context.EnterParser(this);
+
+        // Save the current whitespace parser
+        var previousWhiteSpaceParser = context.WhiteSpaceParser;
+        var previousReentrant = context.HasReentrantWhiteSpaceParser;
+
+        try
+        {
+            // Set the custom whitespace parser
+            context.SetWhiteSpaceParser(_whiteSpaceParser, IsWhiteSpaceParserReentrant());
+
+            // Parse with the custom whitespace parser
+            var success = _withoutValue ? _parser.ParseWithoutValue(context, ref result) : _parser.Parse(context, ref result);
+
+            context.ExitParser(this);
+            return success;
+        }
+        finally
+        {
+            // Restore the previous whitespace parser
+            context.SetWhiteSpaceParser(previousWhiteSpaceParser, previousReentrant);
+        }
+    }
+
+    private bool IsWhiteSpaceParserReentrant()
+    {
+        var reentrant = _reentrantWhiteSpaceParser;
+
+        if (reentrant == Unknown)
+        {
+            // The answer doesn't change once the parser can't reach a deferred parser
+            reentrant = LoopAnalysis.CanReachDeferred(_whiteSpaceParser) ? Reentrant : NotReentrant;
+            _reentrantWhiteSpaceParser = reentrant;
+        }
+
+        return reentrant == Reentrant;
+    }
+
+    // The white space parser is invoked by the parsers that skip white space, see LoopAnalysis.CanReachDeferred()
+    bool ILoopAnalyzable.AnalyzeStart(LoopAnalysis analysis) => analysis.Invoke(_parser);
 
     public SourceResult GenerateSource(SourceGenerationContext context)
     {

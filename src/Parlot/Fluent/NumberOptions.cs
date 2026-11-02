@@ -50,25 +50,27 @@ public enum NumberOptions
     AllowExponent = 8,
 
     /// <summary>
-    /// Indicates that the numeric string can include a "whitespace" in the form of an underscore ("_") character.
-    /// </summary>
-    AllowUnderscore = 16,
-
-    /// <summary>
-    /// When set, numbers like "1." (i.e., those without a fractional parts) are consumed without a separator, keeping the separator for the next token.
-    /// When not set (default), a number "1." will be recognized as "1" and the separator will be consumed, making it unavailable for the next token.
-    /// </summary>
-    RequireFractionalPartForDecimals = 32,
-
-    /// <summary>
     /// Indicates that the <see cref="AllowLeadingSign"/>, <see cref="AllowDecimalSeparator"/>, <see cref="AllowExponent"/>
     /// styles are used. This is a composite number style.
     /// </summary>
     Float = AllowLeadingSign | AllowDecimalSeparator | AllowExponent,
 
     /// <summary>
-    /// Indicates that all options are used.
+    /// Indicates that all options are used, except <see cref="AllowUnderscore"/>.
     /// This is a composite number style.
     /// </summary>
-    Any = AllowLeadingSign | AllowDecimalSeparator | AllowGroupSeparators | AllowExponent | AllowUnderscore,
+    Any = AllowLeadingSign | AllowDecimalSeparator | AllowGroupSeparators | AllowExponent,
+
+    /// <summary>
+    /// Indicates that underscores (_) can separate the digits of the numeric string to make it easier to read, like
+    /// in <c>1_000_000</c>. Underscores are only allowed between two digits, and can be repeated. They are ignored
+    /// when the value is computed. It isn't part of <see cref="Any"/>, which reads <c>1_000</c> as <c>1</c>.
+    /// </summary>
+    AllowUnderscore = 16,
+
+    /// <summary>
+    /// When set, numbers like "1." (i.e., those without a fractional part) are consumed without the decimal separator, keeping the separator for the next token.
+    /// When not set (default), a number "1." will be recognized as "1." and the separator will be consumed, making it unavailable for the next token.
+    /// </summary>
+    RequireFractionalPartForDecimals = 32,
 }

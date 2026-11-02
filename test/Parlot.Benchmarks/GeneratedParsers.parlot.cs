@@ -28,21 +28,14 @@ public static partial class GeneratedParsers
         var groupExpression = Between(openParen, expression, closeParen);
         var primary = number.Or(groupExpression);
 
-        var unary = primary.Unary(
-            (minus, static value => new NegateExpression(value))
-        );
-
-        var multiplicative = unary.LeftAssociative(
-            (divided, static (left, right) => new Division(left, right)),
-            (times, static (left, right) => new Multiplication(left, right))
-        );
-
-        var additive = multiplicative.LeftAssociative(
-            (plus, static (left, right) => new Addition(left, right)),
-            (minus, static (left, right) => new Subtraction(left, right))
-        );
-
-        expression.Parser = additive;
+        expression.Parser = primary.Operators()
+            .Unary((minus, static value => new NegateExpression(value)))
+            .LeftAssociative(
+                (divided, static (left, right) => new Division(left, right)),
+                (times, static (left, right) => new Multiplication(left, right)))
+            .LeftAssociative(
+                (plus, static (left, right) => new Addition(left, right)),
+                (minus, static (left, right) => new Subtraction(left, right)));
 
         return expression;
     }
@@ -80,6 +73,16 @@ public static partial class GeneratedParsers
     [GenerateParser(nameof(TryParseJsonAscii))]
     [IncludeUsings("System.Collections.Generic", "Parlot.Tests.Json")]
     private static Parser<IJson> BuildJsonAscii() => BuildJson().WithWhiteSpaceSet(WhiteSpaceSet.Ascii);
+
+    // The JSON grammar with the SpaceTabCrLf white space set, for WhiteSpaceSetBenchmarks
+    [GenerateParser(nameof(TryParseJsonSpaceTabCrLf))]
+    [IncludeUsings("System.Collections.Generic", "Parlot.Tests.Json")]
+    private static Parser<IJson> BuildJsonSpaceTabCrLf() => BuildJson().WithWhiteSpaceSet(WhiteSpaceSet.SpaceTabCrLf);
+
+    // The JSON grammar skipping the same chars with a white space parser, for WhiteSpaceSetBenchmarks
+    [GenerateParser(nameof(TryParseJsonWhiteSpaceParser))]
+    [IncludeUsings("System.Collections.Generic", "Parlot.Tests.Json")]
+    private static Parser<IJson> BuildJsonWhiteSpaceParser() => BuildJson().WithWhiteSpaceParser(Literals.AnyOf(" \t\r\n"));
 
     [GenerateParser(nameof(TryParseLog))]
     [IncludeUsings("System.Collections.Generic")]
@@ -130,6 +133,9 @@ public static partial class GeneratedParsers
 
     [GenerateParser(nameof(TryParseDecimal))]
     private static Parser<decimal> BuildDecimal() => Terms.Decimal();
+
+    [GenerateParser(nameof(TryParseUnderscoredDecimal))]
+    private static Parser<decimal> BuildUnderscoredDecimal() => Terms.Number<decimal>(NumberOptions.Float | NumberOptions.AllowUnderscore);
 
     [GenerateParser(nameof(TryParseInteger))]
     private static Parser<long> BuildInteger() => Terms.Integer();

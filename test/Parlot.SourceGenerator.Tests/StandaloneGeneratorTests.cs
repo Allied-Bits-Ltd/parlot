@@ -273,6 +273,10 @@ public class StandaloneGeneratorTests
     [InlineData("public static partial bool TryParse(System.IO.Stream stream, out int value);")]
     [InlineData("public static partial bool TryParse(System.IO.StringReader reader, out int value);")]
     [InlineData("public static partial bool TryParse(System.IO.TextReader reader, out int value); public static partial bool TryParse(System.IO.TextReader reader, System.Threading.CancellationToken cancellationToken, out int value);")]
+    [InlineData("public static partial bool TryParse(string text, out int value); public static partial bool TryParse(string text, System.Threading.CancellationToken cancellationToken, out int value, out int failureOffset);")]
+    [InlineData("public static partial bool TryParse(string text, out int value, out int first); public static partial bool TryParse(string text, out int value, out int second);")]
+    [InlineData("public static partial bool TryParse(string text, out int value, out (int Offset, int Line) failure);")]
+    [InlineData("public static partial bool TryParse(string text, out int value, out long failureOffset);")]
     public void Invalid_Entry_Point_Is_Rejected(string declaration)
     {
         var (result, _) = Generate("public static partial class Grammar { " + declaration + " }", Grammar);
@@ -289,6 +293,42 @@ public class StandaloneGeneratorTests
         Assert.DoesNotContain(sources, static source => source.HintName.Contains("TextReaderRefillSource", StringComparison.Ordinal));
         Assert.DoesNotContain(sources, static source => source.SourceText.ToString().Contains("BeginToken()", StringComparison.Ordinal)
             && source.HintName.StartsWith("StandaloneParser", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Cancellable_Entry_Points_Check_The_Token_Repeatedly_In_Checked_Assemblies()
+    {
+        // The context counts its cancellation checks in a byte, which must wrap around when the consuming
+        // assembly checks for arithmetic overflows
+        const string declaration = "public static partial class Grammar { public static partial bool TryParse(string text, System.Threading.CancellationToken cancellationToken, out int value); }";
+        const string grammar = """
+            using Parlot.Fluent;
+            using Parlot.SourceGenerator;
+            using static Parlot.Fluent.Parsers;
+            public static partial class Grammar
+            {
+                [GenerateParser(nameof(TryParse))]
+                private static Parser<int> Build()
+                {
+                    var nested = Deferred<int>();
+                    nested.Parser = Between(Literals.Char('('), nested, Literals.Char(')')).Then(static depth => depth + 1)
+                        .Or(Literals.Char('x').Then(0));
+                    return nested.Eof();
+                }
+            }
+            """;
+        var (result, compilation) = Generate(declaration, grammar, warningsAsErrors: true, checkOverflow: true);
+        AssertNoErrors(result, compilation);
+
+        using var stream = new MemoryStream();
+        Assert.True(compilation.Emit(stream).Success);
+        var parse = Assembly.Load(stream.ToArray()).GetType("Grammar").GetMethod("TryParse");
+        using var source = new CancellationTokenSource();
+
+        // Each nested Deferred invocation checks the token
+        object[] arguments = [new string('(', 300) + "x" + new string(')', 300), source.Token, null];
+        Assert.True((bool)parse.Invoke(null, arguments));
+        Assert.Equal(300, arguments[2]);
     }
 
     [Theory]
@@ -474,6 +514,37 @@ public class StandaloneGeneratorTests
     }
 
     [Fact]
+    public void Generation_Errors_Are_Reported_On_Their_Factory()
+    {
+        const string declaration = """
+            public static partial class Grammar
+            {
+                public static partial bool TryParse(string text, out int value);
+                public static partial bool TryParseHelper(string text, out int value);
+            }
+            """;
+        const string grammar = """
+            using Parlot.Fluent;
+            using Parlot.SourceGenerator;
+            using static Parlot.Fluent.Parsers;
+            public static partial class Grammar
+            {
+                private static int Helper(int value) => value;
+                [GenerateParser(nameof(TryParse))]
+                private static Parser<int> Build() => Terms.Number<int>(NumberOptions.Integer);
+                [GenerateParser(nameof(TryParseHelper))]
+                private static Parser<int> BuildHelper() => Terms.Number<int>(NumberOptions.Integer).Then(value => Helper(value));
+            }
+            """;
+        var (result, _) = Generate(declaration, grammar);
+        var errors = result.Diagnostics.Where(static diagnostic => diagnostic.Id == "PARLOT024").ToArray();
+
+        Assert.NotEmpty(errors);
+        Assert.All(errors, static error => Assert.StartsWith("Standalone factory 'BuildHelper'",
+            error.GetMessage(System.Globalization.CultureInfo.InvariantCulture), StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void Runtime_Only_Parser_Under_SkipWhiteSpace_Is_A_Generation_Error()
     {
         const string grammar = """
@@ -536,6 +607,49 @@ public class StandaloneGeneratorTests
         Assert.Contains("Standalone parsers are generated during build.", sources[0].SourceText.ToString(), StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Failure_Overloads_Call_The_Parser_Of_The_Other_Overload(bool designTime)
+    {
+        const string declaration = """
+            public static partial class Grammar
+            {
+                public static partial bool TryParse(string text, out int value);
+                public static partial bool TryParse(string text, out int value, out int failureOffset);
+                public static partial bool TryParse(string text, out int value, out (int Offset, int Line, int Column) failure);
+                public static partial bool TryParse(System.IO.TextReader reader, out int value, out (int Offset, int Line, int Column) failure);
+            }
+            """;
+        var (result, compilation) = Generate(declaration, Grammar.Replace(".Eof()", ".AndSkip(Terms.Char(';')).Eof()", StringComparison.Ordinal), designTime);
+        AssertNoErrors(result, compilation);
+        var sources = result.Results.SelectMany(static result => result.GeneratedSources)
+            .Where(static source => source.HintName.StartsWith("StandaloneParser", StringComparison.Ordinal)).ToArray();
+
+        // One parser for the string overloads, one for the TextReader overload
+        Assert.Equal(2, sources.Length);
+        if (designTime)
+        {
+            return;
+        }
+
+        var cores = sources.SelectMany(static source => source.SyntaxTree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>())
+            .Where(static method => method.Identifier.ValueText.EndsWith("_Core", StringComparison.Ordinal)).ToArray();
+        Assert.Equal(2, cores.Length);
+
+        using var stream = new MemoryStream();
+        Assert.True(compilation.Emit(stream).Success);
+        var methods = Assembly.Load(stream.ToArray()).GetType("Grammar").GetMethods().Where(static method => method.Name == "TryParse").ToArray();
+        Assert.Equal(4, methods.Length);
+        foreach (var method in methods.Where(static method => method.GetParameters().Length == 3))
+        {
+            object input = method.GetParameters()[0].ParameterType == typeof(string) ? "  12 ," : new StringReader("  12 ,");
+            object[] arguments = [input, null, null];
+            Assert.False((bool)method.Invoke(null, arguments));
+            Assert.Equal(arguments[2] is int ? 5 : (5, 1, 6), arguments[2]);
+        }
+    }
+
     [Fact]
     public void Multiple_Parsers_Share_One_Runtime()
     {
@@ -576,6 +690,29 @@ public class StandaloneGeneratorTests
         Assert.DoesNotContain("\"Parlot.Generated.Scanner\"", source, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Embedded_Runtime_Compiles_In_Consumers_That_Generate_Documentation(bool streaming)
+    {
+        // GenerateDocumentationFile binds the crefs of every doc comment; those of the shared sources name runtime-only API
+        var declaration = """
+            /// <summary>Parses integers.</summary>
+            public static partial class Grammar
+            {
+                /// <summary>Parses an integer.</summary>
+                public static partial bool TryParse(string text, out int value);
+            }
+            """;
+        if (streaming)
+        {
+            declaration = declaration.Replace("string text", "System.IO.TextReader reader", StringComparison.Ordinal);
+        }
+        var (result, compilation) = Generate(declaration, Grammar, warningsAsErrors: true, documentationMode: DocumentationMode.Diagnose);
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Severity >= DiagnosticSeverity.Warning);
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity >= DiagnosticSeverity.Warning));
+    }
+
     private static void AssertNoErrors(GeneratorDriverRunResult result, CSharpCompilation compilation)
     {
         Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
@@ -585,9 +722,10 @@ public class StandaloneGeneratorTests
 
     private static (GeneratorDriverRunResult Result, CSharpCompilation Compilation) Generate(
         string source, string grammar, bool designTime = false, bool referenceParlot = false,
-        OutputKind outputKind = OutputKind.DynamicallyLinkedLibrary, bool warningsAsErrors = false, bool checkOverflow = false)
+        OutputKind outputKind = OutputKind.DynamicallyLinkedLibrary, bool warningsAsErrors = false, bool checkOverflow = false,
+        DocumentationMode documentationMode = DocumentationMode.Parse)
     {
-        var parseOptions = new CSharpParseOptions(LanguageVersion.CSharp12,
+        var parseOptions = new CSharpParseOptions(LanguageVersion.CSharp12, documentationMode,
             preprocessorSymbols: ["NET", "NET8_0_OR_GREATER", "NET9_0_OR_GREATER", "NET10_0_OR_GREATER"]);
         var references = ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")).Split(Path.PathSeparator)
             .Where(path => !Path.GetFileName(path).StartsWith("Parlot", StringComparison.Ordinal))

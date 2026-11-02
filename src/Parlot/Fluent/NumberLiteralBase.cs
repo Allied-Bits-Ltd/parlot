@@ -11,7 +11,7 @@ namespace Parlot.Fluent;
 /// This class is used as a base class for custom number parsers which don't implement INumber<typeparamref name="T"/> after .NET 7.0.
 /// </summary>
 /// <typeparam name="T"></typeparam>
-public abstract class NumberLiteralBase<T> : Parser<T>, ISeekable, ISourceable
+public abstract class NumberLiteralBase<T> : Parser<T>, ISeekable, ISourceable, ILoopAnalyzable, ISpanSourceable
 {
     private readonly char _decimalSeparator;
     private readonly char _secondDecimalSeparator;
@@ -97,17 +97,15 @@ public abstract class NumberLiteralBase<T> : Parser<T>, ISeekable, ISourceable
             }
         }
 
-        if (_allowUnderscore)
-        {
-            expectedChars += "_";
-        }
-
-        // A group separator or an exponent can't be a starting char
+        // A group separator, an exponent or an underscore can't be a starting char
 
         ExpectedChars = expectedChars.ToCharArray();
 
         Name = "NumberLiteral";
     }
+
+    // A derived type can override Parse()
+    bool ILoopAnalyzable.AnalyzeStart(LoopAnalysis analysis) => GetType().Assembly == typeof(NumberLiteralBase<T>).Assembly ? false : analysis.AnalyzeUnknown(this);
 
     public override bool Parse(ParseContext context, ref ParseResult<T> result)
     {
@@ -118,12 +116,17 @@ public abstract class NumberLiteralBase<T> : Parser<T>, ISeekable, ISourceable
 
         context.EnterParser(this);
 
-        var reset = context.Scanner.Cursor.Position;
-        var start = reset.Offset;
+        var reset = context.Scanner.Cursor.Offset;
+        var start = reset;
 
         if (context.Scanner.ReadDecimal(_allowLeadingSign, _allowDecimalSeparator, _allowGroupSeparator, _allowExponent, _allowUnderscore, _requireFractionalPartForDecimals, out var number, _decimalSeparator, _groupSeparator, _secondDecimalSeparator))
         {
             var end = context.Scanner.Cursor.Offset;
+
+            if (_allowUnderscore)
+            {
+                number = Numbers.RemoveUnderscores(number);
+            }
 
             if (TryParseNumber(number, _numberStyles, _culture, out T value))
             {
@@ -178,12 +181,14 @@ public abstract class NumberLiteralBase<T> : Parser<T>, ISeekable, ISourceable
             valueVariable: "value",
             valueTypeName: valueTypeName);
 
-        result.Body.Add($"var {resetName} = {cursorName}.Position;");
+        result.Body.Add($"var {resetName} = {cursorName}.Offset;");
         result.Body.Add($"global::System.ReadOnlySpan<char> {numberSpanName} = default;");
         if (!context.DiscardResult)
         {
             result.Body.Add($"{valueTypeName} {parsedValueName} = default;");
         }
+
+        var (tryParseMethod, numberStylesFieldName, cultureExpr, culture2Expr) = GetParseExpressions(context);
 
         var allowLeadingSign = _allowLeadingSign ? "true" : "false";
         var allowDecimalSeparator = _allowDecimalSeparator ? "true" : "false";
@@ -191,31 +196,15 @@ public abstract class NumberLiteralBase<T> : Parser<T>, ISeekable, ISourceable
         var allowExponent = _allowExponent ? "true" : "false";
         var allowUnderscore = _allowUnderscore ? "true" : "false";
         var requireFractionalPartForDecimals = _requireFractionalPartForDecimals ? "true" : "false";
-
-        // Emit NumberStyles as a static readonly field
-        var numberStylesFieldName = context.RegisterStaticField(
-            $"private static readonly global::System.Globalization.NumberStyles",
-            $"(global::System.Globalization.NumberStyles){(int)_numberStyles}");
-
-        // Emit CultureInfo - use InvariantCulture if it's the default, otherwise create a static field
-        var cultureExpr = GetCultureExpression(context, _culture, _decimalSeparator);
-        var culture2Expr = _culture2 == null ? null : GetCultureExpression(context, _culture2, _secondDecimalSeparator);
-
         var decimalSeparatorLiteral = $"(char){(int)_decimalSeparator}";
         var groupSeparatorLiteral = $"(char){(int)_groupSeparator}";
         var secondDecimalSeparatorLiteral = $"(char){(int)_secondDecimalSeparator}";
         result.Body.Add($"if ({scannerName}.ReadDecimal({allowLeadingSign}, {allowDecimalSeparator}, {allowGroupSeparator}, {allowExponent}, {allowUnderscore}, {requireFractionalPartForDecimals}, out {numberSpanName}, {decimalSeparatorLiteral}, {groupSeparatorLiteral}, {secondDecimalSeparatorLiteral}))");
         result.Body.Add("{");
-        // The helper is available in Parlot's net8.0+ assets. A net7.0 consumer selects
-        // the netstandard2.0 asset, which cannot expose generic-math APIs.
-        var supportsFastNumberParsing =
-            context.TargetFramework.Identifier == TargetFrameworkIdentifier.NetCoreApp &&
-            context.TargetFramework.Version >= new Version(8, 0);
-        var tryParseMethod = supportsFastNumberParsing
-            ? $"global::Parlot.Numbers.TryParseNumber<{valueTypeName}>"
-            : Numbers.HasTryParseOverload(typeof(T))
-                ? "global::Parlot.Numbers.TryParse"
-                : throw new NotSupportedException($"Source generation for numbers of type '{typeof(T)}' requires .NET 8 or later.");
+        if (_allowUnderscore)
+        {
+            result.Body.Add($"    {numberSpanName} = global::Parlot.Numbers.RemoveUnderscores({numberSpanName});");
+        }
         var outTarget = context.DiscardResult ? $"{valueTypeName} _" : parsedValueName;
 
         // The number is parsed using the second decimal separator if it can't be parsed using the first one
@@ -229,13 +218,51 @@ public abstract class NumberLiteralBase<T> : Parser<T>, ISeekable, ISourceable
             result.Body.Add("        return true;");
             result.Body.Add("    }");
         }
-
         result.Body.Add("}");
         result.Body.Add($"{cursorName}.ResetPosition({resetName});");
         result.Body.Add($"{result.ValueVariable} = default;");
         result.Body.Add("return false;");
 
         return result;
+    }
+
+    // The fields registered in the last context, which span code uses each time the parser is inlined
+    private (SourceGenerationContext Context, string TryParseMethod, string NumberStyles, string Culture, string? Culture2)? _parseExpressions;
+
+    // Returns the method parsing the number, and the expressions of its styles and culture
+    private (string TryParseMethod, string NumberStyles, string Culture, string? Culture2) GetParseExpressions(SourceGenerationContext context)
+    {
+        if (_parseExpressions is { } expressions && ReferenceEquals(expressions.Context, context))
+        {
+            return (expressions.TryParseMethod, expressions.NumberStyles, expressions.Culture, expressions.Culture2);
+        }
+
+        var valueTypeName = SourceGenerationContext.GetTypeName(typeof(T));
+
+        // Emit NumberStyles as a static readonly field
+        var numberStylesFieldName = context.RegisterStaticField(
+            $"private static readonly global::System.Globalization.NumberStyles",
+            $"(global::System.Globalization.NumberStyles){(int)_numberStyles}");
+
+        // Emit CultureInfo - use InvariantCulture if it's the default, otherwise create a static field
+        var cultureExpr = GetCultureExpression(context, _culture, _decimalSeparator);
+        var culture2Expr = _culture2 == null ? null : GetCultureExpression(context, _culture2, _secondDecimalSeparator);
+
+        // The helper is available in Parlot's net8.0+ assets. A net7.0 consumer selects
+        // the netstandard2.0 asset, which cannot expose generic-math APIs, and C# 10 can't compile them.
+        var supportsFastNumberParsing =
+            context.TargetFramework.Identifier == TargetFrameworkIdentifier.NetCoreApp &&
+            context.TargetFramework.Version >= new Version(8, 0) &&
+            context.SupportsStaticAbstractMembers;
+        var tryParseMethod = supportsFastNumberParsing
+            ? $"global::Parlot.Numbers.TryParseNumber<{valueTypeName}>"
+            : Numbers.HasTryParseOverload(typeof(T))
+                ? "global::Parlot.Numbers.TryParse"
+                : throw new NotSupportedException($"Source generation for numbers of type '{typeof(T)}' requires .NET 8 or later and C# 11 or later.");
+
+        _parseExpressions = (context, tryParseMethod, numberStylesFieldName, cultureExpr, culture2Expr);
+
+        return (tryParseMethod, numberStylesFieldName, cultureExpr, culture2Expr);
     }
 
     private static string GetCultureExpression(SourceGenerationContext context, CultureInfo culture, char decimalSeparator)
@@ -252,6 +279,20 @@ public abstract class NumberLiteralBase<T> : Parser<T>, ISeekable, ISourceable
         return context.RegisterStaticField(
             "private static readonly global::System.Globalization.CultureInfo",
             $"new global::System.Func<global::System.Globalization.CultureInfo>(() => {{ var c = (global::System.Globalization.CultureInfo)global::System.Globalization.CultureInfo.InvariantCulture.Clone(); c.NumberFormat.NumberDecimalSeparator = {decimalSeparatorExpr}; c.NumberFormat.NumberGroupSeparator = {groupSeparatorExpr}; return c; }})()");
+    }
+
+    // Only the built-in number parsers can be generated, see GenerateSource. The code parsing the value is large, a
+    // subgraph only inlines a few.
+    int ISpanSourceable.GetSpanSourceWeight(SourceGenerationContext context)
+        => GetType().Assembly == typeof(NumberLiteralBase<T>).Assembly ? 8 : -1;
+
+    void ISpanSourceable.GenerateSpanSource(SpanSourceWriter writer, string? valueVariable, SpanLabel fail)
+    {
+        var (tryParseMethod, numberStyles, culture, culture2) = GetParseExpressions(writer.Context);
+
+        NumberSource.GenerateSpanSource(writer, valueVariable, fail, typeof(T), tryParseMethod, numberStyles, culture, culture2,
+            _allowLeadingSign, _allowDecimalSeparator, _allowGroupSeparator, _allowExponent, _allowUnderscore, _requireFractionalPartForDecimals,
+            _decimalSeparator, _groupSeparator, _secondDecimalSeparator);
     }
 }
 

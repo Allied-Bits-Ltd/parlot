@@ -7,7 +7,7 @@ namespace Parlot.Fluent;
 
 internal delegate bool TryParseRadix<T>(ReadOnlySpan<char> span, int radix, out int charsRead, [MaybeNullWhen(false)] out T value);
 
-internal sealed class RadixNumberLiteral<T> : Parser<T>, ISeekable, ISourceable
+internal sealed class RadixNumberLiteral<T> : Parser<T>, ISeekable, ISourceable, ILoopAnalyzable
 {
     private readonly int _radix;
     private readonly TryParseRadix<T> _tryParse;
@@ -31,6 +31,8 @@ internal sealed class RadixNumberLiteral<T> : Parser<T>, ISeekable, ISourceable
     public char[] ExpectedChars { get; }
 
     public bool SkipWhitespace => false;
+
+    bool ILoopAnalyzable.AnalyzeStart(LoopAnalysis analysis) => false;
 
     public override bool Parse(ParseContext context, ref ParseResult<T> result)
     {
@@ -73,12 +75,13 @@ internal sealed class RadixNumberLiteral<T> : Parser<T>, ISeekable, ISourceable
         var parsedValueName = $"parsedValue{context.NextNumber()}";
         var supportsGenericMath =
             context.TargetFramework.Identifier == TargetFrameworkIdentifier.NetCoreApp &&
-            context.TargetFramework.Version >= new Version(8, 0);
+            context.TargetFramework.Version >= new Version(8, 0) &&
+            context.SupportsStaticAbstractMembers;
         var tryParseMethod = Numbers.HasTryParseRadixOverload(typeof(T))
             ? "global::Parlot.Numbers.TryParseRadix"
             : supportsGenericMath
                 ? $"global::Parlot.Numbers.TryParseRadix<{valueTypeName}>"
-                : throw new NotSupportedException($"Source generation for radix numbers of type '{typeof(T)}' requires .NET 8 or later.");
+                : throw new NotSupportedException($"Source generation for radix numbers of type '{typeof(T)}' requires .NET 8 or later and C# 11 or later.");
 
         result.Body.Add($"var {charsReadName} = 0;");
         result.Body.Add($"{valueTypeName} {parsedValueName} = default;");

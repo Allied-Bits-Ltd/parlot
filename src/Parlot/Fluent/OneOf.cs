@@ -1,3 +1,4 @@
+using Parlot.Analysis;
 using Parlot.Rewriting;
 using System;
 using System.Collections.Generic;
@@ -14,7 +15,7 @@ namespace Parlot.Fluent;
 /// We then return the actual result of each parser.
 /// </summary>
 /// <typeparam name="T"></typeparam>
-public sealed class OneOf<T> : Parser<T>, ISeekablePrefixes, ISourceable /**/
+public sealed class OneOf<T> : Parser<T>, ISeekablePrefixes, IResolvableSeekable, ISourceable, ILoopAnalyzable, IChoiceParser /**/, ISpanSourceable /**/
 {
     // Used as a lookup for OneOf<T> to find other OneOf<T> parsers that could
     // be invoked when there is no match.
@@ -47,16 +48,24 @@ public sealed class OneOf<T> : Parser<T>, ISeekablePrefixes, ISourceable /**/
     //private readonly CharMap<Func<ParseContext, ValueTuple<bool, T>>> _lambdaMap = new();
     //private Func<ParseContext, ValueTuple<bool, T>>? _lambdaOtherParsers;
 
+    // Whether an alternative can be invoked without its value, such that this one is when its value isn't used
+    private readonly bool _withoutValue;
+
     public OneOf(Parser<T>[] parsers)
     {
         _originalParsers = _parsers = parsers ?? throw new ArgumentNullException(nameof(parsers));
         OriginalParsers = Parsers = parsers;
 
+        foreach (var parser in parsers)
+        {
+            _withoutValue |= parser is not null && parser.CanParseWithoutValue;
+        }
+
         Build();
 
         // An alternative that can't tell what it starts with may be a Deferred whose parser is set later, or
         // a choice holding one, so the table is built again from the hints they declare once parsing starts
-        _resolved = _originalParsers.Length <= 1 || !_originalParsers.Any(static x => x is ISeekable seekable && !IsResolved(seekable));
+        _resolved = _originalParsers.Length == 0 || !_originalParsers.Any(static x => x is ISeekable seekable && !IsResolved(seekable));
 
         static bool IsResolved(ISeekable seekable) => seekable.CanSeek && Array.IndexOf(seekable.ExpectedChars, OtherSeekableChar) < 0;
     }
@@ -101,6 +110,9 @@ public sealed class OneOf<T> : Parser<T>, ISeekablePrefixes, ISourceable /**/
                 Build();
 
                 Volatile.Write(ref _resolved, true);
+
+                // The parsers that start with this one read its hints again
+                SeekableResolution.Invalidate();
             }
             finally
             {
@@ -108,6 +120,8 @@ public sealed class OneOf<T> : Parser<T>, ISeekablePrefixes, ISourceable /**/
             }
         }
     }
+
+    void IResolvableSeekable.EnsureResolved() => EnsureResolved();
 
     private void Build()
     {
@@ -169,11 +183,12 @@ public sealed class OneOf<T> : Parser<T>, ISeekablePrefixes, ISourceable /**/
             }
         }
 
-        // We can't build a lookup table if there is only one parser
-        if (parsers.Length <= 1)
+        if (parsers.Length == 0)
         {
             return;
         }
+
+        // A single alternative gets a lookup table too, so the choice declares its hints to the choices that hold it
 
         // Technically we shouldn't be able to build a lookup table if not all parsers are seekable.
         // For instance, "or" | identifier is not seekable since 'identifier' is not seekable.
@@ -394,6 +409,23 @@ public sealed class OneOf<T> : Parser<T>, ISeekablePrefixes, ISourceable /**/
 
     public IReadOnlyList<Parser<T>> Parsers { get; private set; }
 
+    IReadOnlyList<object> IChoiceParser.Alternatives => _originalParsers;
+
+    void IChoiceParser.Resolve() => EnsureResolved();
+
+    bool ILoopAnalyzable.AnalyzeStart(LoopAnalysis analysis)
+    {
+        // The lookup tables only hold these parsers, or the ones they invoke at their start
+        var nullable = false;
+
+        foreach (var parser in _originalParsers)
+        {
+            nullable |= analysis.Invoke(parser);
+        }
+
+        return nullable;
+    }
+
     public override bool Parse(ParseContext context, ref ParseResult<T> result)
     {
         if (!Volatile.Read(ref _resolved))
@@ -401,7 +433,7 @@ public sealed class OneOf<T> : Parser<T>, ISeekablePrefixes, ISourceable /**/
             EnsureResolved();
         }
 
-        if (context.IsCompacting)
+        if (context.IsCompactingOrCollectingDiagnostics)
         {
             return ParseCompacting(context, ref result);
         }
@@ -411,13 +443,13 @@ public sealed class OneOf<T> : Parser<T>, ISeekablePrefixes, ISourceable /**/
         var cursor = context.Scanner.Cursor;
 
         // The position is only needed to revert the whitespaces this parser skipped, the sub-parsers
-        // revert their own state. Reading it is not free as it also tracks the line and column.
-        var start = default(TextPosition);
+        // revert their own state.
+        var start = 0;
 
         // If all sub-parsers skip whitespaces, do it once here
         if (SkipWhitespace)
         {
-            start = cursor.Position;
+            start = cursor.Offset;
             context.SkipWhiteSpace();
         }
 
@@ -474,21 +506,110 @@ public sealed class OneOf<T> : Parser<T>, ISeekablePrefixes, ISourceable /**/
         return false;
     }
 
+    internal override bool CanParseWithoutValue => _withoutValue;
+
+    // Parse, with the alternatives invoked without their value
+    internal override bool ParseWithoutValue(ParseContext context, ref ParseResult<T> result)
+    {
+        if (!Volatile.Read(ref _resolved))
+        {
+            EnsureResolved();
+        }
+
+        // The alternatives are invoked with their value when the input is a reader or the diagnostics are collected
+        if (context.IsCompactingOrCollectingDiagnostics)
+        {
+            return ParseCompacting(context, ref result);
+        }
+
+        context.EnterParser(this);
+
+        var cursor = context.Scanner.Cursor;
+
+        // The position is only needed to revert the whitespaces this parser skipped, the sub-parsers
+        // revert their own state.
+        var start = 0;
+
+        // If all sub-parsers skip whitespaces, do it once here
+        if (SkipWhitespace)
+        {
+            start = cursor.Offset;
+            context.SkipWhiteSpace();
+        }
+
+        var map = _parseMap;
+
+        if (map != null)
+        {
+            // Each lookup entry also contains the non-seekable parsers
+            var seekableParsers = map[cursor.Current] ?? _otherParsers;
+
+            if (seekableParsers != null)
+            {
+                if (seekableParsers.Length == 0)
+                {
+                    seekableParsers = SelectByPrefix(cursor);
+                }
+
+                // The length is read after the selection, so that the loop doesn't check the bounds of the array
+                var length = seekableParsers.Length;
+
+                for (var i = 0; i < length; i++)
+                {
+                    if (seekableParsers[i].ParseWithoutValue(context, ref result))
+                    {
+                        context.ExitParser(this);
+                        return true;
+                    }
+                }
+            }
+        }
+        else
+        {
+            var parsers = _parsers;
+
+            for (var i = 0; i < parsers.Length; i++)
+            {
+                if (parsers[i].ParseWithoutValue(context, ref result))
+                {
+                    context.ExitParser(this);
+                    return true;
+                }
+            }
+        }
+
+        // We only need to reset the position if we are skipping whitespaces
+        // as the parsers would have reverted their own state
+
+        if (SkipWhitespace)
+        {
+            cursor.ResetPosition(start);
+        }
+
+        context.ExitParser(this);
+        return false;
+    }
+
     // The alternatives of the char are selected again by the prefix the input starts with. Inlined, the lookup would grow
     // the frame of Parse(), which every choice pays for.
     [MethodImpl(MethodImplOptions.NoInlining)]
     private Parser<T>[] SelectByPrefix(Cursor cursor) => _prefixMap![cursor.Current]!.Select(cursor);
 
+    // Also invoked when the diagnostics are collected, which discards those of the alternatives that aren't used. Its pins
+    // do nothing when the input is a string.
     private bool ParseCompacting(ParseContext context, ref ParseResult<T> result)
     {
         context.EnterParser(this);
 
+        var collecting = context.CollectDiagnostics;
+        var alternatives = collecting ? context.BeginAlternatives() : default;
+
         var cursor = context.Scanner.Cursor;
-        var start = default(TextPosition);
+        var start = 0;
 
         if (SkipWhitespace)
         {
-            start = cursor.Position;
+            start = cursor.Offset;
             context.SkipWhiteSpace();
         }
 
@@ -516,7 +637,17 @@ public sealed class OneOf<T> : Parser<T>, ISeekablePrefixes, ISourceable /**/
                     context.ExitParser(this);
                     return true;
                 }
+
+                if (collecting)
+                {
+                    context.RejectAlternative(ref alternatives);
+                }
             }
+        }
+
+        if (collecting)
+        {
+            context.RestoreAlternatives(in alternatives);
         }
 
         if (SkipWhitespace)
@@ -536,6 +667,11 @@ public sealed class OneOf<T> : Parser<T>, ISeekablePrefixes, ISourceable /**/
 
         // The factory has run to completion, so every alternative can declare its hints
         EnsureResolved();
+
+        if (SpanSource.TryGenerate(this, typeof(T), context) is { } spanResult)
+        {
+            return spanResult;
+        }
 
         var choiceResult = KeywordChoiceSource.TryGenerate(Parsers, SkipWhitespace, context)
             ?? TextChoiceSource.TryGenerate(Parsers, SkipWhitespace, context);
@@ -578,7 +714,7 @@ public sealed class OneOf<T> : Parser<T>, ISeekablePrefixes, ISourceable /**/
         if (SkipWhitespace)
         {
             startName = $"start{context.NextNumber()}";
-            result.Body.Add($"var {startName} = {cursorName}.Position;");
+            result.Body.Add($"var {startName} = {cursorName}.Offset;");
             result.Body.Add($"{ctx}.SkipWhiteSpace();");
         }
 
@@ -734,6 +870,72 @@ public sealed class OneOf<T> : Parser<T>, ISeekablePrefixes, ISourceable /**/
         return result;
     }
 
+    int ISpanSourceable.GetSpanSourceWeight(SourceGenerationContext context)
+    {
+        EnsureResolved();
+
+        // The alternatives are tried in order. A choice of 8 texts or keywords or more is generated as a lookup instead.
+        if (Parsers.Count == 0 || CountAlternatives(this) >= 8)
+        {
+            return -1;
+        }
+
+        return SpanSource.GetWeight(context, Parsers.ToArray<object>());
+
+        // The choices of texts and keywords are flattened like they are
+        static int CountAlternatives(OneOf<T> oneOf)
+        {
+            var count = 0;
+
+            foreach (var parser in oneOf.Parsers)
+            {
+                count += parser is OneOf<T> nested && nested.SkipWhitespace == oneOf.SkipWhitespace ? CountAlternatives(nested) : 1;
+            }
+
+            return count;
+        }
+    }
+
+    void ISpanSourceable.GenerateSpanSource(SpanSourceWriter writer, string? valueVariable, SpanLabel fail)
+    {
+        var parsers = Parsers;
+        var pos = writer.Pos;
+        var done = writer.NewLabel("choiceDone");
+        var start = parsers.Count > 1 ? writer.DeclareLocal("int", "choiceStart", "0") : null;
+
+        // The white space is skipped once for all the alternatives, like at runtime
+        if (SkipWhitespace)
+        {
+            writer.SkipWhiteSpace();
+        }
+
+        if (start != null)
+        {
+            writer.Add($"{start} = {pos};");
+        }
+
+        for (var i = 0; i < parsers.Count - 1; i++)
+        {
+            var next = writer.NewLabel("alternative");
+
+            writer.Generate(parsers[i], valueVariable, next);
+
+            if (!next.IsUsed)
+            {
+                // The alternative always matches, the next ones are never tried
+                writer.PlaceLabel(done);
+                return;
+            }
+
+            writer.Add(done.Goto());
+            writer.PlaceLabel(next, $"{pos} = {start};");
+        }
+
+        // The failure of the last alternative is the failure of the choice, whose owner moves the position back
+        writer.Generate(parsers[parsers.Count - 1], valueVariable, fail);
+        writer.PlaceLabel(done);
+    }
+
     private static void EmitParsers(
         IReadOnlyList<Parser<T>> parsers,
         SourceResult outerResult,
@@ -756,6 +958,64 @@ public sealed class OneOf<T> : Parser<T>, ISeekablePrefixes, ISourceable /**/
         // success = Helper1(ctx, out value) || Helper2(ctx, out value) || ...;
         // (value may be assigned by failed helpers; callers only read it when success==true)
         var firstHelper = getHelper(parsers[0]);
+
+        if (context.CollectDiagnostics)
+        {
+            // The diagnostics of the alternatives that aren't used are discarded, see ParseCompacting(). This includes the
+            // warnings of a single alternative which fails.
+            var alternativesName = $"alternatives{context.NextNumber()}";
+            var collectingPinName = context.IsCompacting && parsers.Count > 1 ? $"pin{context.NextNumber()}" : null;
+
+            outerResult.Body.Add($"{indent}if ({contextVariableName}.CollectDiagnostics)");
+            outerResult.Body.Add($"{indent}{{");
+            outerResult.Body.Add($"{indent}    var {alternativesName} = {contextVariableName}.BeginAlternatives();");
+            if (collectingPinName != null)
+            {
+                outerResult.Body.Add($"{indent}    var {collectingPinName} = {contextVariableName}.Pin();");
+            }
+            outerResult.Body.Add($"{indent}    {successVar} = {firstHelper}({contextVariableName}, out {outTarget});");
+
+            for (var i = 1; i < parsers.Count; i++)
+            {
+                outerResult.Body.Add($"{indent}    if (!{successVar})");
+                outerResult.Body.Add($"{indent}    {{");
+                outerResult.Body.Add($"{indent}        {contextVariableName}.RejectAlternative(ref {alternativesName});");
+                outerResult.Body.Add($"{indent}        {successVar} = {getHelper(parsers[i])}({contextVariableName}, out {outTarget});");
+                outerResult.Body.Add($"{indent}    }}");
+            }
+
+            outerResult.Body.Add($"{indent}    if (!{successVar})");
+            outerResult.Body.Add($"{indent}    {{");
+            outerResult.Body.Add($"{indent}        {contextVariableName}.RejectAlternative(ref {alternativesName});");
+            outerResult.Body.Add($"{indent}        {contextVariableName}.RestoreAlternatives(in {alternativesName});");
+            outerResult.Body.Add($"{indent}    }}");
+            if (collectingPinName != null)
+            {
+                outerResult.Body.Add($"{indent}    {contextVariableName}.Unpin({collectingPinName});");
+            }
+            outerResult.Body.Add($"{indent}}}");
+            outerResult.Body.Add($"{indent}else");
+            outerResult.Body.Add($"{indent}{{");
+            EmitChain(parsers, outerResult, contextVariableName, indent + "    ", getHelper, context, firstHelper, outTarget);
+            outerResult.Body.Add($"{indent}}}");
+            return;
+        }
+
+        EmitChain(parsers, outerResult, contextVariableName, indent, getHelper, context, firstHelper, outTarget);
+    }
+
+    // The alternatives tried in order, until one matches
+    private static void EmitChain(
+        IReadOnlyList<Parser<T>> parsers,
+        SourceResult outerResult,
+        string contextVariableName,
+        string indent,
+        Func<Parser<T>, string> getHelper,
+        SourceGenerationContext context,
+        string firstHelper,
+        string outTarget)
+    {
+        var successVar = outerResult.SuccessVariable;
 
         if (parsers.Count == 1)
         {
@@ -1119,15 +1379,6 @@ public sealed class OneOf<T> : Parser<T>, ISeekablePrefixes, ISourceable /**/
 
             return node._parsers;
         }
-    }
-
-    private sealed class ParserReferenceComparer : IEqualityComparer<Parser<T>>
-    {
-        public static readonly ParserReferenceComparer Instance = new();
-
-        public bool Equals(Parser<T>? x, Parser<T>? y) => ReferenceEquals(x, y);
-
-        public int GetHashCode(Parser<T> obj) => RuntimeHelpers.GetHashCode(obj);
     }
 
     private sealed class ParserListKeyComparer : IEqualityComparer<ParserListKey>

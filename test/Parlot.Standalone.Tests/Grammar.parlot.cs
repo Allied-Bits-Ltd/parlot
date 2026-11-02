@@ -124,6 +124,9 @@ public static partial class Grammar
     [GenerateParser(nameof(TryParseError))]
     private static Parser<char> ErrorParser() => Literals.Char('x').ElseError("Expected x");
 
+    [GenerateParser(nameof(TryParseWarning))]
+    private static Parser<char> WarningParser() => Terms.Char('x').Warning("Deprecated x");
+
     [GenerateParser(nameof(TryParseThrowingCallback))]
     private static Parser<char> ThrowingCallback() =>
         Literals.Char('x').Then(static char (char value) => throw new System.InvalidOperationException("Callback failed"));
@@ -213,11 +216,10 @@ public static partial class Grammar
     // keywords after it only match when the input doesn't start with one.
     [GenerateParser(nameof(TryParsePrefixKeywords))]
     private static Parser<(int Value, int Offset)> PrefixKeywords() =>
-        OneOf([
-            .. PrefixKeywordWords.Take(PrefixKeywordFallback).Select(static (word, index) => Terms.Keyword(word).Then(index)),
-            Terms.Pattern(static c => c is >= 'a' and <= 'z').Then(-1),
-            .. PrefixKeywordWords.Skip(PrefixKeywordFallback).Select(static (word, index) => Terms.Keyword(word).Then(PrefixKeywordFallback + index)),
-        ]).Then(static (context, value) => (value, context.Scanner.Cursor.Offset));
+        OneOf(PrefixKeywordWords.Take(PrefixKeywordFallback).Select(static (word, index) => Terms.Keyword(word).Then(index))
+            .Append(Terms.Pattern(static c => c is >= 'a' and <= 'z').Then(-1))
+            .Concat(PrefixKeywordWords.Skip(PrefixKeywordFallback).Select(static (word, index) => Terms.Keyword(word).Then(PrefixKeywordFallback + index)))
+            .ToArray()).Then(static (context, value) => (value, context.Scanner.Cursor.Offset));
 
     [GenerateParser(nameof(TryParsePrefixOperators))]
     private static Parser<(int Value, int Offset)> PrefixOperators() =>
@@ -245,4 +247,23 @@ public static partial class Grammar
             return size;
         }).Then(static (context, span) =>
             (span.ToString(), context.Scanner.Cursor.Offset, context.Scanner.Cursor.Position.Line, context.Scanner.Cursor.Position.Column));
+
+    // Generated parsers detect their cycles without the context's loop detection, which still works for the callbacks
+    [GenerateParser(nameof(TryParseContextLoopDetection))]
+    private static Parser<string> ContextLoopDetection() =>
+        Literals.Char('x').Then(static (context, _) =>
+        {
+            var offset = context.Scanner.Cursor.Offset;
+            var first = context.PushParserAtPosition("a");
+            var again = context.PushParserAtPosition("a");
+            var second = context.PushParserAtPosition("b");
+            var active = context.IsParserActiveAtPosition("a") && context.IsParserActiveAtPosition("b");
+
+            context.PopParserAtPosition("b", offset);
+            context.PopParserAtPosition("a", offset);
+            context.EnterRecursion();
+            context.ExitRecursion();
+
+            return $"{first} {again} {second} {active} {context.IsParserActiveAtPosition("a")} {context.MaxRecursionDepth} {context.DisableLoopDetection}";
+        }).Eof();
 }

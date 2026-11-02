@@ -156,13 +156,20 @@ public class GeneratedParserTests
     }
 
     [Fact]
+    public void Callbacks_Can_Use_The_Loop_Detection_Of_The_Context()
+    {
+        Assert.True(Grammar.TryParseContextLoopDetection("x", out var value));
+        Assert.Equal("True False True True False 0 False", value);
+    }
+
+    [Fact]
     public void Scanned_Tokens_Track_New_Lines()
     {
         string[] inputs =
-        [
+        {
             "abc d", "ab\ncd\ne f", "ab\ncd", "\nab c", "ab\n\n\n c", "a\r\nb\rc\n d",
             new string('a', 70) + "\n" + new string('b', 70) + " x", new string('\n', 100) + "a",
-        ];
+        };
 
         foreach (var input in inputs)
         {
@@ -196,7 +203,7 @@ public class GeneratedParserTests
     [Fact]
     public void Text_Choices_Agree_With_An_Ordered_Unicode_Prefix_Reference()
     {
-        string[] words = ["if1", "if", "if12", "Content-Encoding", "Content-Type", "Content", "\u00e9\0x", "\ud800\udc00", "line\r\nend", "line\r\n", "if"];
+        string[] words = { "if1", "if", "if12", "Content-Encoding", "Content-Type", "Content", "\u00e9\0x", "\ud800\udc00", "line\r\nend", "line\r\n", "if" };
         foreach (var word in words)
         {
             Check(word);
@@ -241,7 +248,7 @@ public class GeneratedParserTests
     public void ZeroOrOne_Returns_Zero_Or_One_Items()
     {
         Assert.True(Grammar.TryParseZeroOrOne("a", out var matched));
-        Assert.Equal(['a'], matched);
+        Assert.Equal(new[] { 'a' }, matched);
         Assert.True(Grammar.TryParseZeroOrOne("b", out var missing));
         Assert.Empty(missing);
         Assert.True(Grammar.TryParseZeroOrOneDiscarded("ab", out var afterMatch));
@@ -286,7 +293,7 @@ public class GeneratedParserTests
     [Fact]
     public void Keyword_Choices_Agree_With_An_Ordered_Reference()
     {
-        string[] words = ["if", "else", "while", "return", "int", "interface", "internal", "yield", "case", "catch", "const", "class"];
+        string[] words = { "if", "else", "while", "return", "int", "interface", "internal", "yield", "case", "catch", "const", "class" };
         foreach (var word in words)
         {
             Check(word);
@@ -456,8 +463,8 @@ public class GeneratedParserTests
     [Fact]
     public void Matched_Text_And_Full_Buffer_Span_Reuse_Existing_Strings()
     {
-        var exact = new string(['h', 'e', 'l', 'l', 'o']);
-        var differentCase = new string(['H', 'E', 'L', 'L', 'O']);
+        var exact = new string(new[] { 'h', 'e', 'l', 'l', 'o' });
+        var differentCase = new string(new[] { 'H', 'E', 'L', 'L', 'O' });
 
         Assert.True(Grammar.TryParseMatchedText(exact, out var value));
         Assert.Same("hello", value);
@@ -481,13 +488,32 @@ public class GeneratedParserTests
     }
 
     [Fact]
+    public void Generated_Warnings_Are_Exposed_Without_A_Runtime_Reference()
+    {
+        Assert.True(Grammar.TryParseWarning("\n x", out var value, out var diagnostics));
+        Assert.Equal('x', value);
+        Assert.Equal(("Deprecated x", true, 2, 2, 2), Assert.Single(diagnostics));
+    }
+
+    [Fact]
+    public void Generated_Errors_Are_Exposed_Without_A_Runtime_Reference()
+    {
+        Assert.False(Grammar.TryParseError("?", out _));
+        Assert.False(Grammar.TryParseError("?", out _, out var errors));
+        Assert.Equal(("Expected x", false, 0, 1, 1), Assert.Single(errors));
+        Assert.True(Grammar.TryParseError("x", out var value, out errors));
+        Assert.Equal('x', value);
+        Assert.Empty(errors);
+    }
+
+    [Fact]
     public void String_Escapes_And_Collection_Storage_Work()
     {
         Assert.True(Grammar.TryParseString("\"line\\nquote\\\"\"", out var value));
         Assert.Equal("line\nquote\"", value);
         Assert.False(Grammar.TryParseString("\"unterminated", out _));
         Assert.True(Grammar.TryParseNumbers("1, 2, 3, 4, 5, 6", out var values));
-        Assert.Equal([1, 2, 3, 4, 5, 6], values);
+        Assert.Equal(new[] { 1, 2, 3, 4, 5, 6 }, values);
         Assert.False(Grammar.TryParseNumbers("1, x", out _));
     }
 

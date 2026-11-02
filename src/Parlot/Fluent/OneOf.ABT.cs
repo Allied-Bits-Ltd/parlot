@@ -1,9 +1,12 @@
+using Parlot.Analysis;
+using Parlot.Rewriting;
 using Parlot.SourceGeneration;
 using System;
+using System.Collections.Generic;
 
 namespace Parlot.Fluent;
 
-public sealed class OneOf<A, B, T> : Parser<T>, ISourceable
+public sealed class OneOf<A, B, T> : Parser<T>, ISeekable, ISourceable, ILoopAnalyzable, IChoiceParser
     where A : T
     where B : T
 {
@@ -16,8 +19,36 @@ public sealed class OneOf<A, B, T> : Parser<T>, ISourceable
         _parserB = parserB ?? throw new ArgumentNullException(nameof(parserB));
     }
 
+    // The hints of both parsers, read when they are asked for since they can be Deferred parsers set later
+    private ForwardedHints? _hints;
+
+    /// <inheritdoc />
+    public bool CanSeek => Hints.CanSeek;
+
+    /// <inheritdoc />
+    public char[] ExpectedChars => Hints.ExpectedChars;
+
+    /// <inheritdoc />
+    public bool SkipWhitespace => Hints.SkipWhitespace;
+
+    private ForwardedHints Hints => ForwardedHints.Get(ref _hints, this, static self => SeekableHints.Union(new object[] { self._parserA, self._parserB }));
+
+    bool ILoopAnalyzable.AnalyzeStart(LoopAnalysis analysis) => analysis.Invoke(_parserA) | analysis.Invoke(_parserB);
+
+    IReadOnlyList<object> IChoiceParser.Alternatives => [_parserA, _parserB];
+
+    void IChoiceParser.Resolve()
+    {
+        // No lookup table
+    }
+
     public override bool Parse(ParseContext context, ref ParseResult<T> result)
     {
+        if (context.CollectDiagnostics)
+        {
+            return ParseCollecting(context, ref result);
+        }
+
         context.EnterParser(this);
 
         var resultA = new ParseResult<A>();
@@ -44,6 +75,45 @@ public sealed class OneOf<A, B, T> : Parser<T>, ISourceable
             context.ExitParser(this);
             return true;
         }
+
+        context.ExitParser(this);
+        return false;
+    }
+
+    // Like Parse, discarding the diagnostics of the alternative which isn't used
+    private bool ParseCollecting(ParseContext context, ref ParseResult<T> result)
+    {
+        context.EnterParser(this);
+
+        var alternatives = context.BeginAlternatives();
+        var resultA = new ParseResult<A>();
+
+        var pin = context.Pin();
+        var successA = _parserA.Parse(context, ref resultA);
+        context.Unpin(pin);
+
+        if (successA)
+        {
+            result.Set(resultA.Start, resultA.End, resultA.Value);
+
+            context.ExitParser(this);
+            return true;
+        }
+
+        context.RejectAlternative(ref alternatives);
+
+        var resultB = new ParseResult<B>();
+
+        if (_parserB.Parse(context, ref resultB))
+        {
+            result.Set(resultB.Start, resultB.End, resultB.Value);
+
+            context.ExitParser(this);
+            return true;
+        }
+
+        context.RejectAlternative(ref alternatives);
+        context.RestoreAlternatives(in alternatives);
 
         context.ExitParser(this);
         return false;
@@ -76,6 +146,14 @@ public sealed class OneOf<A, B, T> : Parser<T>, ISourceable
         var valueBName = $"valueB{context.NextNumber()}";
 
         var successAName = $"successA{context.NextNumber()}";
+        var ctx = context.ParseContextName;
+        string? alternativesName = null;
+
+        if (context.CollectDiagnostics)
+        {
+            alternativesName = $"alternatives{context.NextNumber()}";
+            result.Body.Add($"var {alternativesName} = {ctx}.CollectDiagnostics ? {ctx}.BeginAlternatives() : default;");
+        }
 
         // The second parser reads from the same position
         var pin = context.Pin(result);
@@ -91,6 +169,10 @@ public sealed class OneOf<A, B, T> : Parser<T>, ISourceable
         result.Body.Add("}");
         result.Body.Add("else");
         result.Body.Add("{");
+        if (alternativesName != null)
+        {
+            result.Body.Add($"    if ({ctx}.CollectDiagnostics) {ctx}.RejectAlternative(ref {alternativesName});");
+        }
         result.Body.Add($"    if ({helperNameB}({context.ParseContextName}, out var {valueBName}))");
         result.Body.Add("    {");
         result.Body.Add($"        {result.SuccessVariable} = true;");
@@ -99,6 +181,14 @@ public sealed class OneOf<A, B, T> : Parser<T>, ISourceable
             result.Body.Add($"        {result.ValueVariable} = ({valueTypeNameT}){valueBName};");
         }
         result.Body.Add("    }");
+        if (alternativesName != null)
+        {
+            result.Body.Add($"    else if ({ctx}.CollectDiagnostics)");
+            result.Body.Add("    {");
+            result.Body.Add($"        {ctx}.RejectAlternative(ref {alternativesName});");
+            result.Body.Add($"        {ctx}.RestoreAlternatives(in {alternativesName});");
+            result.Body.Add("    }");
+        }
         result.Body.Add("}");
 
         return result;

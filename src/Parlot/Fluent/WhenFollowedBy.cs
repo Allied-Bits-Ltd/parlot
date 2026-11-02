@@ -8,7 +8,7 @@ namespace Parlot.Fluent;
 /// Ensure the given parser matches at the current position without consuming input (positive lookahead).
 /// </summary>
 /// <typeparam name="T">The output parser type.</typeparam>
-public sealed class WhenFollowedBy<T> : Parser<T>, ISeekablePrefixes, ISourceable
+public sealed class WhenFollowedBy<T> : Parser<T>, ISeekablePrefixes, ISourceable, ILoopAnalyzable
 {
     private readonly Parser<T> _parser;
     private readonly Parser<object> _lookahead;
@@ -17,29 +17,36 @@ public sealed class WhenFollowedBy<T> : Parser<T>, ISeekablePrefixes, ISourceabl
     {
         _parser = parser ?? throw new ArgumentNullException(nameof(parser));
         _lookahead = lookahead ?? throw new ArgumentNullException(nameof(lookahead));
-
-        // Forward ISeekable properties from the main parser
-        if (_parser is ISeekable seekable)
-        {
-            CanSeek = seekable.CanSeek;
-            ExpectedChars = seekable.ExpectedChars;
-            SkipWhitespace = seekable.SkipWhitespace;
-        }
     }
 
-    public bool CanSeek { get; }
+    // The hints of the parser that reads first, read when they are asked for since it can be a Deferred set later
+    private ForwardedHints? _hints;
 
-    public char[] ExpectedChars { get; } = [];
+    public bool CanSeek => ForwardedHints.Get(ref _hints, _parser).CanSeek;
 
-    public bool SkipWhitespace { get; }
+    public char[] ExpectedChars => ForwardedHints.Get(ref _hints, _parser).ExpectedChars;
+
+    public bool SkipWhitespace => ForwardedHints.Get(ref _hints, _parser).SkipWhitespace;
 
     string[]? ISeekablePrefixes.ExpectedPrefixes => SeekableHints.Prefixes(_parser);
+
+    bool ILoopAnalyzable.AnalyzeStart(LoopAnalysis analysis)
+    {
+        var nullable = analysis.Invoke(_parser);
+
+        if (nullable)
+        {
+            analysis.Invoke(_lookahead);
+        }
+
+        return nullable;
+    }
 
     public override bool Parse(ParseContext context, ref ParseResult<T> result)
     {
         context.EnterParser(this);
 
-        var start = context.Scanner.Cursor.Position;
+        var start = context.Scanner.Cursor.Offset;
 
         // First, parse with the main parser
         var mainSuccess = _parser.Parse(context, ref result);
@@ -51,7 +58,7 @@ public sealed class WhenFollowedBy<T> : Parser<T>, ISeekablePrefixes, ISourceabl
         }
 
         // Save position before lookahead check
-        var beforeLookahead = context.Scanner.Cursor.Position;
+        var beforeLookahead = context.Scanner.Cursor.Offset;
 
         // Now check if the lookahead parser matches at the current position
         var lookaheadResult = new ParseResult<object>();
@@ -94,7 +101,7 @@ public sealed class WhenFollowedBy<T> : Parser<T>, ISeekablePrefixes, ISourceabl
         var startName = $"start{context.NextNumber()}";
         var beforeLookaheadName = $"beforeLookahead{context.NextNumber()}";
 
-        result.Body.Add($"var {startName} = {cursorName}.Position;");
+        result.Body.Add($"var {startName} = {cursorName}.Offset;");
 
         var mainValueTypeName = SourceGenerationContext.GetTypeName(typeof(T));
         var lookaheadValueTypeName = SourceGenerationContext.GetTypeName(typeof(object));
@@ -121,7 +128,7 @@ public sealed class WhenFollowedBy<T> : Parser<T>, ISeekablePrefixes, ISourceabl
         result.Body.Add("}");
         result.Body.Add("else");
         result.Body.Add("{");
-        result.Body.Add($"    var {beforeLookaheadName} = {cursorName}.Position;");
+        result.Body.Add($"    var {beforeLookaheadName} = {cursorName}.Offset;");
         var lookahead = context.PinnedCall(result, $"{lookaheadHelperName}({context.ParseContextName}, out _)", "    ");
         result.Body.Add($"    if (!{lookahead})");
         result.Body.Add("    {");

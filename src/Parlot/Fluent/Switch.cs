@@ -8,7 +8,7 @@ namespace Parlot.Fluent;
 /// <summary>
 /// Routes the parsing based on a custom delegate.
 /// </summary>
-public sealed class Switch<T, U> : Parser<U>, ISeekablePrefixes, ISourceable
+public sealed class Switch<T, U> : Parser<U>, ISeekablePrefixes, ISourceable, ILoopAnalyzable
 {
     private readonly Parser<T> _previousParser;
     private readonly Parser<U>[] _parsers;
@@ -28,26 +28,38 @@ public sealed class Switch<T, U> : Parser<U>, ISeekablePrefixes, ISourceable
         {
             _parsers[i] = _parsers[i] ?? throw new ArgumentException("Parsers array must not contain null elements.", nameof(parsers));
         }
-
-        // The previous parser always reads first
-        if (_previousParser is ISeekable seekable)
-        {
-            CanSeek = seekable.CanSeek;
-            ExpectedChars = seekable.ExpectedChars;
-            SkipWhitespace = seekable.SkipWhitespace;
-        }
     }
 
-    /// <inheritdoc />
-    public bool CanSeek { get; }
+    // The previous parser always reads first. Its hints are read when they are asked for since it can be a Deferred set later.
+    private ForwardedHints? _hints;
 
     /// <inheritdoc />
-    public char[] ExpectedChars { get; } = [];
+    public bool CanSeek => ForwardedHints.Get(ref _hints, _previousParser).CanSeek;
 
     /// <inheritdoc />
-    public bool SkipWhitespace { get; }
+    public char[] ExpectedChars => ForwardedHints.Get(ref _hints, _previousParser).ExpectedChars;
+
+    /// <inheritdoc />
+    public bool SkipWhitespace => ForwardedHints.Get(ref _hints, _previousParser).SkipWhitespace;
 
     string[]? ISeekablePrefixes.ExpectedPrefixes => SeekableHints.Prefixes(_previousParser);
+
+    bool ILoopAnalyzable.AnalyzeStart(LoopAnalysis analysis)
+    {
+        if (!analysis.Invoke(_previousParser))
+        {
+            return false;
+        }
+
+        var nullable = false;
+
+        foreach (var parser in _parsers)
+        {
+            nullable |= analysis.Invoke(parser);
+        }
+
+        return nullable;
+    }
 
     public override bool Parse(ParseContext context, ref ParseResult<U> result)
     {
@@ -55,7 +67,7 @@ public sealed class Switch<T, U> : Parser<U>, ISeekablePrefixes, ISourceable
 
         var previousResult = new ParseResult<T>();
 
-        var start = context.Scanner.Cursor.Position;
+        var start = context.Scanner.Cursor.Offset;
 
         if (!_previousParser.Parse(context, ref previousResult))
         {
@@ -127,7 +139,7 @@ public sealed class Switch<T, U> : Parser<U>, ISeekablePrefixes, ISourceable
 
         var startName = $"start{context.NextNumber()}";
 
-        result.Body.Add($"var {startName} = {context.CursorName}.Position;");
+        result.Body.Add($"var {startName} = {context.CursorName}.Offset;");
         result.Body.Add($"if ({helperName}({ctx}, out var {previousValueName}))");
         result.Body.Add("{");
         result.Body.Add($"    var {indexName} = {selectorLambda}({ctx}, {previousValueName});");

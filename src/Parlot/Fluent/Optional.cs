@@ -9,12 +9,24 @@ namespace Parlot.Fluent;
 /// <remarks>
 /// This parser will always succeed. If the inner parser fails, it will return an option without a value.
 /// </remarks>
-public sealed class Optional<T> : Parser<Option<T>>, ISourceable
+public sealed class Optional<T> : Parser<Option<T>>, ISourceable, ILoopAnalyzable, ISpanSourceable
 {
     private readonly Parser<T> _parser;
+
+    // Whether the parser is invoked without its value when this one's isn't used
+    private readonly bool _withoutValue;
+
     public Optional(Parser<T> parser)
     {
         _parser = parser ?? throw new ArgumentNullException(nameof(parser));
+        _withoutValue = parser.CanParseWithoutValue;
+    }
+
+    bool ILoopAnalyzable.AnalyzeStart(LoopAnalysis analysis)
+    {
+        analysis.Invoke(_parser);
+
+        return true;
     }
 
     public override bool Parse(ParseContext context, ref ParseResult<Option<T>> result)
@@ -44,6 +56,37 @@ public sealed class Optional<T> : Parser<Option<T>>, ISourceable
         return true;
     }
 
+    internal override bool CanParseWithoutValue => _withoutValue;
+
+    // Parse, without the option
+    internal override bool ParseWithoutValue(ParseContext context, ref ParseResult<Option<T>> result)
+    {
+        context.EnterParser(this);
+
+        var parsed = new ParseResult<T>();
+
+        // The text is read again when the parser fails
+        var pin = context.Pin();
+        var success = _withoutValue ? _parser.ParseWithoutValue(context, ref parsed) : _parser.Parse(context, ref parsed);
+        context.Unpin(pin);
+
+        if (success)
+        {
+            result.Start = parsed.Start;
+            result.End = parsed.End;
+        }
+        else
+        {
+            // Nothing was read: the result is empty at the current position
+            var offset = context.Scanner.Cursor.Offset;
+            result.Start = offset;
+            result.End = offset;
+        }
+
+        context.ExitParser(this);
+        return true;
+    }
+
     public SourceResult GenerateSource(SourceGenerationContext context)
     {
         ThrowHelper.ThrowIfNull(context, nameof(context));
@@ -51,6 +94,11 @@ public sealed class Optional<T> : Parser<Option<T>>, ISourceable
         if (_parser is not ISourceable sourceable)
         {
             throw new NotSupportedException("Optional requires a source-generatable parser.");
+        }
+
+        if (SpanSource.TryGenerate(this, typeof(Option<T>), context) is { } spanResult)
+        {
+            return spanResult;
         }
 
         var result = context.CreateResult(typeof(Option<T>), defaultSuccess: true);
@@ -90,6 +138,18 @@ public sealed class Optional<T> : Parser<Option<T>>, ISourceable
         result.Body.Add($"{result.SuccessVariable} = true;");
 
         return result;
+    }
+
+    int ISpanSourceable.GetSpanSourceWeight(SourceGenerationContext context) => SpanSource.GetWeight(context, _parser);
+
+    void ISpanSourceable.GenerateSpanSource(SpanSourceWriter writer, string? valueVariable, SpanLabel fail)
+    {
+        var optionTypeName = SourceGenerationContext.GetTypeName(typeof(Option<T>));
+        var item = valueVariable != null ? writer.DeclareLocal(typeof(T), "item") : null;
+
+        SpanSource.GenerateOptional(writer, _parser, item,
+            valueVariable != null ? $"{valueVariable} = new {optionTypeName}({item});" : null,
+            valueVariable != null ? $"{valueVariable} = new {optionTypeName}();" : null);
     }
 
     public override string ToString() => $"{_parser}?";

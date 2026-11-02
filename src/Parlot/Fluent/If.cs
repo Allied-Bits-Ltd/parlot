@@ -9,27 +9,34 @@ namespace Parlot.Fluent;
 /// </summary>
 /// <typeparam name="C">The concrete <see cref="ParseContext" /> type to use.</typeparam>
 /// <typeparam name="T">The output parser type.</typeparam>
-public sealed class If<C, T> : Parser<T>, ISeekable, ISourceable where C : ParseContext
+public sealed class If<C, T> : Parser<T>, ISeekable, ISourceable, ILoopAnalyzable where C : ParseContext
 {
     private readonly Func<C, bool>? _contextCondition;
     private readonly Func<bool>? _condition;
     private readonly Parser<T> _thenParser;
     private readonly Parser<T>? _elseParser;
 
+    // The hints of the branches, read when they are asked for since they can be Deferred parsers set later
+    private ForwardedHints? _hints;
+
     /// <summary>
     /// Gets whether the parser can be selected from a single char: every branch can, and they skip white space the same way.
     /// </summary>
-    public bool CanSeek { get; }
+    public bool CanSeek => Hints.CanSeek;
 
     /// <summary>
     /// Gets the chars any branch can start with.
     /// </summary>
-    public char[] ExpectedChars { get; } = [];
+    public char[] ExpectedChars => Hints.ExpectedChars;
 
     /// <summary>
     /// Gets whether every branch skips white space, in which case a choice may skip it once before the condition is evaluated.
     /// </summary>
-    public bool SkipWhitespace { get; }
+    public bool SkipWhitespace => Hints.SkipWhitespace;
+
+    private ForwardedHints Hints => ForwardedHints.Get(ref _hints, this, static self => self._elseParser is null
+        ? SeekableHints.Union(self._thenParser)
+        : SeekableHints.Union(self._thenParser, self._elseParser));
 
     /// <summary>
     /// Creates a parser that fails without consuming input when <paramref name="condition"/> is false.
@@ -40,7 +47,6 @@ public sealed class If<C, T> : Parser<T>, ISeekable, ISourceable where C : Parse
     {
         _contextCondition = condition ?? throw new ArgumentNullException(nameof(condition));
         _thenParser = parser ?? throw new ArgumentNullException(nameof(parser));
-        (CanSeek, ExpectedChars, SkipWhitespace) = SeekableHints.Union(_thenParser);
     }
 
     /// <summary>
@@ -52,7 +58,6 @@ public sealed class If<C, T> : Parser<T>, ISeekable, ISourceable where C : Parse
     {
         _condition = condition ?? throw new ArgumentNullException(nameof(condition));
         _thenParser = parser ?? throw new ArgumentNullException(nameof(parser));
-        (CanSeek, ExpectedChars, SkipWhitespace) = SeekableHints.Union(_thenParser);
     }
 
     /// <summary>
@@ -66,7 +71,6 @@ public sealed class If<C, T> : Parser<T>, ISeekable, ISourceable where C : Parse
         _contextCondition = condition ?? throw new ArgumentNullException(nameof(condition));
         _thenParser = thenParser ?? throw new ArgumentNullException(nameof(thenParser));
         _elseParser = elseParser ?? throw new ArgumentNullException(nameof(elseParser));
-        (CanSeek, ExpectedChars, SkipWhitespace) = SeekableHints.Union(_thenParser, _elseParser);
     }
 
     /// <summary>
@@ -80,7 +84,18 @@ public sealed class If<C, T> : Parser<T>, ISeekable, ISourceable where C : Parse
         _condition = condition ?? throw new ArgumentNullException(nameof(condition));
         _thenParser = thenParser ?? throw new ArgumentNullException(nameof(thenParser));
         _elseParser = elseParser ?? throw new ArgumentNullException(nameof(elseParser));
-        (CanSeek, ExpectedChars, SkipWhitespace) = SeekableHints.Union(_thenParser, _elseParser);
+    }
+
+    bool ILoopAnalyzable.AnalyzeStart(LoopAnalysis analysis)
+    {
+        var nullable = analysis.Invoke(_thenParser);
+
+        if (_elseParser is not null)
+        {
+            nullable |= analysis.Invoke(_elseParser);
+        }
+
+        return nullable;
     }
 
     public override bool Parse(ParseContext context, ref ParseResult<T> result)

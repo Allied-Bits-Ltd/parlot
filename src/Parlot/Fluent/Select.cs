@@ -9,26 +9,31 @@ namespace Parlot.Fluent;
 /// </summary>
 /// <typeparam name="C">The concrete <see cref="ParseContext" /> type to use.</typeparam>
 /// <typeparam name="T">The output parser type.</typeparam>
-public sealed class Select<C, T> : Parser<T>, ISeekable, ISourceable where C : ParseContext
+public sealed class Select<C, T> : Parser<T>, ISeekable, ISourceable, ILoopAnalyzable where C : ParseContext
 {
     private readonly Parser<T>[] _parsers;
     private readonly Func<C, int>? _contextSelector;
     private readonly Func<int>? _selector;
 
+    // The hints of the branches, read when they are asked for since they can be Deferred parsers set later
+    private ForwardedHints? _hints;
+
     /// <summary>
     /// Gets whether the parser can be selected from a single char: every branch can, and they skip white space the same way.
     /// </summary>
-    public bool CanSeek { get; }
+    public bool CanSeek => Hints.CanSeek;
 
     /// <summary>
     /// Gets the chars any branch can start with.
     /// </summary>
-    public char[] ExpectedChars { get; } = [];
+    public char[] ExpectedChars => Hints.ExpectedChars;
 
     /// <summary>
     /// Gets whether every branch skips white space, in which case a choice may skip it once before the selector is evaluated.
     /// </summary>
-    public bool SkipWhitespace { get; }
+    public bool SkipWhitespace => Hints.SkipWhitespace;
+
+    private ForwardedHints Hints => ForwardedHints.Get(ref _hints, _parsers, static parsers => SeekableHints.Union(parsers));
 
     /// <summary>
     /// Creates a parser that executes the branch selected using the current context.
@@ -62,8 +67,18 @@ public sealed class Select<C, T> : Parser<T>, ISeekable, ISourceable where C : P
         {
             _parsers[i] = _parsers[i] ?? throw new ArgumentException("Parsers array must not contain null elements.", nameof(parsers));
         }
+    }
 
-        (CanSeek, ExpectedChars, SkipWhitespace) = SeekableHints.Union(_parsers);
+    bool ILoopAnalyzable.AnalyzeStart(LoopAnalysis analysis)
+    {
+        var nullable = false;
+
+        foreach (var parser in _parsers)
+        {
+            nullable |= analysis.Invoke(parser);
+        }
+
+        return nullable;
     }
 
     public override bool Parse(ParseContext context, ref ParseResult<T> result)

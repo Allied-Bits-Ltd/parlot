@@ -86,6 +86,12 @@ public sealed class SourceGenerationContext
     public bool SupportsCSharp9SwitchPatterns => CSharpLanguageMajorVersion >= 9;
 
     /// <summary>
+    /// Whether the consuming project can use static abstract interface members (C# 11), which the generic math
+    /// helpers like <c>Numbers.TryParseNumber&lt;T&gt;</c> require. An unknown version is assumed to support them.
+    /// </summary>
+    public bool SupportsStaticAbstractMembers => CSharpLanguageMajorVersion is 0 or >= 11;
+
+    /// <summary>
     /// Global locals (as code lines) for the generated root method.
     /// </summary>
     public IList<string> GlobalLocals { get; } = new List<string>();
@@ -138,6 +144,39 @@ public sealed class SourceGenerationContext
     /// <para>It is <see langword="false"/> while the code of a token is generated, and for <c>string</c> entry points.</para>
     /// </remarks>
     public bool IsCompacting { get; set; }
+
+    /// <summary>
+    /// Gets or sets whether the parsers which only read the text, like literals and the sequences, choices and loops of
+    /// literals, are generated as span code: inline in the code of the parser invoking them, reading the text through a
+    /// span and a position local, and moving the cursor once when they match. <see langword="true"/> by default.
+    /// </summary>
+    /// <remarks>
+    /// Span code isn't generated when <see cref="IsCompacting"/> is set. The diagnostics of the Parser Explorer disable
+    /// it, such that they report each parser that is invoked and each move of the cursor.
+    /// </remarks>
+    public bool GenerateSpanCode { get; set; } = true;
+
+    /// <summary>
+    /// Gets or sets whether the generated parser can be invoked with <c>ParseContext.CollectDiagnostics</c> set, for an entry
+    /// point returning the diagnostics.
+    /// </summary>
+    /// <remarks>
+    /// The parsers reporting errors and warnings then generate the code recording them, and the choices the code discarding
+    /// those of the alternatives they don't use. Otherwise errors throw and warnings are ignored, like when
+    /// <c>ParseContext.CollectDiagnostics</c> isn't set.
+    /// </remarks>
+    public bool CollectDiagnostics { get; set; }
+
+    /// <summary>
+    /// Gets or sets the maximum number of nested recursive parser invocations of the generated parser, or <c>0</c> for no
+    /// limit, like <c>ParseContext.MaxRecursionDepth</c>.
+    /// </summary>
+    /// <remarks>
+    /// Parsers that recurse without a <c>Deferred</c> parser, like prefix operators, generate the code counting their
+    /// recursion when it is set, such that a parse which exceeds it throws a <c>ParseException</c>. Recursive parsers check
+    /// the stack of the thread whether it is set or not.
+    /// </remarks>
+    public int MaxRecursionDepth { get; set; }
 
     /// <summary>
     /// Generates the code of a token, a parser that reads the cursor directly, when <see cref="IsCompacting"/> is set.
@@ -330,6 +369,47 @@ public sealed class SourceGenerationContext
         var fieldName = $"_{MethodNamePrefix}_static{_staticFieldNumber++}";
         StaticFields.Add($"{declaration} {fieldName} = {initializer};");
         return fieldName;
+    }
+
+    // The static fields of the pools and caches, by the object they are generated for
+    private Dictionary<object, string>? _sharedFields;
+
+    /// <summary>
+    /// Returns the name of the static field holding the generated counterpart of a parser's string pool, registering it
+    /// the first time. The parsers sharing a pool, like a pooled string and the string literal it decodes into the pool,
+    /// share the field, whatever the number of times their code is generated.
+    /// </summary>
+    internal string GetStringPoolField(StringPool pool)
+        => GetSharedField(pool, "private static readonly global::Parlot.StringPool",
+            $"new global::Parlot.StringPool({pool.ConfiguredMaximumLength.ToString(System.Globalization.CultureInfo.InvariantCulture)})");
+
+    /// <summary>
+    /// Returns the name of the static field holding the generated counterpart of a text's cache of matched cases,
+    /// registering it the first time.
+    /// </summary>
+    internal string GetCaseCacheField(CaseCache cache)
+        => GetSharedField(cache, "private static readonly global::Parlot.CaseCache", "new global::Parlot.CaseCache()");
+
+    private string GetSharedField(object owner, string declaration, string initializer)
+    {
+        _sharedFields ??= new Dictionary<object, string>(ReferenceComparer.Instance);
+
+        if (!_sharedFields.TryGetValue(owner, out var fieldName))
+        {
+            fieldName = RegisterStaticField(declaration, initializer);
+            _sharedFields[owner] = fieldName;
+        }
+
+        return fieldName;
+    }
+
+    private sealed class ReferenceComparer : IEqualityComparer<object>
+    {
+        public static readonly ReferenceComparer Instance = new();
+
+        public new bool Equals(object? x, object? y) => ReferenceEquals(x, y);
+
+        public int GetHashCode(object obj) => System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(obj);
     }
 
     /// <summary>

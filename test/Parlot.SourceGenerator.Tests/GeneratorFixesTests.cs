@@ -269,6 +269,71 @@ public class GeneratorFixesTests
         Assert.False((bool)parse.Invoke(null, arguments)!);
     }
 
+    [Fact]
+    public void Recursion_Points_Check_The_Stack_And_Count_Only_With_A_Limit()
+    {
+        static string Source(string attribute)
+        {
+            var grammar = $$"""
+                using Parlot.Fluent;
+                using Parlot.SourceGenerator;
+                using static Parlot.Fluent.Parsers;
+                public static partial class Grammar
+                {
+                    [GenerateParser({{attribute}})]
+                    private static Parser<string> Build() =>
+                        Recursive<string>(static list => Between(Literals.Char('['), list, Literals.Char(']')))
+                            .Or(Literals.Text("item"))
+                            .Unary((Literals.Char('-'), static value => value))
+                            .Operators().Unary((Literals.Char('!'), static value => value))
+                            .LeftAssociative((Literals.Char('+'), static (left, right) => left + right));
+                }
+                """;
+            var (result, compilation) = Generate(Declaration, grammar);
+
+            AssertNoErrors(result, compilation);
+            return string.Join("\n", result.Results.SelectMany(static item => item.GeneratedSources)
+                .Where(static item => item.HintName.StartsWith("StandaloneParser", StringComparison.Ordinal))
+                .Select(static item => item.SourceText.ToString()));
+        }
+
+        // Only the Deferred helper checks the stack: Unary and the prefix operators read their chains in a loop
+        var unlimited = Source("nameof(TryParse)");
+        Assert.Single(System.Text.RegularExpressions.Regex.Matches(unlimited, @"context\.EnsureSufficientStack\(\);"));
+        Assert.DoesNotContain("EnterRecursion", unlimited, StringComparison.Ordinal);
+
+        // The Deferred helper, the Unary parser and the loop of its operators, and the prefix operators (the first one, then the
+        // loop of the following ones) count. The first prefix operator leaves its level on both returns of its path without a
+        // list, the following ones at once in the finally block of the list.
+        var limited = Source("nameof(TryParse), MaxRecursionDepth = 64");
+        Assert.Equal(5, System.Text.RegularExpressions.Regex.Matches(limited, @"context\.EnterRecursion\(64\);").Count);
+        Assert.Equal(4, System.Text.RegularExpressions.Regex.Matches(limited, @"context\.ExitRecursion\(\);").Count);
+        Assert.Equal(2, System.Text.RegularExpressions.Regex.Matches(limited, @"context\.ExitRecursion\(operators\.Count\);").Count);
+
+        // The code passes the limit, which the context returns without storing it: its cold state would be allocated
+        Assert.Contains("public override int MaxRecursionDepth => 64;", limited, StringComparison.Ordinal);
+        Assert.Contains(": base(__parlotScanner)", limited, StringComparison.Ordinal);
+        Assert.DoesNotContain("context.EnterRecursion();", limited, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Negative_Max_Recursion_Depth_Is_A_Generation_Error()
+    {
+        const string grammar = """
+            using Parlot.Fluent;
+            using Parlot.SourceGenerator;
+            public static partial class Grammar
+            {
+                [GenerateParser(nameof(TryParse), MaxRecursionDepth = -1)]
+                private static Parser<string> Build() => Parsers.Literals.Text("item");
+            }
+            """;
+        var (result, _) = Generate(Declaration, grammar);
+
+        Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Id == "PARLOT024"
+            && diagnostic.GetMessage(System.Globalization.CultureInfo.InvariantCulture).Contains("MaxRecursionDepth", StringComparison.Ordinal));
+    }
+
     internal const string Declaration = """
         public static partial class Grammar
         {

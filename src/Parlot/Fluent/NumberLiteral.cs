@@ -7,7 +7,7 @@ using System.Numerics;
 
 namespace Parlot.Fluent;
 
-public sealed class NumberLiteral<T> : Parser<T>, ISeekable, ISourceable
+public sealed class NumberLiteral<T> : Parser<T>, ISeekable, ISourceable, ILoopAnalyzable
     where T : INumber<T>
 {
     private const char DefaultDecimalSeparator = '.';
@@ -90,15 +90,12 @@ public sealed class NumberLiteral<T> : Parser<T>, ISeekable, ISourceable
             }
         }
 
-        if (_allowUnderscore)
-        {
-            ExpectedChars = [.. ExpectedChars, '_'];
-        }
-
-        // A group separator or an exponent can't be a starting char
+        // A group separator, an exponent or an underscore can't be a starting char
 
         Name = "NumberLiteral";
     }
+
+    bool ILoopAnalyzable.AnalyzeStart(LoopAnalysis analysis) => false;
 
     public override bool Parse(ParseContext context, ref ParseResult<T> result)
     {
@@ -109,12 +106,17 @@ public sealed class NumberLiteral<T> : Parser<T>, ISeekable, ISourceable
 
         context.EnterParser(this);
 
-        var reset = context.Scanner.Cursor.Position;
-        var start = reset.Offset;
+        var reset = context.Scanner.Cursor.Offset;
+        var start = reset;
 
         if (context.Scanner.ReadDecimal(_allowLeadingSign, _allowDecimalSeparator, _allowGroupSeparator, _allowExponent, _allowUnderscore, _requireFractionalPartForDecimals, out var number, _decimalSeparator, _groupSeparator, _secondDecimalSeparator))
         {
             var end = context.Scanner.Cursor.Offset;
+
+            if (_allowUnderscore)
+            {
+                number = Numbers.RemoveUnderscores(number);
+            }
 
             if (Numbers.TryParseNumber<T>(number, _numberStyles, _culture, out var value))
             {
@@ -159,7 +161,7 @@ public sealed class NumberLiteral<T> : Parser<T>, ISeekable, ISourceable
         var endName = $"end{context.NextNumber()}";
         var parsedValueName = $"parsedValue{context.NextNumber()}";
 
-        result.Body.Add($"var {resetName} = default(global::Parlot.TextPosition);");
+        result.Body.Add($"var {resetName} = 0;");
         result.Body.Add($"var {startName} = 0;");
         result.Body.Add($"global::System.ReadOnlySpan<char> {numberSpanName} = default;");
         if (!context.DiscardResult)
@@ -168,8 +170,8 @@ public sealed class NumberLiteral<T> : Parser<T>, ISeekable, ISourceable
         }
 
         result.Body.Add($"{result.SuccessVariable} = false;");
-        result.Body.Add($"{resetName} = {cursorName}.Position;");
-        result.Body.Add($"{startName} = {resetName}.Offset;");
+        result.Body.Add($"{resetName} = {cursorName}.Offset;");
+        result.Body.Add($"{startName} = {resetName};");
 
         var allowLeadingSign = _allowLeadingSign ? "true" : "false";
         var allowDecimalSeparator = _allowDecimalSeparator ? "true" : "false";
@@ -189,10 +191,14 @@ public sealed class NumberLiteral<T> : Parser<T>, ISeekable, ISourceable
         var secondDecimalSeparatorLiteral = $"(char){(int)_secondDecimalSeparator}";
         result.Body.Add($"if ({scannerName}.ReadDecimal({allowLeadingSign}, {allowDecimalSeparator}, {allowGroupSeparator}, {allowExponent}, {allowUnderscore}, {requireFractionalPartForDecimals}, out {numberSpanName}, {decimalSeparatorLiteral}, {groupSeparatorLiteral}, {secondDecimalSeparatorLiteral}))");
         result.Body.Add("{");
+        if (_allowUnderscore)
+        {
+            result.Body.Add($"    {numberSpanName} = global::Parlot.Numbers.RemoveUnderscores({numberSpanName});");
+        }
         var outTarget = context.DiscardResult ? "_" : parsedValueName;
-        // The generic helper needs the consumer's net8.0+ runtime; downlevel consumers only have the fixed overloads.
-        // An unknown target keeps the generic path this build was compiled for.
-        var downlevel = context.TargetFramework.Identifier switch
+        // The generic helper needs the consumer's net8.0+ runtime and C# 11; other consumers only have the fixed
+        // overloads. An unknown target keeps the generic path this build was compiled for.
+        var downlevel = !context.SupportsStaticAbstractMembers || context.TargetFramework.Identifier switch
         {
             TargetFrameworkIdentifier.NetFramework or TargetFrameworkIdentifier.NetStandard => true,
             TargetFrameworkIdentifier.NetCoreApp => context.TargetFramework.Version < new Version(8, 0),
@@ -202,7 +208,7 @@ public sealed class NumberLiteral<T> : Parser<T>, ISeekable, ISourceable
             ? $"global::Parlot.Numbers.TryParseNumber<{valueTypeName}>"
             : Numbers.HasTryParseOverload(typeof(T))
                 ? "global::Parlot.Numbers.TryParse"
-                : throw new NotSupportedException($"Source generation for numbers of type '{typeof(T)}' requires .NET 8 or later.");
+                : throw new NotSupportedException($"Source generation for numbers of type '{typeof(T)}' requires .NET 8 or later and C# 11 or later.");
 
         // The number is parsed using the second decimal separator if it can't be parsed using the first one
         var cultures = culture2Expr == null ? new[] { cultureExpr } : new[] { cultureExpr, culture2Expr };

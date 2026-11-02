@@ -7,7 +7,6 @@ namespace Parlot;
 public static partial class Character
 {
     internal static readonly SearchValues<char> _decimalDigits = SearchValues.Create(DecimalDigits);
-    internal static readonly SearchValues<char> _decimalDigitsAndUnderscore = SearchValues.Create(DecimalDigits + "_");
     internal static readonly SearchValues<char> _hexDigits = SearchValues.Create(HexDigits);
     internal static readonly SearchValues<char> _identifierStart = SearchValues.Create(DefaultIdentifierStart);
     internal static readonly SearchValues<char> _identifierPart = SearchValues.Create(DefaultIdentifierPart);
@@ -16,6 +15,8 @@ public static partial class Character
     internal static readonly SearchValues<char> _whiteSpaceOrNewLines = SearchValues.Create(WhiteSpaceOrNewLines);
     internal static readonly SearchValues<char> _asciiWhiteSpaces = SearchValues.Create(AsciiWhiteSpaces);
     internal static readonly SearchValues<char> _asciiWhiteSpaceOrNewLines = SearchValues.Create(AsciiWhiteSpaceOrNewLines);
+    internal static readonly SearchValues<char> _spaceTabCrLfWhiteSpaces = SearchValues.Create(SpaceTabCrLfWhiteSpaces);
+    internal static readonly SearchValues<char> _spaceTabCrLfWhiteSpaceOrNewLines = SearchValues.Create(SpaceTabCrLfWhiteSpaceOrNewLines);
 
     // The chars of a white space mask, see GetWhiteSpaceMask
     internal static SearchValues<char> GetWhiteSpaceSearchValues(byte mask) => mask switch
@@ -23,7 +24,9 @@ public static partial class Character
         (byte)CharacterMask.WhiteSpace => _whiteSpaces,
         (byte)CharacterMask.WhiteSpaceOrNewLine => _whiteSpaceOrNewLines,
         (byte)CharacterMask.AsciiWhiteSpace => _asciiWhiteSpaces,
-        _ => _asciiWhiteSpaceOrNewLines,
+        (byte)CharacterMask.AsciiWhiteSpaceOrNewLine => _asciiWhiteSpaceOrNewLines,
+        (byte)CharacterMask.SpaceTabCrLfWhiteSpace => _spaceTabCrLfWhiteSpaces,
+        _ => _spaceTabCrLfWhiteSpaceOrNewLines,
     };
 
     // _decimalDigits and _hexDigits are still used for span-wide IndexOfAnyExcept scans in Scanner,

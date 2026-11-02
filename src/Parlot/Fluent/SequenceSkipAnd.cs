@@ -4,31 +4,35 @@ using System;
 
 namespace Parlot.Fluent;
 
-public sealed class SequenceSkipAnd<T1, T2> : Parser<T2>, ISeekablePrefixes, ISourceable
+public sealed class SequenceSkipAnd<T1, T2> : Parser<T2>, ISeekablePrefixes, ISourceable, ILoopAnalyzable, ISpanSourceable
 {
     private readonly Parser<T1> _parser1;
     private readonly Parser<T2> _parser2;
+
+    // Whether the parsers are invoked without their value when it isn't used
+    private readonly bool _withoutValue1;
+    private readonly bool _withoutValue2;
 
     public SequenceSkipAnd(Parser<T1> parser1, Parser<T2> parser2)
     {
         _parser1 = parser1 ?? throw new ArgumentNullException(nameof(parser1));
         _parser2 = parser2 ?? throw new ArgumentNullException(nameof(parser2));
-
-        if (_parser1 is ISeekable seekable)
-        {
-            CanSeek = seekable.CanSeek;
-            ExpectedChars = seekable.ExpectedChars;
-            SkipWhitespace = seekable.SkipWhitespace;
-        }
+        _withoutValue1 = _parser1.CanParseWithoutValue;
+        _withoutValue2 = _parser2.CanParseWithoutValue;
     }
 
-    public bool CanSeek { get; }
+    // The hints of the parser that reads first, read when they are asked for since it can be a Deferred set later
+    private ForwardedHints? _hints;
 
-    public char[] ExpectedChars { get; } = [];
+    public bool CanSeek => ForwardedHints.Get(ref _hints, _parser1).CanSeek;
 
-    public bool SkipWhitespace { get; }
+    public char[] ExpectedChars => ForwardedHints.Get(ref _hints, _parser1).ExpectedChars;
+
+    public bool SkipWhitespace => ForwardedHints.Get(ref _hints, _parser1).SkipWhitespace;
 
     string[]? ISeekablePrefixes.ExpectedPrefixes => SeekableHints.Prefixes(_parser1);
+
+    bool ILoopAnalyzable.AnalyzeStart(LoopAnalysis analysis) => analysis.Invoke(_parser1) && analysis.Invoke(_parser2);
 
     public override bool Parse(ParseContext context, ref ParseResult<T2> result)
     {
@@ -36,15 +40,46 @@ public sealed class SequenceSkipAnd<T1, T2> : Parser<T2>, ISeekablePrefixes, ISo
 
         var parseResult1 = new ParseResult<T1>();
 
-        var start = context.Scanner.Cursor.Position;
+        var start = context.Scanner.Cursor.Offset;
 
-        if (_parser1.Parse(context, ref parseResult1))
+        if (_withoutValue1 ? _parser1.ParseWithoutValue(context, ref parseResult1) : _parser1.Parse(context, ref parseResult1))
         {
             var parseResult2 = new ParseResult<T2>();
 
             if (_parser2.Parse(context, ref parseResult2))
             {
                 result.Set(parseResult1.Start, parseResult2.End, parseResult2.Value);
+
+                context.ExitParser(this);
+                return true;
+            }
+
+            context.Scanner.Cursor.ResetPosition(start);
+        }
+
+        context.ExitParser(this);
+        return false;
+    }
+
+    internal override bool CanParseWithoutValue => _withoutValue1 || _withoutValue2;
+
+    // Parse, without the tuple
+    internal override bool ParseWithoutValue(ParseContext context, ref ParseResult<T2> result)
+    {
+        context.EnterParser(this);
+
+        var parseResult1 = new ParseResult<T1>();
+
+        var start = context.Scanner.Cursor.Offset;
+
+        if (_withoutValue1 ? _parser1.ParseWithoutValue(context, ref parseResult1) : _parser1.Parse(context, ref parseResult1))
+        {
+            var parseResult2 = new ParseResult<T2>();
+
+            if (_withoutValue2 ? _parser2.ParseWithoutValue(context, ref parseResult2) : _parser2.Parse(context, ref parseResult2))
+            {
+                result.Start = parseResult1.Start;
+                result.End = parseResult2.End;
 
                 context.ExitParser(this);
                 return true;
@@ -66,11 +101,16 @@ public sealed class SequenceSkipAnd<T1, T2> : Parser<T2>, ISeekablePrefixes, ISo
             throw new NotSupportedException("SequenceSkipAnd requires source-generatable parsers.");
         }
 
+        if (SpanSource.TryGenerate(this, typeof(T2), context) is { } spanResult)
+        {
+            return spanResult;
+        }
+
         var result = context.CreateResult(typeof(T2));
         var cursorName = context.CursorName;
         var startName = $"start{context.NextNumber()}";
 
-        result.Body.Add($"var {startName} = {cursorName}.Position;");
+        result.Body.Add($"var {startName} = {cursorName}.Offset;");
         result.Body.Add($"{result.SuccessVariable} = false;");
 
         string Helper(ISourceable p, Type valueType, string suffix)
@@ -110,13 +150,24 @@ public sealed class SequenceSkipAnd<T1, T2> : Parser<T2>, ISeekablePrefixes, ISo
         return result;
     }
 
+    int ISpanSourceable.GetSpanSourceWeight(SourceGenerationContext context) => SpanSource.GetWeight(context, _parser1, _parser2);
+
+    void ISpanSourceable.GenerateSpanSource(SpanSourceWriter writer, string? valueVariable, SpanLabel fail)
+        => SpanSource.GenerateSequence(writer, valueVariable, fail,
+            [(_parser1, typeof(T1), false), (_parser2, typeof(T2), true)],
+            static values => values[1]!);
+
     public override string ToString() => $"{_parser1} & {_parser2} (skip)";
 }
 
-public sealed class SequenceSkipAnd<T1, T2, T3> : Parser<ValueTuple<T1, T3>>, ISeekablePrefixes, ISourceable
+public sealed class SequenceSkipAnd<T1, T2, T3> : Parser<ValueTuple<T1, T3>>, ISeekablePrefixes, ISourceable, ILoopAnalyzable, ISpanSourceable
 {
     private readonly Parser<ValueTuple<T1, T2>> _parser;
     private readonly Parser<T3> _lastParser;
+
+    // Whether the parsers are invoked without their value when it isn't used
+    private readonly bool _parserWithoutValue;
+    private readonly bool _lastParserWithoutValue;
 
     public SequenceSkipAnd(Parser<ValueTuple<T1, T2>>
         parser,
@@ -125,22 +176,22 @@ public sealed class SequenceSkipAnd<T1, T2, T3> : Parser<ValueTuple<T1, T3>>, IS
     {
         _parser = parser;
         _lastParser = lastParser ?? throw new ArgumentNullException(nameof(lastParser));
-
-        if (_parser is ISeekable seekable)
-        {
-            CanSeek = seekable.CanSeek;
-            ExpectedChars = seekable.ExpectedChars;
-            SkipWhitespace = seekable.SkipWhitespace;
-        }
+        _parserWithoutValue = parser is not null && parser.CanParseWithoutValue;
+        _lastParserWithoutValue = _lastParser.CanParseWithoutValue;
     }
 
-    public bool CanSeek { get; }
+    // The hints of the parser that reads first, read when they are asked for since it can be a Deferred set later
+    private ForwardedHints? _hints;
 
-    public char[] ExpectedChars { get; } = [];
+    public bool CanSeek => ForwardedHints.Get(ref _hints, _parser).CanSeek;
 
-    public bool SkipWhitespace { get; }
+    public char[] ExpectedChars => ForwardedHints.Get(ref _hints, _parser).ExpectedChars;
+
+    public bool SkipWhitespace => ForwardedHints.Get(ref _hints, _parser).SkipWhitespace;
 
     string[]? ISeekablePrefixes.ExpectedPrefixes => SeekableHints.Prefixes(_parser);
+
+    bool ILoopAnalyzable.AnalyzeStart(LoopAnalysis analysis) => analysis.Invoke(_parser) && analysis.Invoke(_lastParser);
 
     public override bool Parse(ParseContext context, ref ParseResult<ValueTuple<T1, T3>> result)
     {
@@ -148,7 +199,7 @@ public sealed class SequenceSkipAnd<T1, T2, T3> : Parser<ValueTuple<T1, T3>>, IS
 
         var tupleResult = new ParseResult<ValueTuple<T1, T2>>();
 
-        var start = context.Scanner.Cursor.Position;
+        var start = context.Scanner.Cursor.Offset;
 
         if (_parser.Parse(context, ref tupleResult))
         {
@@ -156,12 +207,43 @@ public sealed class SequenceSkipAnd<T1, T2, T3> : Parser<ValueTuple<T1, T3>>, IS
 
             if (_lastParser.Parse(context, ref lastResult))
             {
-                var tuple = new ValueTuple<T1, T3>(
+                var tuple = (
                     tupleResult.Value.Item1,
                     lastResult.Value
-                    );
+                );
 
                 result.Set(tupleResult.Start, lastResult.End, tuple);
+
+                context.ExitParser(this);
+                return true;
+            }
+        }
+
+        context.Scanner.Cursor.ResetPosition(start);
+
+        context.ExitParser(this);
+        return false;
+    }
+
+    internal override bool CanParseWithoutValue => _parserWithoutValue || _lastParserWithoutValue;
+
+    // Parse, without the tuple
+    internal override bool ParseWithoutValue(ParseContext context, ref ParseResult<ValueTuple<T1, T3>> result)
+    {
+        context.EnterParser(this);
+
+        var tupleResult = new ParseResult<ValueTuple<T1, T2>>();
+
+        var start = context.Scanner.Cursor.Offset;
+
+        if (_parserWithoutValue ? _parser.ParseWithoutValue(context, ref tupleResult) : _parser.Parse(context, ref tupleResult))
+        {
+            var lastResult = new ParseResult<T3>();
+
+            if (_lastParserWithoutValue ? _lastParser.ParseWithoutValue(context, ref lastResult) : _lastParser.Parse(context, ref lastResult))
+            {
+                result.Start = tupleResult.Start;
+                result.End = lastResult.End;
 
                 context.ExitParser(this);
                 return true;
@@ -183,12 +265,17 @@ public sealed class SequenceSkipAnd<T1, T2, T3> : Parser<ValueTuple<T1, T3>>, IS
             throw new NotSupportedException("SequenceSkipAnd requires source-generatable parsers.");
         }
 
+        if (SpanSource.TryGenerate(this, typeof(ValueTuple<T1, T3>), context) is { } spanResult)
+        {
+            return spanResult;
+        }
+
         var result = context.CreateResult(typeof(ValueTuple<T1, T3>));
         var cursorName = context.CursorName;
         var startName = $"start{context.NextNumber()}";
         var tupleTypeName = SourceGenerationContext.GetTypeName(typeof(ValueTuple<T1, T3>));
 
-        result.Body.Add($"var {startName} = {cursorName}.Position;");
+        result.Body.Add($"var {startName} = {cursorName}.Offset;");
         result.Body.Add($"{result.SuccessVariable} = false;");
 
         string Helper(ISourceable p, Type valueType, string suffix)
@@ -234,34 +321,45 @@ public sealed class SequenceSkipAnd<T1, T2, T3> : Parser<ValueTuple<T1, T3>>, IS
         return result;
     }
 
+    int ISpanSourceable.GetSpanSourceWeight(SourceGenerationContext context) => SpanSource.GetWeight(context, _parser, _lastParser);
+
+    void ISpanSourceable.GenerateSpanSource(SpanSourceWriter writer, string? valueVariable, SpanLabel fail)
+        => SpanSource.GenerateSequence(writer, valueVariable, fail,
+            [(_parser, typeof(ValueTuple<T1, T2>), true), (_lastParser, typeof(T3), true)],
+            static values => $"new {SourceGenerationContext.GetTypeName(typeof(ValueTuple<T1, T3>))}({values[0]}.Item1, {values[1]})");
+
     public override string ToString() => $"{_parser} & {_lastParser} (skip)";
 }
 
-public sealed class SequenceSkipAnd<T1, T2, T3, T4> : Parser<ValueTuple<T1, T2, T4>>, ISeekablePrefixes, ISourceable
+public sealed class SequenceSkipAnd<T1, T2, T3, T4> : Parser<ValueTuple<T1, T2, T4>>, ISeekablePrefixes, ISourceable, ILoopAnalyzable, ISpanSourceable
 {
     private readonly Parser<ValueTuple<T1, T2, T3>> _parser;
     private readonly Parser<T4> _lastParser;
+
+    // Whether the parsers are invoked without their value when it isn't used
+    private readonly bool _parserWithoutValue;
+    private readonly bool _lastParserWithoutValue;
 
     public SequenceSkipAnd(Parser<ValueTuple<T1, T2, T3>> parser, Parser<T4> lastParser)
     {
         _parser = parser;
         _lastParser = lastParser ?? throw new ArgumentNullException(nameof(lastParser));
-
-        if (_parser is ISeekable seekable)
-        {
-            CanSeek = seekable.CanSeek;
-            ExpectedChars = seekable.ExpectedChars;
-            SkipWhitespace = seekable.SkipWhitespace;
-        }
+        _parserWithoutValue = parser is not null && parser.CanParseWithoutValue;
+        _lastParserWithoutValue = _lastParser.CanParseWithoutValue;
     }
 
-    public bool CanSeek { get; }
+    // The hints of the parser that reads first, read when they are asked for since it can be a Deferred set later
+    private ForwardedHints? _hints;
 
-    public char[] ExpectedChars { get; } = [];
+    public bool CanSeek => ForwardedHints.Get(ref _hints, _parser).CanSeek;
 
-    public bool SkipWhitespace { get; }
+    public char[] ExpectedChars => ForwardedHints.Get(ref _hints, _parser).ExpectedChars;
+
+    public bool SkipWhitespace => ForwardedHints.Get(ref _hints, _parser).SkipWhitespace;
 
     string[]? ISeekablePrefixes.ExpectedPrefixes => SeekableHints.Prefixes(_parser);
+
+    bool ILoopAnalyzable.AnalyzeStart(LoopAnalysis analysis) => analysis.Invoke(_parser) && analysis.Invoke(_lastParser);
 
     public override bool Parse(ParseContext context, ref ParseResult<ValueTuple<T1, T2, T4>> result)
     {
@@ -269,7 +367,7 @@ public sealed class SequenceSkipAnd<T1, T2, T3, T4> : Parser<ValueTuple<T1, T2, 
 
         var tupleResult = new ParseResult<ValueTuple<T1, T2, T3>>();
 
-        var start = context.Scanner.Cursor.Position;
+        var start = context.Scanner.Cursor.Offset;
 
         if (_parser.Parse(context, ref tupleResult))
         {
@@ -277,13 +375,44 @@ public sealed class SequenceSkipAnd<T1, T2, T3, T4> : Parser<ValueTuple<T1, T2, 
 
             if (_lastParser.Parse(context, ref lastResult))
             {
-                var tuple = new ValueTuple<T1, T2, T4>(
+                var tuple = (
                     tupleResult.Value.Item1,
                     tupleResult.Value.Item2,
                     lastResult.Value
-                    );
+                );
 
                 result.Set(tupleResult.Start, lastResult.End, tuple);
+
+                context.ExitParser(this);
+                return true;
+            }
+        }
+
+        context.Scanner.Cursor.ResetPosition(start);
+
+        context.ExitParser(this);
+        return false;
+    }
+
+    internal override bool CanParseWithoutValue => _parserWithoutValue || _lastParserWithoutValue;
+
+    // Parse, without the tuple
+    internal override bool ParseWithoutValue(ParseContext context, ref ParseResult<ValueTuple<T1, T2, T4>> result)
+    {
+        context.EnterParser(this);
+
+        var tupleResult = new ParseResult<ValueTuple<T1, T2, T3>>();
+
+        var start = context.Scanner.Cursor.Offset;
+
+        if (_parserWithoutValue ? _parser.ParseWithoutValue(context, ref tupleResult) : _parser.Parse(context, ref tupleResult))
+        {
+            var lastResult = new ParseResult<T4>();
+
+            if (_lastParserWithoutValue ? _lastParser.ParseWithoutValue(context, ref lastResult) : _lastParser.Parse(context, ref lastResult))
+            {
+                result.Start = tupleResult.Start;
+                result.End = lastResult.End;
 
                 context.ExitParser(this);
                 return true;
@@ -305,12 +434,17 @@ public sealed class SequenceSkipAnd<T1, T2, T3, T4> : Parser<ValueTuple<T1, T2, 
             throw new NotSupportedException("SequenceSkipAnd requires source-generatable parsers.");
         }
 
+        if (SpanSource.TryGenerate(this, typeof(ValueTuple<T1, T2, T4>), context) is { } spanResult)
+        {
+            return spanResult;
+        }
+
         var result = context.CreateResult(typeof(ValueTuple<T1, T2, T4>));
         var cursorName = context.CursorName;
         var startName = $"start{context.NextNumber()}";
         var tupleTypeName = SourceGenerationContext.GetTypeName(typeof(ValueTuple<T1, T2, T4>));
 
-        result.Body.Add($"var {startName} = {cursorName}.Position;");
+        result.Body.Add($"var {startName} = {cursorName}.Offset;");
         result.Body.Add($"{result.SuccessVariable} = false;");
 
         string Helper(ISourceable p, Type valueType, string suffix)
@@ -356,35 +490,46 @@ public sealed class SequenceSkipAnd<T1, T2, T3, T4> : Parser<ValueTuple<T1, T2, 
         return result;
     }
 
+    int ISpanSourceable.GetSpanSourceWeight(SourceGenerationContext context) => SpanSource.GetWeight(context, _parser, _lastParser);
+
+    void ISpanSourceable.GenerateSpanSource(SpanSourceWriter writer, string? valueVariable, SpanLabel fail)
+        => SpanSource.GenerateSequence(writer, valueVariable, fail,
+            [(_parser, typeof(ValueTuple<T1, T2, T3>), true), (_lastParser, typeof(T4), true)],
+            static values => $"new {SourceGenerationContext.GetTypeName(typeof(ValueTuple<T1, T2, T4>))}({values[0]}.Item1, {values[0]}.Item2, {values[1]})");
+
     public override string ToString() => $"{_parser} & {_lastParser} (skip)";
 
 }
 
-public sealed class SequenceSkipAnd<T1, T2, T3, T4, T5> : Parser<ValueTuple<T1, T2, T3, T5>>, ISeekablePrefixes, ISourceable
+public sealed class SequenceSkipAnd<T1, T2, T3, T4, T5> : Parser<ValueTuple<T1, T2, T3, T5>>, ISeekablePrefixes, ISourceable, ILoopAnalyzable, ISpanSourceable
 {
     private readonly Parser<ValueTuple<T1, T2, T3, T4>> _parser;
     private readonly Parser<T5> _lastParser;
+
+    // Whether the parsers are invoked without their value when it isn't used
+    private readonly bool _parserWithoutValue;
+    private readonly bool _lastParserWithoutValue;
 
     public SequenceSkipAnd(Parser<ValueTuple<T1, T2, T3, T4>> parser, Parser<T5> lastParser)
     {
         _parser = parser;
         _lastParser = lastParser ?? throw new ArgumentNullException(nameof(lastParser));
-
-        if (_parser is ISeekable seekable)
-        {
-            CanSeek = seekable.CanSeek;
-            ExpectedChars = seekable.ExpectedChars;
-            SkipWhitespace = seekable.SkipWhitespace;
-        }
+        _parserWithoutValue = parser is not null && parser.CanParseWithoutValue;
+        _lastParserWithoutValue = _lastParser.CanParseWithoutValue;
     }
 
-    public bool CanSeek { get; }
+    // The hints of the parser that reads first, read when they are asked for since it can be a Deferred set later
+    private ForwardedHints? _hints;
 
-    public char[] ExpectedChars { get; } = [];
+    public bool CanSeek => ForwardedHints.Get(ref _hints, _parser).CanSeek;
 
-    public bool SkipWhitespace { get; }
+    public char[] ExpectedChars => ForwardedHints.Get(ref _hints, _parser).ExpectedChars;
+
+    public bool SkipWhitespace => ForwardedHints.Get(ref _hints, _parser).SkipWhitespace;
 
     string[]? ISeekablePrefixes.ExpectedPrefixes => SeekableHints.Prefixes(_parser);
+
+    bool ILoopAnalyzable.AnalyzeStart(LoopAnalysis analysis) => analysis.Invoke(_parser) && analysis.Invoke(_lastParser);
 
     public override bool Parse(ParseContext context, ref ParseResult<ValueTuple<T1, T2, T3, T5>> result)
     {
@@ -392,7 +537,7 @@ public sealed class SequenceSkipAnd<T1, T2, T3, T4, T5> : Parser<ValueTuple<T1, 
 
         var tupleResult = new ParseResult<ValueTuple<T1, T2, T3, T4>>();
 
-        var start = context.Scanner.Cursor.Position;
+        var start = context.Scanner.Cursor.Offset;
 
         if (_parser.Parse(context, ref tupleResult))
         {
@@ -400,14 +545,45 @@ public sealed class SequenceSkipAnd<T1, T2, T3, T4, T5> : Parser<ValueTuple<T1, 
 
             if (_lastParser.Parse(context, ref lastResult))
             {
-                var tuple = new ValueTuple<T1, T2, T3, T5>(
+                var tuple = (
                     tupleResult.Value.Item1,
                     tupleResult.Value.Item2,
                     tupleResult.Value.Item3,
                     lastResult.Value
-                    );
+                );
 
                 result.Set(tupleResult.Start, lastResult.End, tuple);
+
+                context.ExitParser(this);
+                return true;
+            }
+        }
+
+        context.Scanner.Cursor.ResetPosition(start);
+
+        context.ExitParser(this);
+        return false;
+    }
+
+    internal override bool CanParseWithoutValue => _parserWithoutValue || _lastParserWithoutValue;
+
+    // Parse, without the tuple
+    internal override bool ParseWithoutValue(ParseContext context, ref ParseResult<ValueTuple<T1, T2, T3, T5>> result)
+    {
+        context.EnterParser(this);
+
+        var tupleResult = new ParseResult<ValueTuple<T1, T2, T3, T4>>();
+
+        var start = context.Scanner.Cursor.Offset;
+
+        if (_parserWithoutValue ? _parser.ParseWithoutValue(context, ref tupleResult) : _parser.Parse(context, ref tupleResult))
+        {
+            var lastResult = new ParseResult<T5>();
+
+            if (_lastParserWithoutValue ? _lastParser.ParseWithoutValue(context, ref lastResult) : _lastParser.Parse(context, ref lastResult))
+            {
+                result.Start = tupleResult.Start;
+                result.End = lastResult.End;
 
                 context.ExitParser(this);
                 return true;
@@ -429,12 +605,17 @@ public sealed class SequenceSkipAnd<T1, T2, T3, T4, T5> : Parser<ValueTuple<T1, 
             throw new NotSupportedException("SequenceSkipAnd requires source-generatable parsers.");
         }
 
+        if (SpanSource.TryGenerate(this, typeof(ValueTuple<T1, T2, T3, T5>), context) is { } spanResult)
+        {
+            return spanResult;
+        }
+
         var result = context.CreateResult(typeof(ValueTuple<T1, T2, T3, T5>));
         var cursorName = context.CursorName;
         var startName = $"start{context.NextNumber()}";
         var tupleTypeName = SourceGenerationContext.GetTypeName(typeof(ValueTuple<T1, T2, T3, T5>));
 
-        result.Body.Add($"var {startName} = {cursorName}.Position;");
+        result.Body.Add($"var {startName} = {cursorName}.Offset;");
         result.Body.Add($"{result.SuccessVariable} = false;");
 
         string Helper(ISourceable p, Type valueType, string suffix)
@@ -489,35 +670,46 @@ public sealed class SequenceSkipAnd<T1, T2, T3, T4, T5> : Parser<ValueTuple<T1, 
         return result;
     }
 
+    int ISpanSourceable.GetSpanSourceWeight(SourceGenerationContext context) => SpanSource.GetWeight(context, _parser, _lastParser);
+
+    void ISpanSourceable.GenerateSpanSource(SpanSourceWriter writer, string? valueVariable, SpanLabel fail)
+        => SpanSource.GenerateSequence(writer, valueVariable, fail,
+            [(_parser, typeof(ValueTuple<T1, T2, T3, T4>), true), (_lastParser, typeof(T5), true)],
+            static values => $"new {SourceGenerationContext.GetTypeName(typeof(ValueTuple<T1, T2, T3, T5>))}({values[0]}.Item1, {values[0]}.Item2, {values[0]}.Item3, {values[1]})");
+
     public override string ToString() => $"{_parser} & {_lastParser} (skip)";
 
 }
 
-public sealed class SequenceSkipAnd<T1, T2, T3, T4, T5, T6> : Parser<ValueTuple<T1, T2, T3, T4, T6>>, ISeekablePrefixes, ISourceable
+public sealed class SequenceSkipAnd<T1, T2, T3, T4, T5, T6> : Parser<ValueTuple<T1, T2, T3, T4, T6>>, ISeekablePrefixes, ISourceable, ILoopAnalyzable, ISpanSourceable
 {
     private readonly Parser<ValueTuple<T1, T2, T3, T4, T5>> _parser;
     private readonly Parser<T6> _lastParser;
+
+    // Whether the parsers are invoked without their value when it isn't used
+    private readonly bool _parserWithoutValue;
+    private readonly bool _lastParserWithoutValue;
 
     public SequenceSkipAnd(Parser<ValueTuple<T1, T2, T3, T4, T5>> parser, Parser<T6> lastParser)
     {
         _parser = parser;
         _lastParser = lastParser ?? throw new ArgumentNullException(nameof(lastParser));
-
-        if (_parser is ISeekable seekable)
-        {
-            CanSeek = seekable.CanSeek;
-            ExpectedChars = seekable.ExpectedChars;
-            SkipWhitespace = seekable.SkipWhitespace;
-        }
+        _parserWithoutValue = parser is not null && parser.CanParseWithoutValue;
+        _lastParserWithoutValue = _lastParser.CanParseWithoutValue;
     }
 
-    public bool CanSeek { get; }
+    // The hints of the parser that reads first, read when they are asked for since it can be a Deferred set later
+    private ForwardedHints? _hints;
 
-    public char[] ExpectedChars { get; } = [];
+    public bool CanSeek => ForwardedHints.Get(ref _hints, _parser).CanSeek;
 
-    public bool SkipWhitespace { get; }
+    public char[] ExpectedChars => ForwardedHints.Get(ref _hints, _parser).ExpectedChars;
+
+    public bool SkipWhitespace => ForwardedHints.Get(ref _hints, _parser).SkipWhitespace;
 
     string[]? ISeekablePrefixes.ExpectedPrefixes => SeekableHints.Prefixes(_parser);
+
+    bool ILoopAnalyzable.AnalyzeStart(LoopAnalysis analysis) => analysis.Invoke(_parser) && analysis.Invoke(_lastParser);
 
     public override bool Parse(ParseContext context, ref ParseResult<ValueTuple<T1, T2, T3, T4, T6>> result)
     {
@@ -525,7 +717,7 @@ public sealed class SequenceSkipAnd<T1, T2, T3, T4, T5, T6> : Parser<ValueTuple<
 
         var tupleResult = new ParseResult<ValueTuple<T1, T2, T3, T4, T5>>();
 
-        var start = context.Scanner.Cursor.Position;
+        var start = context.Scanner.Cursor.Offset;
 
         if (_parser.Parse(context, ref tupleResult))
         {
@@ -533,20 +725,50 @@ public sealed class SequenceSkipAnd<T1, T2, T3, T4, T5, T6> : Parser<ValueTuple<
 
             if (_lastParser.Parse(context, ref lastResult))
             {
-                var tuple = new ValueTuple<T1, T2, T3, T4, T6>(
+                var tuple = (
                     tupleResult.Value.Item1,
                     tupleResult.Value.Item2,
                     tupleResult.Value.Item3,
                     tupleResult.Value.Item4,
                     lastResult.Value
-                    );
+                );
 
                 result.Set(tupleResult.Start, lastResult.End, tuple);
 
                 context.ExitParser(this);
                 return true;
             }
+        }
 
+        context.Scanner.Cursor.ResetPosition(start);
+
+        context.ExitParser(this);
+        return false;
+    }
+
+    internal override bool CanParseWithoutValue => _parserWithoutValue || _lastParserWithoutValue;
+
+    // Parse, without the tuple
+    internal override bool ParseWithoutValue(ParseContext context, ref ParseResult<ValueTuple<T1, T2, T3, T4, T6>> result)
+    {
+        context.EnterParser(this);
+
+        var tupleResult = new ParseResult<ValueTuple<T1, T2, T3, T4, T5>>();
+
+        var start = context.Scanner.Cursor.Offset;
+
+        if (_parserWithoutValue ? _parser.ParseWithoutValue(context, ref tupleResult) : _parser.Parse(context, ref tupleResult))
+        {
+            var lastResult = new ParseResult<T6>();
+
+            if (_lastParserWithoutValue ? _lastParser.ParseWithoutValue(context, ref lastResult) : _lastParser.Parse(context, ref lastResult))
+            {
+                result.Start = tupleResult.Start;
+                result.End = lastResult.End;
+
+                context.ExitParser(this);
+                return true;
+            }
         }
 
         context.Scanner.Cursor.ResetPosition(start);
@@ -564,12 +786,17 @@ public sealed class SequenceSkipAnd<T1, T2, T3, T4, T5, T6> : Parser<ValueTuple<
             throw new NotSupportedException("SequenceSkipAnd requires source-generatable parsers.");
         }
 
+        if (SpanSource.TryGenerate(this, typeof(ValueTuple<T1, T2, T3, T4, T6>), context) is { } spanResult)
+        {
+            return spanResult;
+        }
+
         var result = context.CreateResult(typeof(ValueTuple<T1, T2, T3, T4, T6>));
         var cursorName = context.CursorName;
         var startName = $"start{context.NextNumber()}";
         var tupleTypeName = SourceGenerationContext.GetTypeName(typeof(ValueTuple<T1, T2, T3, T4, T6>));
 
-        result.Body.Add($"var {startName} = {cursorName}.Position;");
+        result.Body.Add($"var {startName} = {cursorName}.Offset;");
         result.Body.Add($"{result.SuccessVariable} = false;");
 
         string Helper(ISourceable p, Type valueType, string suffix)
@@ -624,35 +851,46 @@ public sealed class SequenceSkipAnd<T1, T2, T3, T4, T5, T6> : Parser<ValueTuple<
         return result;
     }
 
+    int ISpanSourceable.GetSpanSourceWeight(SourceGenerationContext context) => SpanSource.GetWeight(context, _parser, _lastParser);
+
+    void ISpanSourceable.GenerateSpanSource(SpanSourceWriter writer, string? valueVariable, SpanLabel fail)
+        => SpanSource.GenerateSequence(writer, valueVariable, fail,
+            [(_parser, typeof(ValueTuple<T1, T2, T3, T4, T5>), true), (_lastParser, typeof(T6), true)],
+            static values => $"new {SourceGenerationContext.GetTypeName(typeof(ValueTuple<T1, T2, T3, T4, T6>))}({values[0]}.Item1, {values[0]}.Item2, {values[0]}.Item3, {values[0]}.Item4, {values[1]})");
+
     public override string ToString() => $"{_parser} & {_lastParser} (skip)";
 
 }
 
-public sealed class SequenceSkipAnd<T1, T2, T3, T4, T5, T6, T7> : Parser<ValueTuple<T1, T2, T3, T4, T5, T7>>, ISeekablePrefixes, ISourceable
+public sealed class SequenceSkipAnd<T1, T2, T3, T4, T5, T6, T7> : Parser<ValueTuple<T1, T2, T3, T4, T5, T7>>, ISeekablePrefixes, ISourceable, ILoopAnalyzable, ISpanSourceable
 {
     private readonly Parser<ValueTuple<T1, T2, T3, T4, T5, T6>> _parser;
     private readonly Parser<T7> _lastParser;
+
+    // Whether the parsers are invoked without their value when it isn't used
+    private readonly bool _parserWithoutValue;
+    private readonly bool _lastParserWithoutValue;
 
     public SequenceSkipAnd(Parser<ValueTuple<T1, T2, T3, T4, T5, T6>> parser, Parser<T7> lastParser)
     {
         _parser = parser;
         _lastParser = lastParser ?? throw new ArgumentNullException(nameof(lastParser));
-
-        if (_parser is ISeekable seekable)
-        {
-            CanSeek = seekable.CanSeek;
-            ExpectedChars = seekable.ExpectedChars;
-            SkipWhitespace = seekable.SkipWhitespace;
-        }
+        _parserWithoutValue = parser is not null && parser.CanParseWithoutValue;
+        _lastParserWithoutValue = _lastParser.CanParseWithoutValue;
     }
 
-    public bool CanSeek { get; }
+    // The hints of the parser that reads first, read when they are asked for since it can be a Deferred set later
+    private ForwardedHints? _hints;
 
-    public char[] ExpectedChars { get; } = [];
+    public bool CanSeek => ForwardedHints.Get(ref _hints, _parser).CanSeek;
 
-    public bool SkipWhitespace { get; }
+    public char[] ExpectedChars => ForwardedHints.Get(ref _hints, _parser).ExpectedChars;
+
+    public bool SkipWhitespace => ForwardedHints.Get(ref _hints, _parser).SkipWhitespace;
 
     string[]? ISeekablePrefixes.ExpectedPrefixes => SeekableHints.Prefixes(_parser);
+
+    bool ILoopAnalyzable.AnalyzeStart(LoopAnalysis analysis) => analysis.Invoke(_parser) && analysis.Invoke(_lastParser);
 
     public override bool Parse(ParseContext context, ref ParseResult<ValueTuple<T1, T2, T3, T4, T5, T7>> result)
     {
@@ -660,7 +898,7 @@ public sealed class SequenceSkipAnd<T1, T2, T3, T4, T5, T6, T7> : Parser<ValueTu
 
         var tupleResult = new ParseResult<ValueTuple<T1, T2, T3, T4, T5, T6>>();
 
-        var start = context.Scanner.Cursor.Position;
+        var start = context.Scanner.Cursor.Offset;
 
         if (_parser.Parse(context, ref tupleResult))
         {
@@ -668,21 +906,51 @@ public sealed class SequenceSkipAnd<T1, T2, T3, T4, T5, T6, T7> : Parser<ValueTu
 
             if (_lastParser.Parse(context, ref lastResult))
             {
-                var tuple = new ValueTuple<T1, T2, T3, T4, T5, T7>(
+                var tuple = (
                     tupleResult.Value.Item1,
                     tupleResult.Value.Item2,
                     tupleResult.Value.Item3,
                     tupleResult.Value.Item4,
                     tupleResult.Value.Item5,
                     lastResult.Value
-                    );
+                );
 
                 result.Set(tupleResult.Start, lastResult.End, tuple);
 
                 context.ExitParser(this);
                 return true;
             }
+        }
 
+        context.Scanner.Cursor.ResetPosition(start);
+
+        context.ExitParser(this);
+        return false;
+    }
+
+    internal override bool CanParseWithoutValue => _parserWithoutValue || _lastParserWithoutValue;
+
+    // Parse, without the tuple
+    internal override bool ParseWithoutValue(ParseContext context, ref ParseResult<ValueTuple<T1, T2, T3, T4, T5, T7>> result)
+    {
+        context.EnterParser(this);
+
+        var tupleResult = new ParseResult<ValueTuple<T1, T2, T3, T4, T5, T6>>();
+
+        var start = context.Scanner.Cursor.Offset;
+
+        if (_parserWithoutValue ? _parser.ParseWithoutValue(context, ref tupleResult) : _parser.Parse(context, ref tupleResult))
+        {
+            var lastResult = new ParseResult<T7>();
+
+            if (_lastParserWithoutValue ? _lastParser.ParseWithoutValue(context, ref lastResult) : _lastParser.Parse(context, ref lastResult))
+            {
+                result.Start = tupleResult.Start;
+                result.End = lastResult.End;
+
+                context.ExitParser(this);
+                return true;
+            }
         }
 
         context.Scanner.Cursor.ResetPosition(start);
@@ -700,12 +968,17 @@ public sealed class SequenceSkipAnd<T1, T2, T3, T4, T5, T6, T7> : Parser<ValueTu
             throw new NotSupportedException("SequenceSkipAnd requires source-generatable parsers.");
         }
 
+        if (SpanSource.TryGenerate(this, typeof(ValueTuple<T1, T2, T3, T4, T5, T7>), context) is { } spanResult)
+        {
+            return spanResult;
+        }
+
         var result = context.CreateResult(typeof(ValueTuple<T1, T2, T3, T4, T5, T7>));
         var cursorName = context.CursorName;
         var startName = $"start{context.NextNumber()}";
         var tupleTypeName = SourceGenerationContext.GetTypeName(typeof(ValueTuple<T1, T2, T3, T4, T5, T7>));
 
-        result.Body.Add($"var {startName} = {cursorName}.Position;");
+        result.Body.Add($"var {startName} = {cursorName}.Offset;");
         result.Body.Add($"{result.SuccessVariable} = false;");
 
         string Helper(ISourceable p, Type valueType, string suffix)
@@ -760,35 +1033,46 @@ public sealed class SequenceSkipAnd<T1, T2, T3, T4, T5, T6, T7> : Parser<ValueTu
         return result;
     }
 
+    int ISpanSourceable.GetSpanSourceWeight(SourceGenerationContext context) => SpanSource.GetWeight(context, _parser, _lastParser);
+
+    void ISpanSourceable.GenerateSpanSource(SpanSourceWriter writer, string? valueVariable, SpanLabel fail)
+        => SpanSource.GenerateSequence(writer, valueVariable, fail,
+            [(_parser, typeof(ValueTuple<T1, T2, T3, T4, T5, T6>), true), (_lastParser, typeof(T7), true)],
+            static values => $"new {SourceGenerationContext.GetTypeName(typeof(ValueTuple<T1, T2, T3, T4, T5, T7>))}({values[0]}.Item1, {values[0]}.Item2, {values[0]}.Item3, {values[0]}.Item4, {values[0]}.Item5, {values[1]})");
+
     public override string ToString() => $"{_parser} & {_lastParser} (skip)";
 
 }
 
-public sealed class SequenceSkipAnd<T1, T2, T3, T4, T5, T6, T7, T8> : Parser<ValueTuple<T1, T2, T3, T4, T5, T6, T8>>, ISeekablePrefixes, ISourceable
+public sealed class SequenceSkipAnd<T1, T2, T3, T4, T5, T6, T7, T8> : Parser<ValueTuple<T1, T2, T3, T4, T5, T6, T8>>, ISeekablePrefixes, ISourceable, ILoopAnalyzable, ISpanSourceable
 {
     private readonly Parser<ValueTuple<T1, T2, T3, T4, T5, T6, T7>> _parser;
     private readonly Parser<T8> _lastParser;
+
+    // Whether the parsers are invoked without their value when it isn't used
+    private readonly bool _parserWithoutValue;
+    private readonly bool _lastParserWithoutValue;
 
     public SequenceSkipAnd(Parser<ValueTuple<T1, T2, T3, T4, T5, T6, T7>> parser, Parser<T8> lastParser)
     {
         _parser = parser;
         _lastParser = lastParser ?? throw new ArgumentNullException(nameof(lastParser));
-
-        if (_parser is ISeekable seekable)
-        {
-            CanSeek = seekable.CanSeek;
-            ExpectedChars = seekable.ExpectedChars;
-            SkipWhitespace = seekable.SkipWhitespace;
-        }
+        _parserWithoutValue = parser is not null && parser.CanParseWithoutValue;
+        _lastParserWithoutValue = _lastParser.CanParseWithoutValue;
     }
 
-    public bool CanSeek { get; }
+    // The hints of the parser that reads first, read when they are asked for since it can be a Deferred set later
+    private ForwardedHints? _hints;
 
-    public char[] ExpectedChars { get; } = [];
+    public bool CanSeek => ForwardedHints.Get(ref _hints, _parser).CanSeek;
 
-    public bool SkipWhitespace { get; }
+    public char[] ExpectedChars => ForwardedHints.Get(ref _hints, _parser).ExpectedChars;
+
+    public bool SkipWhitespace => ForwardedHints.Get(ref _hints, _parser).SkipWhitespace;
 
     string[]? ISeekablePrefixes.ExpectedPrefixes => SeekableHints.Prefixes(_parser);
+
+    bool ILoopAnalyzable.AnalyzeStart(LoopAnalysis analysis) => analysis.Invoke(_parser) && analysis.Invoke(_lastParser);
 
     public override bool Parse(ParseContext context, ref ParseResult<ValueTuple<T1, T2, T3, T4, T5, T6, T8>> result)
     {
@@ -796,7 +1080,7 @@ public sealed class SequenceSkipAnd<T1, T2, T3, T4, T5, T6, T7, T8> : Parser<Val
 
         var tupleResult = new ParseResult<ValueTuple<T1, T2, T3, T4, T5, T6, T7>>();
 
-        var start = context.Scanner.Cursor.Position;
+        var start = context.Scanner.Cursor.Offset;
 
         if (_parser.Parse(context, ref tupleResult))
         {
@@ -804,7 +1088,7 @@ public sealed class SequenceSkipAnd<T1, T2, T3, T4, T5, T6, T7, T8> : Parser<Val
 
             if (_lastParser.Parse(context, ref lastResult))
             {
-                var tuple = new ValueTuple<T1, T2, T3, T4, T5, T6, T8>(
+                var tuple = (
                     tupleResult.Value.Item1,
                     tupleResult.Value.Item2,
                     tupleResult.Value.Item3,
@@ -812,14 +1096,44 @@ public sealed class SequenceSkipAnd<T1, T2, T3, T4, T5, T6, T7, T8> : Parser<Val
                     tupleResult.Value.Item5,
                     tupleResult.Value.Item6,
                     lastResult.Value
-                    );
+                );
 
                 result.Set(tupleResult.Start, lastResult.End, tuple);
 
                 context.ExitParser(this);
                 return true;
             }
+        }
 
+        context.Scanner.Cursor.ResetPosition(start);
+
+        context.ExitParser(this);
+        return false;
+    }
+
+    internal override bool CanParseWithoutValue => _parserWithoutValue || _lastParserWithoutValue;
+
+    // Parse, without the tuple
+    internal override bool ParseWithoutValue(ParseContext context, ref ParseResult<ValueTuple<T1, T2, T3, T4, T5, T6, T8>> result)
+    {
+        context.EnterParser(this);
+
+        var tupleResult = new ParseResult<ValueTuple<T1, T2, T3, T4, T5, T6, T7>>();
+
+        var start = context.Scanner.Cursor.Offset;
+
+        if (_parserWithoutValue ? _parser.ParseWithoutValue(context, ref tupleResult) : _parser.Parse(context, ref tupleResult))
+        {
+            var lastResult = new ParseResult<T8>();
+
+            if (_lastParserWithoutValue ? _lastParser.ParseWithoutValue(context, ref lastResult) : _lastParser.Parse(context, ref lastResult))
+            {
+                result.Start = tupleResult.Start;
+                result.End = lastResult.End;
+
+                context.ExitParser(this);
+                return true;
+            }
         }
 
         context.Scanner.Cursor.ResetPosition(start);
@@ -837,12 +1151,17 @@ public sealed class SequenceSkipAnd<T1, T2, T3, T4, T5, T6, T7, T8> : Parser<Val
             throw new NotSupportedException("SequenceSkipAnd requires source-generatable parsers.");
         }
 
+        if (SpanSource.TryGenerate(this, typeof(ValueTuple<T1, T2, T3, T4, T5, T6, T8>), context) is { } spanResult)
+        {
+            return spanResult;
+        }
+
         var result = context.CreateResult(typeof(ValueTuple<T1, T2, T3, T4, T5, T6, T8>));
         var cursorName = context.CursorName;
         var startName = $"start{context.NextNumber()}";
         var tupleTypeName = SourceGenerationContext.GetTypeName(typeof(ValueTuple<T1, T2, T3, T4, T5, T6, T8>));
 
-        result.Body.Add($"var {startName} = {cursorName}.Position;");
+        result.Body.Add($"var {startName} = {cursorName}.Offset;");
         result.Body.Add($"{result.SuccessVariable} = false;");
 
         string Helper(ISourceable p, Type valueType, string suffix)
@@ -896,6 +1215,13 @@ public sealed class SequenceSkipAnd<T1, T2, T3, T4, T5, T6, T7, T8> : Parser<Val
 
         return result;
     }
+
+    int ISpanSourceable.GetSpanSourceWeight(SourceGenerationContext context) => SpanSource.GetWeight(context, _parser, _lastParser);
+
+    void ISpanSourceable.GenerateSpanSource(SpanSourceWriter writer, string? valueVariable, SpanLabel fail)
+        => SpanSource.GenerateSequence(writer, valueVariable, fail,
+            [(_parser, typeof(ValueTuple<T1, T2, T3, T4, T5, T6, T7>), true), (_lastParser, typeof(T8), true)],
+            static values => $"new {SourceGenerationContext.GetTypeName(typeof(ValueTuple<T1, T2, T3, T4, T5, T6, T8>))}({values[0]}.Item1, {values[0]}.Item2, {values[0]}.Item3, {values[0]}.Item4, {values[0]}.Item5, {values[0]}.Item6, {values[1]})");
 
     public override string ToString() => $"{_parser} & {_lastParser} (skip)";
 

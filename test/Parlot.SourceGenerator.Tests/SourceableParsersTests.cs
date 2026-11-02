@@ -74,7 +74,8 @@ public class SourceableParsersTests
     [Fact]
     public void Sequence_Emitter_Registers_Both_Children()
     {
-        var context = new SourceGenerationContext("context", "Sequence");
+        // Span code would inline the chars
+        var context = new SourceGenerationContext("context", "Sequence") { GenerateSpanCode = false };
         var parser = Literals.Char('a').And(Literals.Char('b'));
 
         var source = Assert.IsAssignableFrom<ISourceable>(parser).GenerateSource(context);
@@ -194,7 +195,7 @@ public class SourceableParsersTests
         var choice = OneOf(number, Literals.Text("x"));
         var generated = string.Join(Environment.NewLine, Generate(choice).Body);
 
-        foreach (var c in "0123456789+-._x")
+        foreach (var c in "0123456789+-.x")
         {
             Assert.Contains($"case '{c}':", generated, StringComparison.Ordinal);
         }
@@ -205,7 +206,7 @@ public class SourceableParsersTests
         }
 
         Assert.DoesNotContain("default:", generated, StringComparison.Ordinal);
-        Assert.Equal("+-.0123456789_".ToCharArray(), ((ISeekable)choice).ExpectedChars.Where(static c => c != 'x').OrderBy(static c => c));
+        Assert.Equal("+-.0123456789".ToCharArray(), ((ISeekable)choice).ExpectedChars.Where(static c => c != 'x').OrderBy(static c => c));
     }
 
     private static SourceResult Generate<T>(Parser<T> parser) =>

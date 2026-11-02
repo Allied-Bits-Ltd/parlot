@@ -15,7 +15,8 @@
 
 Recursive grammars can limit the nesting depth accepted from untrusted input by setting
 `maxRecursionDepth` on the `ParseContext`. The default value is `0`, which applies no limit.
-The limit applies to both runtime and source-generated parsers.
+A source-generated parser takes the limit from its attribute instead,
+`[GenerateParser(nameof(TryParse), MaxRecursionDepth = 128)]` (see [Source generation](source-generation.md)).
 
 ```c#
 var context = new ParseContext(new Scanner(input), maxRecursionDepth: 128);
@@ -25,6 +26,101 @@ if (!parser.TryParse(context, out var result, out var error))
     // error reports when the configured recursion limit was exceeded
 }
 ```
+
+Each entry into a `Deferred` or `Recursive` parser counts as one level, and so does each invocation of a `Unary` parser
+and each prefix operator applied by an [operator table](#operator-tables). Exceeding the limit throws a `ParseException`,
+which fails the whole parse: a choice doesn't try its next alternative, `TryParse` returns `false` with the error and
+`Parse` throws.
+
+Without a limit, the `Deferred` and `Recursive` parsers check the stack of the thread on each entry, with
+`RuntimeHelpers.TryEnsureSufficientExecutionStack()` (`EnsureSufficientExecutionStack()` below .NET Standard 2.1), and fail
+the whole parse the same way, with the error "The input is nested too deeply to be parsed on the remaining stack.", rather
+than overflowing the stack, which would end the process. How deep a grammar can go then depends on the stack of the thread
+and on the stack each level of the grammar takes; a limit makes it independent of both. Each entry increments a counter
+and the stack is checked on every 16th one, so a grammar recurses at most 16 levels past a check, which the runtime's
+margin (64 KB or more) leaves room for. `Unary` and the prefix operators of an operator table read their operators in a
+loop, so a chain of operators doesn't use the stack, whatever its length; the levels they count are only for the limit.
+
+A `Deferred` parser that is invoked again at the position where it is already active (left recursion) fails at that position
+instead of overflowing the stack. The parsers which can't be invoked again where they are active skip this check, see
+[Left recursion](writing.md#left-recursion). `disableLoopDetection: true` on the `ParseContext` disables it for every parser.
+
+## Collecting diagnostics without stopping
+
+By default, `Error(...)` and `ElseError(...)` throw `ParseException`; `TryParse(..., out error)`
+converts it to a single `ParseError`. `Warning(...)` does nothing. To collect grammar errors
+and warnings instead, enable `CollectDiagnostics` on the per-parse `ParseContext` and inspect
+its `Diagnostics` list:
+
+```csharp
+var parser = Literals.Char('a').ElseError("Expected a").Optional()
+    .And(Literals.Char('b').ElseError("Expected b").Optional());
+var context = new ParseContext(new Scanner(input)) { CollectDiagnostics = true };
+var success = parser.TryParse(context, out var value, out var fatalError);
+foreach (var diagnostic in context.Diagnostics)
+{
+    Console.WriteLine($"{diagnostic.Severity} {diagnostic.Position}: {diagnostic.Message}");
+}
+```
+
+Each `ParseDiagnostic` has a `Message`, a `TextPosition`, and a `Severity` (`Error` or `Warning`),
+listed in the order they were reported.
+
+In this mode an error records its diagnostic, then returns `false` from the parser that
+reported it with the cursor restored to its starting position. The enclosing grammar can try
+another alternative or absorb the failed token with an optional/repetition parser. No input is
+skipped and no replacement value is synthesized. A warning records its diagnostic and keeps the
+successful result. Ordinary mismatches do not produce diagnostics; recursion limits and cancellation
+retain their existing handling and are not collected. `TryParse` can therefore return `true` even
+when `context.Diagnostics` contains errors. Use a fresh context for each parse if diagnostics
+should not accumulate across calls.
+
+In ordered choices, diagnostics from a failed alternative are discarded if a later
+alternative succeeds. When every alternative fails, only diagnostics from the branch whose
+error reaches the greatest input offset are kept; ties favor the earlier branch, and a branch
+that only reported warnings is not kept. Diagnostics absorbed by optional or repetition parsers
+remain in the list when their surrounding branch is retained. Put `Warning` on the whole
+construct it describes, for instance `(a + b).Warning(...)` rather than `a.Warning(...) + b`,
+so that it is only reported once that construct matched.
+
+Set `TreatWarningsAsErrors` to report warnings as errors. A promoted warning fails its parser like
+`Error(...)`: it throws when `CollectDiagnostics` is disabled, and is otherwise recorded with the `Error`
+severity so that the grammar can try another alternative.
+
+To collect the diagnostics of a `TextReader`, create the context in `StreamParseOptions.ContextFactory`:
+
+```csharp
+ParseContext? context = null;
+var options = new StreamParseOptions
+{
+    ContextFactory = (scanner, cancellationToken) =>
+        context = new ParseContext(scanner, cancellationToken) { CollectDiagnostics = true },
+};
+var success = parser.TryParse(reader, out var value, out var fatalError, options);
+// context.Diagnostics
+```
+
+## Matching without a value
+
+`IsMatch` returns whether a parser matches the start of a text, and `TryMatch` also returns the text it matched, as a
+`TextSpan`. Neither builds the value: the lists, tuples and options of the parsers are skipped, which `TryParse` would
+allocate and discard.
+
+```c#
+var assignment = Terms.Identifier().And(Terms.Char('=')).And(Terms.Integer());
+
+assignment.IsMatch("age = 12; next"); // true
+assignment.TryMatch("age = 12; next", out var match); // match is "age = 12"
+```
+
+- Like `TryParse`, the parser doesn't have to reach the end of the text. Add `.Eof()` to match the whole text.
+- The text is the one [`Capture`](#capture) returns, from the cursor to where the parser ended: it includes the white space
+  that a `Terms` parser skips before its first token.
+- Callbacks that read a value, like those of `Then` or `When`, still receive it, so the parsers below them build their
+  values.
+- A parse error, like the ones of `ElseError`, or a cancellation fails the match. `TryMatch(..., out error)` returns it.
+- The `ParseContext` overloads match at the cursor of the context and move it after the match, so a context can be reused
+  without allocating.
 
 ## Associative operators
 
@@ -43,6 +139,101 @@ expression.Parse("10 - 4 - 2"); // 4
 ```
 
 Replace `LeftAssociative` with `RightAssociative` to obtain `8` for the same input. The factory can also receive `ParseContext` as its first argument: `(context, left, right, operation)`. Existing overloads accepting `(operatorParser, factory)` tuples remain available when each operator needs a distinct factory. Both forms try the operators through a `OneOf`, so only the operators that can start with the next char are tried, in order, and white space is skipped once when they all skip it. If an operator matches but the next operand does not, the operator is rolled back and the expression parsed so far is returned.
+
+## Operator tables
+
+`Operators()` builds a single parser for a whole table of operators, from the level which binds the tightest. Each level
+is added with the same tuples as the combinators above: `Unary` for prefix operators, `Postfix`, `LeftAssociative` and
+`RightAssociative`:
+
+```csharp
+var expression = Deferred<Expression>();
+var primary = number.Or(Between(Terms.Char('('), expression, Terms.Char(')')));
+
+expression.Parser = primary.Operators()
+    .Postfix((Terms.Char('!'), static x => new Factorial(x)))
+    .Unary((Terms.Char('-'), static x => new Negate(x)), (Terms.Text("not"), static x => new Not(x)))
+    .RightAssociative((Terms.Text("**"), static (a, b) => new Power(a, b)))
+    .LeftAssociative((Terms.Char('*'), static (a, b) => new Multiply(a, b)), (Terms.Char('/'), static (a, b) => new Divide(a, b)))
+    .LeftAssociative((Terms.Char('+'), static (a, b) => new Add(a, b)), (Terms.Char('-'), static (a, b) => new Subtract(a, b)))
+    .LeftAssociative((Terms.Text("<<"), static (a, b) => new ShiftLeft(a, b)))
+    .LeftAssociative((Terms.Text("<="), static (a, b) => new LessOrEqual(a, b)), (Terms.Char('<'), static (a, b) => new Less(a, b)));
+
+expression.Parse("-2 ** 3! * 4 << 1 < 5"); // ((((-2) ** (3!)) * 4) << 1) < 5
+```
+
+The table parses exactly what the chain of `Unary`, `LeftAssociative` and `RightAssociative` parsers with the same
+levels parses, each one reading its operands with the previous one, with the same results, spans and cursor positions.
+The chain tries the operators of each of its levels after each operand, and every operand goes through every level. The
+table instead looks for the operator following an operand once, through a `OneOf` of all its operators, so that only the
+operators that can start with the next char are tried, and climbs the levels from there (precedence climbing). The cost
+of an operand doesn't depend on the number of levels.
+
+- Within a level the first operator that matches applies, even when a later one would match more text, as in the chain.
+- An operator that is not followed by an operand is not read, and the looser levels try their operators at its position:
+  with `<` in a tighter level and `<=` in a looser one, `a <= b` reads the `<` of the tighter level, which isn't followed
+  by an operand, then the `<=` of the looser one.
+- A prefix operator that is not followed by an operand fails the parser, like `Unary`. The first prefix operator which
+  reads some text applies, and its operand can start with another prefix operator of the same level.
+- A postfix level applies its operators to the value of the tighter levels as long as one of them reads some text. After
+  a postfix operator only the operators of its level and of the looser ones are tried: `a! ** b`, with `**` tighter than
+  `!`, is `a!`.
+- An operator and an operand that both read nothing stop the level, as in the chain.
+- Chains of operators don't recurse, whatever their length: the prefix operators are read in a loop, like the binary ones.
+  With a `maxRecursionDepth`, each prefix operator applied still counts as one level of recursion.
+- The parser is seekable from its operand and its prefix operators, so it can be an alternative of a lookup table.
+- Each call of `Unary`, `Postfix`, `LeftAssociative`, `RightAssociative` or `Ternary` returns a new parser, the table is not modified.
+  `Named()` returns a `Parser<T>`, call it last.
+
+A chain of `Unary`, `LeftAssociative` and `RightAssociative` parsers still parses level by level: build it with
+`Operators()` to parse it with a single precedence parser.
+
+### Operators with a value
+
+The factories of a level can also receive the value of the operator, so that member accesses, indexers, calls and
+conditionals are levels of the table rather than parsers around it:
+
+```csharp
+var expression = Deferred<Expression>();
+var primary = identifier.Or(number).Or(Between(Terms.Char('('), expression, Terms.Char(')')));
+
+expression.Parser = primary.Operators()
+    .Postfix(
+        (Terms.Char('.').SkipAnd(Terms.Identifier()), static (x, name) => new Member(x, name.ToString())),
+        (Between(Terms.Char('['), expression, Terms.Char(']')), static (x, index) => new Index(x, index)))
+    .Unary((Terms.Char('-'), static x => new Negate(x)))
+    .LeftAssociative([Terms.Text("*"), Terms.Text("/")], static (a, b, op) => new Binary(op, a, b))
+    .LeftAssociative((Terms.Char('+'), static (a, b) => new Add(a, b)))
+    .LeftAssociative((Terms.Text("=="), static (a, b) => new Equal(a, b)))
+    .Ternary(Terms.Char('?'), expression, Terms.Char(':'), static (c, a, b) => new Conditional(c, a, b), rightAssociative: false)
+    .LeftAssociative((Terms.Text("??"), static (a, b) => new Coalesce(a, b)));
+
+expression.Parse("-a.b[i] * 2 == c ? d : e ?? f"); // ((((-(a.b[i])) * 2) == c) ? d : e) ?? f
+```
+
+- `Postfix((op, (x, value) => ...))` passes the value of the operator to its factory. Each call takes operators of one
+  type; `Postfix(first, second)` takes two operators of different types in the same level, like a member access and an
+  indexer, which apply in any order: `a.b[c].d`.
+- `LeftAssociative(operators, (a, b, op) => ...)` and `RightAssociative(operators, (a, b, op) => ...)` are the levels of
+  the `LeftAssociative(Parser<TOperator>[], Func<T, T, TOperator, T>)` combinators, whose single factory receives the
+  value of the operator.
+- `Ternary(question, middle, colon, (condition, whenTrue, whenFalse) => ...)` is a level of conditionals. The condition
+  is a value of the tighter levels, and `middle`, usually the whole expression, is parsed between `question` and `colon`.
+  With `rightAssociative: true`, the default, the last operand can be another conditional: `a ? b : c ? d : e` is
+  `a ? b : (c ? d : e)`, as in C. With `rightAssociative: false` it is a value of the tighter levels only:
+  `a ? b : c ? d : e` is `(a ? b : c) ? d : e`. The looser levels apply to the whole conditional, so with `??` looser,
+  `a ? b : c ?? d` is `(a ? b : c) ?? d` and the last operand can't contain a `??`, while `a ?? b ? c : d` is
+  `a ?? (b ? c : d)`. A last operand that is a whole expression, as in C# where it can be an assignment, can't be a level.
+- These levels parse what the equivalent chain parses: a level whose operator is `question.SkipAnd(middle).AndSkip(colon)`
+  for a conditional, or `primary.And(ZeroOrMany(postfix))` folded for the postfix operators of the tightest level, with
+  the same results, spans and cursor positions. When `question`, `middle`, `colon` or the last operand doesn't match,
+  nothing is read and the looser levels are tried at the position of `question`: a `?` doesn't need to exclude the `??`
+  of a looser level.
+- The table looks up the operator following an operand through a single choice of the operators up to the next level
+  of valued operators, which starts with a check of the first chars of these: when the next char can start one of them,
+  the level that applies them parses them and passes their values to the factories right away, otherwise the looser
+  levels are tried in the same choice. An operator is parsed only once at a position, even when it parses an expression,
+  like an index or the middle of a conditional, and the values are never kept for a looser level.
 
 ## Terms and Literals
 
@@ -157,7 +348,9 @@ The case-insensitive comparison is ordinal. It doesn't depend on the current cul
 If you need to preserve the original casing from the input, set `returnMatchedText: true`.
 An exact-case match returns the requested text without allocating; if the matched text
 has different casing but covers the entire input, the input string itself is returned.
-Only a differently cased substring needs a new string.
+A differently cased substring is taken from the cases the parser keeps: the first four
+casings it matches, usually the ones the input uses most, are allocated once and shared by
+all its parses, and other casings are allocated each time. `Keyword` does the same.
 
 Usage:
 
@@ -326,17 +519,26 @@ Result:
 -12345.6
 ```
 
+`NumberOptions.AllowUnderscore` accepts underscores between digits to make long numbers easier to read, like C#, Java or
+Python do. Underscores can be repeated but must be between two digits, so `1_`, `1_.5` or `1e_5` only read `1`. They
+are ignored when the value is computed. The option isn't part of `NumberOptions.Any`.
+
+```c#
+var parser = Terms.Number<long>(NumberOptions.Integer | NumberOptions.AllowUnderscore);
+parser.Parse("1_000_000"); // 1000000
+```
+
+
 This version of Parlot adds the following to `Number`:
 
-- `NumberOptions.AllowUnderscore` accepts underscores between the digits, e.g. `1_000_000`. They are removed before the number is converted.
 - The optional `secondDecimalSeparator` argument is an alternative decimal separator, which is useful for human input where the same key
   can enter `.` or `,` depending on the keyboard layout. If it is the same char as the group separator, then this char is a decimal separator only.
 - `NumberOptions.RequireFractionalPartForDecimals` leaves a decimal separator that isn't followed by digits out of the number, e.g. `1.` is read as `1`
   and the `.` is available to the next parser. Without this option the separator is consumed.
 
 ```c#
-var parser = Terms.Number<decimal>(NumberOptions.Number | NumberOptions.AllowUnderscore, decimalSeparator: '.', groupSeparator: '_', secondDecimalSeparator: ',');
-// "1_000.5" and "1_000,5" both return 1000.5
+var parser = Terms.Number<decimal>(NumberOptions.Number, decimalSeparator: '.', groupSeparator: '_', secondDecimalSeparator: ',');
+// "1.5" and "1,5" both return 1.5
 ```
 
 ### Hexadecimal, Octal and Binary
@@ -380,6 +582,9 @@ Result:
 ```
 'hello\\nworld'
 ```
+
+The value is a `TextSpan` of the input when the string has no escape sequence, and of a new string otherwise. To get
+strings that repeat allocated once, use `ToPooledString()`, which also decodes the escape sequences into its pool.
 
 ### Identifier
 
@@ -721,6 +926,11 @@ Assert.Equal(12, result.Item2);
 
 ## Cardinality Parsers
 
+`ZeroOrMany`, `OneOrMany` and `Separated` return an array of the exact number of items, or `Array.Empty<T>()` when
+there is none, typed as `IReadOnlyList<T>`. The first four items are kept by the parser and longer lists are
+accumulated on a scratch stack of the thread, shared by nested lists, so a list only allocates its result. Rely on `IReadOnlyList<T>` rather than on the concrete type:
+earlier versions returned a `HybridList<T>` or a `List<T>`.
+
 ### ZeroOrOne
 
 Matches zero or one occurrence and returns an empty list or a single-item list. The method can also be post-fixed.
@@ -1012,6 +1222,7 @@ Parser<T> WithWhiteSpaceSet<T>(this Parser<T> parser, WhiteSpaceSet whiteSpaceSe
 |---|---|---|
 | `WhiteSpaceSet.Default` | `\t`, `\f`, space, U+00A0, U+1680, U+2000-U+200A, U+202F, U+205F, U+3000 (`Character.WhiteSpaces`) | `\n`, `\r`, `\v`, U+0085, U+2028, U+2029 (`Character.NewLines`) |
 | `WhiteSpaceSet.Ascii` | `\t`, `\f`, space (`Character.AsciiWhiteSpaces`) | `\n`, `\r`, `\v` (`Character.AsciiNewLines`) |
+| `WhiteSpaceSet.SpaceTabCrLf` | `\t`, space (`Character.SpaceTabCrLfWhiteSpaces`) | `\n`, `\r` (`Character.SpaceTabCrLfNewLines`) |
 
 `Default` is the Unicode `White_Space` property: the chars `char.IsWhiteSpace` and the `\s` of .NET regular expressions accept.
 Its new lines are the line breaks, including the next line char U+0085 and the line and paragraph separators U+2028 and
@@ -1034,6 +1245,10 @@ U+2029. As with the other new lines, `Terms` parsers skip them unless `UseNewLin
 
 `Ascii` is the white space of C's `isspace` and Ruby's `\s`: a no-break space or another Unicode space is then a char like any
 other, which a grammar can match or reject.
+
+`SpaceTabCrLf` is `Ascii` without `\f` and `\v`: the white space of JSON (RFC 8259), XML 1.0, YAML, TOML, Go, and many SQL
+dialects such as Azure Cosmos DB's. With `UseNewLines` it skips only space and `\t`.
+A grammar which would otherwise use `WithWhiteSpaceParser(Literals.AnyOf(" \t\r\n"))` selects it to keep the fast path described below.
 
 Usage:
 
@@ -1067,7 +1282,22 @@ var parser = grammar
 ```
 
 `WithWhiteSpaceSet` is part of the grammar, so a [source-generated](source-generation.md) parser honors it too.
-Use `WithWhiteSpaceParser` for any other set of chars.
+Each set is a bit pair of the char table `Character` reads, which has no room for another one: use `WithWhiteSpaceParser` for
+any other set of chars.
+
+On the JSON benchmark, whose text is indented with spaces and new lines, parsing with these options measured (Apple M4 Pro,
+.NET 10, `WhiteSpaceSetBenchmarks`):
+
+| White space | Runtime | Ratio | Generated | Ratio |
+|---|---:|---:|---:|---:|
+| `WhiteSpaceSet.Default` | 31.8 us | 1.00 | 31.9 us | 1.00 |
+| `WhiteSpaceSet.Ascii` | 32.0 us | 1.01 | 29.6 us | 0.93 |
+| `WhiteSpaceSet.SpaceTabCrLf` | 32.4 us | 1.02 | 29.0 us | 0.91 |
+| `WithWhiteSpaceParser(Literals.AnyOf(" \t\r\n"))` | 40.3 us | 1.27 | 39.7 us | 1.25 |
+| `WithWhiteSpaceParser(Literals.AnyOf(" \t\f\n\r\v"))` | 43.5 us | 1.37 | | |
+
+Every option allocates the same 64 KB. The sets measure the same, within the noise, and a white space parser skipping the same
+chars is 25% to 37% slower.
 
 ### WithComments
 
@@ -1170,6 +1400,9 @@ var capture = Capture(parser);
 capture.Parse("age = 12");
 ```
 
+The parser doesn't build its value, for instance its lists, unless a callback reads it. `parser.TryMatch(text, out var match)`
+returns the same text without a `Capture` parser, see [Matching without a value](#matching-without-a-value).
+
 Result:
 
 ```
@@ -1238,6 +1471,39 @@ Result:
 ```
 
 > **Note:** The start and end parameters are integer offsets (positions in the input buffer), not `TextPosition` objects.
+
+### ToPooledString
+
+Returns the text of a `Parser<TextSpan>` as a string taken from a pool, such that a value the parser matches many times
+is allocated once, instead of once per `ToString()`.
+
+```c#
+Parser<string> ToPooledString(this Parser<TextSpan> parser)
+```
+
+Usage:
+
+```c#
+var identifiers = ZeroOrMany(Terms.Identifier().ToPooledString());
+var names = identifiers.Parse("foo bar foo");
+// ReferenceEquals(names[0], names[2]) == true
+```
+
+The pool belongs to the parser `ToPooledString()` returns and lives as long as it does: all its parses share it, also
+concurrent ones, finding a value takes no lock and adding one does. It is bounded. It holds up to 4096 values of up to 64
+chars, and longer values are created as usual. A full pool keeps its values. A pool whose values rarely repeat
+(ids, numbers, timestamps) switches itself off: when nearly all its first 512 values were new, or when most lookups miss
+once it is full.
+
+A lookup costs about as much as creating a short string, so pooling pays off when the strings are kept, like the
+identifiers or member names of a syntax tree held in memory, rather than when each one is used and dropped.
+
+On `Terms.String()` or `Literals.String()`, the string literal also decodes its escape sequences into the pool, so that
+an escaped value isn't allocated either when the pool has it. The literal it is called on is unchanged.
+
+`ToPooledString()` takes a `Parser<TextSpan>`: the string of a `Parser<string>` is already created, a pool would only
+share it. Case-insensitive `Text` and `Keyword` parsers returning the matched text keep the cases they return by
+themselves.
 
 ### Else
 
@@ -1351,6 +1617,34 @@ failure: "Unexpected char c"
 
 `Error` declares the chars of the parser it is applied to, so a `OneOf` only tries it, and only raises the
 error, for one of them.
+
+### Warning
+
+Reports a warning when the inner parser matched, keeping its result. Warnings are only recorded when
+`ParseContext.CollectDiagnostics` is enabled, and are located where the matched input starts, after
+any whitespace skipped by the inner parser. With `ParseContext.TreatWarningsAsErrors` the warning is
+reported as an error and the parser fails.
+
+```c#
+Parser<T> Warning(string message)
+```
+
+Usage:
+
+```c#
+var parser = Terms.Text("var").Warning("'var' is deprecated, use 'let'")
+    .Or(Terms.Text("let"));
+
+var context = new ParseContext(new Scanner(" var")) { CollectDiagnostics = true };
+parser.TryParse(context, out var value, out _);
+```
+
+Result:
+
+```
+"var"
+context.Diagnostics: Warning (1:2): 'var' is deprecated, use 'let'
+```
 
 ### When
 

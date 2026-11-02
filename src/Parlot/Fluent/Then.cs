@@ -10,7 +10,7 @@ namespace Parlot.Fluent;
 /// </summary>
 /// <typeparam name="T">The input parser type.</typeparam>
 /// <typeparam name="U">The output parser type.</typeparam>
-public sealed class Then<T, U> : Parser<U>, ISeekablePrefixes, ISourceable
+public sealed class Then<T, U> : Parser<U>, ISeekablePrefixes, ISourceable, ILoopAnalyzable, ISpanSourceable
 {
     private readonly Func<T, U>? _action1;
     private readonly Func<ParseContext, T, U>? _action2;
@@ -18,16 +18,12 @@ public sealed class Then<T, U> : Parser<U>, ISeekablePrefixes, ISourceable
     private readonly U? _value;
     private readonly Parser<T> _parser;
 
+    // Whether the parser is invoked without its value, which a constant doesn't use
+    private readonly bool _withoutValue;
+
     private Then(Parser<T> parser)
     {
         _parser = parser ?? throw new ArgumentNullException(nameof(parser));
-
-        if (parser is ISeekable seekable)
-        {
-            CanSeek = seekable.CanSeek;
-            ExpectedChars = seekable.ExpectedChars;
-            SkipWhitespace = seekable.SkipWhitespace;
-        }
     }
 
     public Then(Parser<T> parser, Func<T, U> action) : this(parser)
@@ -48,15 +44,21 @@ public sealed class Then<T, U> : Parser<U>, ISeekablePrefixes, ISourceable
     public Then(Parser<T> parser, U value) : this(parser)
     {
         _value = value;
+        _withoutValue = parser.CanParseWithoutValue;
     }
 
-    public bool CanSeek { get; }
+    // The hints of the parser that reads first, read when they are asked for since it can be a Deferred set later
+    private ForwardedHints? _hints;
 
-    public char[] ExpectedChars { get; } = [];
+    public bool CanSeek => ForwardedHints.Get(ref _hints, _parser).CanSeek;
 
-    public bool SkipWhitespace { get; }
+    public char[] ExpectedChars => ForwardedHints.Get(ref _hints, _parser).ExpectedChars;
+
+    public bool SkipWhitespace => ForwardedHints.Get(ref _hints, _parser).SkipWhitespace;
 
     string[]? ISeekablePrefixes.ExpectedPrefixes => SeekableHints.Prefixes(_parser);
+
+    bool ILoopAnalyzable.AnalyzeStart(LoopAnalysis analysis) => analysis.Invoke(_parser);
 
     public override bool Parse(ParseContext context, ref ParseResult<U> result)
     {
@@ -64,7 +66,7 @@ public sealed class Then<T, U> : Parser<U>, ISeekablePrefixes, ISourceable
 
         var parsed = new ParseResult<T>();
 
-        if (_parser.Parse(context, ref parsed))
+        if (_withoutValue ? _parser.ParseWithoutValue(context, ref parsed) : _parser.Parse(context, ref parsed))
         {
             if (_action1 != null)
             {
@@ -101,6 +103,11 @@ public sealed class Then<T, U> : Parser<U>, ISeekablePrefixes, ISourceable
             throw new NotSupportedException("Then requires a source-generatable parser.");
         }
 
+        if (SpanSource.TryGenerate(this, typeof(U), context) is { } spanResult)
+        {
+            return spanResult;
+        }
+
         var result = context.CreateResult(typeof(U));
         var ctx = context.ParseContextName;
         var parsedName = $"parsed{context.NextNumber()}";
@@ -133,7 +140,7 @@ public sealed class Then<T, U> : Parser<U>, ISeekablePrefixes, ISourceable
                     .GetOrCreate(contentSourceable, helperKey, parsedTypeName, () => contentSourceable.GenerateSource(context))
                     .MethodName;
                 resetName = $"reset{context.NextNumber()}";
-                result.Body.Add($"var {resetName} = {cursorName}.Position;");
+                result.Body.Add($"var {resetName} = {cursorName}.Offset;");
                 result.Body.Add($"if ({ctx}.MaySkipWhiteSpace({cursorName}.Current))");
                 result.Body.Add("{");
                 result.Body.Add($"    {ctx}.SkipWhiteSpace();");
@@ -214,5 +221,34 @@ public sealed class Then<T, U> : Parser<U>, ISeekablePrefixes, ISourceable
         return result;
     }
 
-override public string ToString() => $"{_parser} (Then)";
+    // The callbacks which receive the context can read the cursor, which span code doesn't move
+    int ISpanSourceable.GetSpanSourceWeight(SourceGenerationContext context)
+        => _action2 == null && _action3 == null && (_action1 != null || LiteralHelper.ToLiteral(_value) != null)
+            ? SpanSource.GetWeight(context, _parser)
+            : -1;
+
+    void ISpanSourceable.GenerateSpanSource(SpanSourceWriter writer, string? valueVariable, SpanLabel fail)
+    {
+        if (_action1 != null)
+        {
+            // The callback consumes the value even when its result is discarded
+            var parsed = writer.DeclareLocal(typeof(T), "parsed");
+            var lambdaName = writer.Context.RegisterLambda(_action1);
+
+            writer.Generate(_parser, parsed, fail);
+            writer.BeforeCallback();
+            writer.Add(valueVariable != null ? $"{valueVariable} = {lambdaName}({parsed});" : $"{lambdaName}({parsed});");
+        }
+        else
+        {
+            writer.Generate(_parser, null, fail);
+
+            if (valueVariable != null)
+            {
+                writer.Add($"{valueVariable} = {LiteralHelper.ToLiteral(_value)};");
+            }
+        }
+    }
+
+    override public string ToString() => $"{_parser} (Then)";
 }
